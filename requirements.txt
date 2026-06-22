@@ -1,0 +1,5 @@
+pip install discord.py
+pip install google-generativeai
+pip install gTTS
+pip install PyNaCl
+pip install httpx
