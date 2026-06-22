@@ -28,7 +28,7 @@ project/
 ├── ffmpeg-master-latest-win64-gpl-shared/      # FFmpeg ダウンロード元（Git 管理対象外）
 ├── index/
 │   ├── bot.py                  # ボット本体
-│   ├── config.py               # APIキー設定テンプレート（Git 管理対象）
+│   ├── config.py               # APIキー設定
 │   └── ffmpeg.exe              # FFmpeg 実行ファイル（別途ダウンロード）
 ├── prompts/                    # システムプロンプトファイル群
 │   ├── prompt_default.txt

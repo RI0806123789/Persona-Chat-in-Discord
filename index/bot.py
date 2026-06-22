@@ -36,6 +36,7 @@ persona_choices_list = [
     app_commands.Choice(name="ヤンデレ", value="../prompts/prompt_yandere.txt"),
     app_commands.Choice(name="メイド", value="../prompts/prompt_maid.txt"),
     app_commands.Choice(name="ロリ", value="../prompts/prompt_loli.txt"),
+    app_commands.Choice(name ="ショタ", value = "../prompts/prompt_syota.txt"),
     app_commands.Choice(name="オジサン", value="../prompts/prompt_oji.txt"),
     app_commands.Choice(name="標準", value="../prompts/prompt_default.txt"),
 ]
