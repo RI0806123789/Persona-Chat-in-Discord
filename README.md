@@ -1,7 +1,7 @@
 # Persona Chat in Discord
 
 ## 🛠️ 技術スタック
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white) 
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
 
 Google Gemini AI を活用した Discord ボットです。  
 テキストチャット・ボイスチャット読み上げ・ペルソナ切り替え・利用状況グラフ表示などの機能を備えています。
@@ -14,8 +14,8 @@ Google Gemini AI を活用した Discord ボットです。
 |------|------|
 | AI チャット | Gemini API を使ってテキストで会話 |
 | 音声読み上げ | gTTS + FFmpeg でボイスチャンネルに返答を読み上げ |
-| ペルソナ切り替え | ツンデレ / ヤンデレ / メイド / ロリ / オジサン / 標準 |
-| モデル切り替え | Gemini 2.5 Flash / Flash Lite / Pro を動的に変更 |
+| ペルソナ切り替え | ツンデレ / ヤンデレ / メイド / ロリ / ショタ / オジサン / ギャル / メスガキ / お姉さん / 標準 |
+| モデル切り替え | Gemini 2.5 Flash / 3.5 Flash / 3.1 Flash Lite を動的に変更 |
 | 利用グラフ | 入力・出力・合計トークン数の推移をグラフ表示 |
 | ステータス確認 | 現在のペルソナとモデルを即確認 |
 
@@ -24,22 +24,37 @@ Google Gemini AI を活用した Discord ボットです。
 ## 📁 ディレクトリ構成
 
 ```
-project/
+Persona Chat in Discord/
 ├── ffmpeg-master-latest-win64-gpl-shared/      # FFmpeg ダウンロード元（Git 管理対象外）
 ├── index/
-│   ├── bot.py                  # ボット本体
-│   ├── config.py               # APIキー設定
-│   └── ffmpeg.exe              # FFmpeg 実行ファイル（別途ダウンロード）
-├── prompts/                    # システムプロンプトファイル群
+│   ├── __pycache__/                            # Python キャッシュ（Git 管理対象外）
+│   ├── avcodec-62.dll                          # FFmpeg 共有ライブラリ（Git 管理対象外）
+│   ├── avdevice-62.dll
+│   ├── avfilter-11.dll
+│   ├── avformat-62.dll
+│   ├── avutil-60.dll
+│   ├── swresample-6.dll
+│   ├── swscale-9.dll
+│   ├── bot.py                                  # ボット本体
+│   ├── config.py                               # APIキー テンプレート（Git 管理対象）
+│   ├── ffmpeg.exe                              # FFmpeg 実行ファイル（Git 管理対象外）
+│   ├── ffplay.exe
+│   └── ffprobe.exe
+├── prompts/                                    # システムプロンプトファイル群
+│   ├── 00_prompt_format.txt                    # プロンプトフォーマット定義
 │   ├── prompt_default.txt
 │   ├── prompt_tundere.txt
 │   ├── prompt_yandere.txt
 │   ├── prompt_maid.txt
-│   ├── prompt_loli.txt
-│   └── prompt_oji.txt
-├── .gitignore                   
-├── README.md                    
-└── requirements.txt            # Python 依存パッケージ
+│   ├── prompt_lori.txt
+│   ├── prompt_syota.txt
+│   ├── prompt_oji.txt
+│   ├── prompt_gyaru.txt
+│   ├── prompt_mesugaki.txt
+│   └── prompt_ane.txt
+├── .gitignore
+├── README.md
+└── requirements.txt                            # Python 依存パッケージ
 ```
 
 ---
@@ -74,25 +89,24 @@ pip install -r requirements.txt
 ### 3. FFmpeg のセットアップ
 
 ボイスチャンネルでの読み上げに FFmpeg が必要です。  
-> ⚠️ FFmpeg のバイナリはサイズが大きいため Git 管理対象外です。必ず手動でダウンロードしてください。
+> ⚠️ FFmpeg のバイナリ・DLL はサイズが大きいため Git 管理対象外です。必ず手動でダウンロードしてください。
 
-1. [ffmpeg.org/download.html](https://ffmpeg.org/download.html) から Windows 用ビルドをダウンロード
-2. `ffmpeg.exe` を `index/` フォルダ（`bot.py` と**同じフォルダ**）に配置
+1. [ffmpeg.org/download.html](https://ffmpeg.org/download.html) から Windows 用ビルド（shared版）をダウンロード
+2. `ffmpeg.exe` / `ffplay.exe` / `ffprobe.exe` と各 `.dll` ファイルを `index/` フォルダ（`bot.py` と**同じフォルダ**）に配置
 
 ---
 
 ### 4. APIキーの設定
 
-`index/config.py` に以下の内容を記述します。  
+`index/config.py` を以下の内容を記述してください:
 
 ```python
-# config.py
+# config.py  ← このファイルは絶対にコミットしないこと
 API_KEY_GEMINI = "YOUR_GEMINI_API_KEY"
 TOKEN_DISCORD  = "YOUR_DISCORD_BOT_TOKEN"
 ```
 
 ---
-
 
 ### 5. ボットの起動
 
@@ -127,7 +141,11 @@ AI のペルソナ（システムプロンプト）を切り替えます。
 | ヤンデレ | ヤンデレキャラ |
 | メイド | メイドキャラ |
 | ロリ | ロリキャラ |
+| ショタ | ショタキャラ |
 | オジサン | おじさんキャラ |
+| ギャル | ギャルキャラ |
+| メスガキ | メスガキキャラ |
+| お姉さん | お姉さんキャラ |
 | 標準 | デフォルトプロンプト |
 
 ---
@@ -138,8 +156,10 @@ AI のペルソナ（システムプロンプト）を切り替えます。
 | 選択肢 | モデルID |
 |--------|----------|
 | Gemini 2.5 Flash | `gemini-2.5-flash` |
-| Gemini 2.5 Flash Lite | `gemini-2.5-flash-lite` |
-| Gemini 2.5 Pro | `gemini-2.5-pro` |
+| Gemini 3.5 Flash | `gemini-3.5-flash` |
+| Gemini 3.1 Flash Lite | `gemini-3.1-flash-lite` |
+
+> デフォルトは **Gemini 3.1 Flash Lite** です。
 
 ---
 
@@ -168,7 +188,7 @@ AI のペルソナ（システムプロンプト）を切り替えます。
 
 - **`bot.py` を起動している IDE やターミナルを終了するとボットが停止します。** 運用時はサーバーやバックグラウンド実行を検討してください。
 - グラフデータはメモリ上に保持されるため、ボット再起動でリセットされます。
-- ソースコードは、すべてGoogle Geminiによって出力されたものです。
+- ソースコード、プロンプトファイルは、すべてGoogle Geminiによって生成されたものです。
 
 ---
 
