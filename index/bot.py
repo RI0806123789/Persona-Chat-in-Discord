@@ -38,6 +38,9 @@ persona_choices_list = [
     app_commands.Choice(name="ロリ", value="../prompts/prompt_loli.txt"),
     app_commands.Choice(name ="ショタ", value = "../prompts/prompt_syota.txt"),
     app_commands.Choice(name="オジサン", value="../prompts/prompt_oji.txt"),
+    app_commands.Choice(name="ギャル", value="../prompts/prompt_gyaru.txt"),
+    app_commands.Choice(name="メスガキ", value="../prompts/prompt_mesugaki.txt"),
+    app_commands.Choice(name="お姉さん", value="../prompts/prompt_ane.txt"),
     app_commands.Choice(name="標準", value="../prompts/prompt_default.txt"),
 ]
 
@@ -254,26 +257,36 @@ async def join(interaction: discord.Interaction):
 
     voice_channel = member.voice.channel
 
+    # ★ 最初にdeferでDiscordに「処理中」を伝える（タイムアウト防止）
+    await interaction.response.defer()
+
     if interaction.guild and interaction.guild.voice_client is not None:
         await interaction.guild.voice_client.disconnect(force=True)
     try:
         await voice_channel.connect()
-        await interaction.response.send_message(f"{voice_channel.name} に接続しました。")
+        # ★ send_message → followup.send に変更
+        await interaction.followup.send(f"{voice_channel.name} に接続しました。")
     except Exception as e:
         print(f"接続エラー: {e}")
-        await interaction.response.send_message("接続に失敗しました。")
+        await interaction.followup.send("接続に失敗しました。")
 
-@tree.command(name="leave", description="ボTットがボイスチャンネルから退出します")
+
+@tree.command(name="leave", description="ボットがボイスチャンネルから退出します")
 async def leave(interaction: discord.Interaction):
     if interaction.guild is None or interaction.guild.voice_client is None:
         await interaction.response.send_message("ボットはボイスチャンネルに参加していません。")
         return
+
+    # ★ 最初にdeferでDiscordに「処理中」を伝える
+    await interaction.response.defer()
+
     try:
         await interaction.guild.voice_client.disconnect(force=True)
-        await interaction.response.send_message("退出しました。")
+        # ★ send_message → followup.send に変更
+        await interaction.followup.send("退出しました。")
     except Exception as e:
         print(f"切断エラー: {e}")
-        await interaction.response.send_message("退出に失敗しました。")
+        await interaction.followup.send("退出に失敗しました。")
 
 # (genai.configure は変更なし)
 genai.configure(api_key=config.API_KEY_GEMINI)  # type: ignore[reportPrivateImportUsage]
