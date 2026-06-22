@@ -101,7 +101,6 @@ pip install -r requirements.txt
 `index/config.py` を以下の内容を記述してください:
 
 ```python
-# config.py  ← このファイルは絶対にコミットしないこと
 API_KEY_GEMINI = "YOUR_GEMINI_API_KEY"
 TOKEN_DISCORD  = "YOUR_DISCORD_BOT_TOKEN"
 ```
