@@ -1,7 +1,5 @@
 # --- Secrets: NEVER commit these ---
 config_private.py
-discord_backup_codes.txt
-github-recovery-codes.txt
 *.env
 .env
 
