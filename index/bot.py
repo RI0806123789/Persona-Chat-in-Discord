@@ -27,7 +27,7 @@ tree  = app_commands.CommandTree(client)
 
 # (A) 現在の設定を記憶する変数
 current_prompt_file = "../prompts/prompt_default.txt"
-current_model_name = "gemini-2.5-flash-lite"
+current_model_name = "gemini-3.1-flash-lite"
 
 # (B) ペルソナの選択肢リスト
 ##[;]で複数のファイルを認識可能
@@ -44,8 +44,8 @@ persona_choices_list = [
 # (C) モデルの選択肢リスト
 model_choices_list = [
     app_commands.Choice(name="Gemini 2.5 Flash", value="gemini-2.5-flash"),
-    app_commands.Choice(name="Gemini 2.5 Flash Lite", value="gemini-2.5-flash-lite"),
-    app_commands.Choice(name="Gemini 2.5 Pro", value="gemini-2.5-pro"),
+    app_commands.Choice(name="Gemini 3.5 Flash", value="gemini-3.5-flash"),
+    app_commands.Choice(name="Gemini 3.1 Flash Lite", value="gemini-3.1-flash-lite"),
 ]
 
 # (D) /status コマンドで表示名を逆引きするための辞書
