@@ -3,3 +3,4 @@ pip install google-generativeai
 pip install gTTS
 pip install PyNaCl
 pip install httpx
+pip install Pillow
