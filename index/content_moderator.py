@@ -1,0 +1,156 @@
+"""Geminiを使ったAIベースのコンテンツモデレーションサービス。
+
+ルールベースのNGワードフィルタを補完し、スペース挿入・記号混入・
+カタカナ⇔ひらがな変換・伏字・隠語などの回避テクニックにも対応する。
+APIエラーやタイムアウト時は安全側に倒して通過させる（fail-open）。
+"""
+
+import asyncio
+from typing import Any
+
+from ng_word_service import NgWordFilter
+from storage import extract_json_object
+
+
+# ---------------------------------------------------------------------------
+# モデレーション用プロンプト
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = (
+    "あなたはDiscord Botのコンテンツモデレーターです。"
+    "与えられたテキストが不適切かどうかを厳密に判定してください。\n"
+    "\n## 判定基準\n"
+    "- NGワードリストに含まれる語句、およびその **変形表現**\n"
+    "  （スペース挿入、記号混入、全角半角変換、カタカナ⇔ひらがな変換、"
+    "  ローマ字化、伏字、当て字、隠語、略語、顔文字に紛れ込ませるなど）\n"
+    "- 暴力的・攻撃的・脅迫的な表現\n"
+    "- 差別的・侮蔑的な表現（人種、性別、障害、出自など）\n"
+    "- 性的に露骨な表現\n"
+    "- 個人情報（住所、電話番号、本名など）の露出\n"
+    "\n## 重要な注意\n"
+    "- 日常会話や軽いジョーク、ペルソナに基づくロールプレイは **safe** と判定してください。\n"
+    "- 文脈上問題のない医学用語・学術用語は **safe** と判定してください。\n"
+    "- 迷った場合は **safe** と判定してください（過剰ブロックを避ける）。\n"
+    "\n## 出力形式\n"
+    "必ず以下のJSON **のみ** を返してください。説明文は不要です。\n"
+    '{"safe": true}\n'
+    "または\n"
+    '{"safe": false, "reason": "簡潔な判定理由"}\n'
+)
+
+
+def _build_prompt(text: str, direction: str, ng_words: list[str]) -> str:
+    """モデレーション用のプロンプトを組み立てる。"""
+    ng_section = ""
+    if ng_words:
+        # プロンプトが長くなりすぎないよう先頭100語まで
+        sample = ng_words[:100]
+        ng_section = (
+            "\n## 参考: NGワードリスト\n"
+            + ", ".join(sample)
+            + ("\n（他にもあります）" if len(ng_words) > 100 else "")
+            + "\n"
+        )
+
+    return (
+        _SYSTEM_PROMPT
+        + ng_section
+        + f"\n## 判定対象（{direction}）\n"
+        + text
+    )
+
+
+# ---------------------------------------------------------------------------
+# ContentModerator クラス
+# ---------------------------------------------------------------------------
+
+class ContentModerator:
+    """Gemini flash-lite を使ってテキストの安全性をAI判定するモデレーター。"""
+
+    def __init__(
+        self,
+        genai_module: Any,
+        ng_filter: NgWordFilter,
+        *,
+        model_name: str = "gemini-3.1-flash-lite",
+        timeout: float = 10.0,
+    ) -> None:
+        self._genai = genai_module
+        self._ng_filter = ng_filter
+        self._model_name = model_name
+        self._timeout = timeout
+
+    async def check(
+        self,
+        text: str,
+        *,
+        direction: str = "ユーザー入力",
+    ) -> tuple[bool, str]:
+        """テキストの安全性をAIで判定する。
+
+        Returns:
+            (is_safe, reason) のタプル。
+            is_safe が True なら安全、False なら不適切。
+            reason は不適切と判定された場合の理由。
+        """
+        if not text or not text.strip():
+            return True, ""
+
+        prompt = _build_prompt(text, direction, self._ng_filter.words)
+
+        try:
+            model = self._genai.GenerativeModel(self._model_name)
+            response = await asyncio.wait_for(
+                model.generate_content_async(
+                    prompt,
+                    generation_config={
+                        "temperature": 0,
+                        "response_mime_type": "application/json",
+                    },
+                ),
+                timeout=self._timeout,
+            )
+
+            # Gemini がプロンプト自体をブロックした場合
+            # → コンテンツが不適切だと Gemini が判断したので unsafe 扱い
+            # 注意: block_reason は enum なので値0 (BLOCK_REASON_UNSPECIFIED)
+            # でも truthy になる。int() で比較する必要がある。
+            prompt_feedback = getattr(response, "prompt_feedback", None)
+            if prompt_feedback:
+                block_reason = getattr(prompt_feedback, "block_reason", None)
+                if block_reason is not None and int(block_reason) != 0:
+                    reason_name = getattr(block_reason, "name", str(block_reason))
+                    print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
+                    return False, f"安全フィルタによりブロック ({reason_name})"
+
+            # response.text はプロパティなので getattr のデフォルト値が
+            # 使われず例外が発生するケースがある（candidates が空の場合など）
+            try:
+                result_text = response.text or ""
+            except (ValueError, IndexError):
+                # candidates が空 = Gemini が応答を生成できなかった
+                # プロンプトにブロック理由がある場合は上で処理済みなので、
+                # ここに来るのは原因不明のケース → unsafe 扱い
+                print(f"[モデレーション] テキスト取得失敗 ({direction}) — unsafe 扱い")
+                return False, "AIモデレーション応答の取得に失敗"
+
+            parsed = extract_json_object(result_text)
+
+            if parsed is None:
+                print(f"[モデレーション] 応答パース失敗 — 通過扱い: {result_text!r}")
+                return True, ""
+
+            is_safe = parsed.get("safe", True)
+            reason = str(parsed.get("reason", "")) if not is_safe else ""
+
+            if not is_safe:
+                print(f"[モデレーション] 不適切検出 ({direction}): {reason}")
+
+            return bool(is_safe), reason
+
+        except asyncio.TimeoutError:
+            print(f"[モデレーション] タイムアウト ({direction}) — 通過扱い")
+            return True, ""
+        except Exception as error:
+            print(f"[モデレーション] エラー ({direction}): {error}")
+            return True, ""

@@ -23,3 +23,15 @@ ffmpeg.exe
 ffplay.exe
 ffprobe.exe
 *.dll
+
+
+# --- Runtime memory files ---
+memory/*
+!memory/.gitkeep
+*temp
+
+# --- NG ---
+NG_WORD_private.txt
+*temp
+
+memo.txt

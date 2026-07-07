@@ -1,6 +1,9 @@
-pip install discord.py
-pip install google-generativeai
-pip install gTTS
-pip install PyNaCl
-pip install httpx
-pip install Pillow
+discord.py
+google-generativeai
+gTTS
+PyNaCl
+httpx
+matplotlib
+numpy
+Pillow
+PyPDF2
