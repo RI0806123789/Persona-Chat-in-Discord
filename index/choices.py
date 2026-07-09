@@ -28,7 +28,10 @@ RESPOND_MODE_CHOICES = [
     app_commands.Choice(name="メンションのみに反応", value="mention"),
 ]
 
+
+
 PERSONA_DISPLAY_NAMES = {choice.value: choice.name for choice in PERSONA_CHOICES}
 MODEL_DISPLAY_NAMES = {choice.value: choice.name for choice in MODEL_CHOICES}
 RESPOND_MODE_DISPLAY_NAMES = {choice.value: choice.name for choice in RESPOND_MODE_CHOICES}
+
 

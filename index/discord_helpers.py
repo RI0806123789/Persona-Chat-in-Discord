@@ -1,4 +1,5 @@
 import io
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -8,10 +9,11 @@ from PIL import Image
 from constants import SUPPORTED_DOCUMENT_EXTENSIONS
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+DISCORD_MESSAGE_MAX_LENGTH = 2000
 
 
 def is_supported_message_channel(channel: Any) -> bool:
-    return isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel))
+    return isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel, discord.DMChannel))
 
 
 def is_supported_document_attachment(attachment: discord.Attachment) -> bool:
@@ -28,7 +30,7 @@ def clean_message_content(message: discord.Message, bot_user: Any) -> str:
     content = message.content.strip()
     if bot_user is None:
         return content
-    return content.replace(f"<@{bot_user.id}>", "").strip()
+    return re.sub(rf"<@!?{bot_user.id}>", "", content).strip()
 
 
 def build_history_text(messages: Sequence[discord.Message], bot_user: Any) -> str:
@@ -77,4 +79,60 @@ async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> l
         except Exception as error:
             print(f"画像読み込みエラー: {error}")
     return image_objects
+
+
+def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[str]:
+    """長いテキストを Discord の文字数制限内に分割する。
+
+    改行の位置で分割し、それでも収まらない場合は強制的にカットする。
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+
+        # 制限内で最後の改行を探す
+        split_pos = text.rfind("\n", 0, limit)
+        if split_pos <= 0:
+            # 改行が見つからない場合はスペースで分割を試みる
+            split_pos = text.rfind(" ", 0, limit)
+        if split_pos <= 0:
+            # それでも見つからない場合は強制カット
+            split_pos = limit
+
+        chunks.append(text[:split_pos])
+        text = text[split_pos:].lstrip("\n")
+
+    return chunks
+
+
+async def send_long_reply(
+    message: discord.Message,
+    text: str,
+    *,
+    suppress_embeds: bool = False,
+) -> None:
+    """2000 文字を超える応答を分割して送信する。
+
+    最初のチャンクは元メッセージへの reply、残りは通常の send で送信する。
+    suppress_embeds が True の場合、リンクの埋め込みプレビューを抑制する。
+    """
+    chunks = split_message(text)
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            await message.reply(chunk, suppress_embeds=suppress_embeds)
+        else:
+            await message.channel.send(chunk, suppress_embeds=suppress_embeds)
+
+
+def format_grounding_sources(sources: list[dict[str, str]]) -> str:
+    """グラウンディングソースをコンパクトなテキストに整形する。"""
+    if not sources:
+        return ""
+    links = "\n".join(f"・ <{s['uri']}>" for s in sources)
+    return f"\n\n🔍 **参考リンク:**\n{links}"
 

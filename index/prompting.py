@@ -7,9 +7,11 @@ def build_memory_sections(memory_category: str, memory_context: str, document_co
     return "".join(sections)
 
 
-def build_full_prompt(prompt: str, memory_sections: str, history_text: str, question: str) -> str:
+def build_full_prompt(prompt: str, memory_sections: str, history_text: str, question: str, affinity_prompt: str = "") -> str:
     return (
         prompt
+        + "\n"
+        + affinity_prompt
         + memory_sections
         + "\n--- 過去の会話履歴 ---\n"
         + history_text

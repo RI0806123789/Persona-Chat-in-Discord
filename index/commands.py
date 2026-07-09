@@ -2,83 +2,26 @@ import discord
 from discord import app_commands
 
 from app_state import BotState
-from choices import (
-    MODEL_CHOICES,
-    MODEL_DISPLAY_NAMES,
-    PERSONA_CHOICES,
-    PERSONA_DISPLAY_NAMES,
-    RESPOND_MODE_CHOICES,
-    RESPOND_MODE_DISPLAY_NAMES,
-)
+from blacklist_service import BlacklistService
 from ng_word_service import NgWordFilter
-from paths import resolve_prompt_path
+from settings_view import SettingsView
 from usage_graph import UsageTracker
 
 
-def register_commands(tree: app_commands.CommandTree, state: BotState, usage: UsageTracker, ng_filter: NgWordFilter) -> None:
-    @tree.command(name="set", description="AIのペルソナ（プロンプト）を変更します。")
-    @app_commands.choices(persona=PERSONA_CHOICES)
-    @app_commands.describe(persona="使用したいペルソナを選択してください。")
-    async def set_prompt(interaction: discord.Interaction, persona: app_commands.Choice[str]) -> None:
-        check_path = resolve_prompt_path(persona.value)
+def register_commands(tree: app_commands.CommandTree, state: BotState, usage: UsageTracker, ng_filter: NgWordFilter, blacklist: BlacklistService) -> None:
 
-        if check_path.exists():
-            state.current_prompt_file = persona.value
-            await interaction.response.send_message(f"プロンプトを「{persona.name}」({persona.value}) に変更しました。")
-        else:
-            await interaction.response.send_message(
-                f"エラー: ファイル「{persona.value}」が見つかりませんでした。\n"
-                f"現在の設定 ({state.current_prompt_file}) を維持します。"
-            )
-
-    @tree.command(name="gemini", description="使用するGeminiモデルを選択します。")
-    @app_commands.choices(model=MODEL_CHOICES)
-    @app_commands.describe(model="使用したいモデルを選択してください。")
-    async def set_gemini_model(interaction: discord.Interaction, model: app_commands.Choice[str]) -> None:
-        state.current_model_name = model.value
-        await interaction.response.send_message(f"使用するモデルを「{model.name}」({model.value}) に変更しました。")
-
-    @tree.command(name="setting", description="ボットの応答モード（すべてかメンションのみか）を変更します。")
-    @app_commands.choices(mode=RESPOND_MODE_CHOICES)
-    @app_commands.describe(mode="応答モードを選択してください。")
-    async def set_respond_mode(interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
-        state.current_respond_mode = mode.value
-        await interaction.response.send_message(f"応答モードを「{mode.name}」に変更しました。")
-
-    @tree.command(name="status", description="現在のペルソナ、モデル、応答モードの設定を表示します。")
+    @tree.command(name="status", description="現在の設定を表示し、UI上で変更できます。")
     async def check_status(interaction: discord.Interaction) -> None:
-        current_persona_name = PERSONA_DISPLAY_NAMES.get(
-            state.current_prompt_file,
-            f"不明 ({state.current_prompt_file})",
-        )
-        current_model_display_name = MODEL_DISPLAY_NAMES.get(
-            state.current_model_name,
-            f"不明 ({state.current_model_name})",
-        )
-        current_mode_name = RESPOND_MODE_DISPLAY_NAMES.get(
-            state.current_respond_mode,
-            f"不明 ({state.current_respond_mode})",
+        blocked_users = blacklist.get_all_blocked_users()
+        blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
+
+        view = SettingsView(
+            state,
+            ng_count=ng_filter.word_count,
+            blacklist_status=blacklist_status,
         )
 
-        await interaction.response.send_message(
-            f"現在の設定は以下の通りです：\n"
-            f"・**ペルソナ**: {current_persona_name}\n"
-            f"・**モデル**: {current_model_display_name}\n"
-            f"・**応答モード**: {current_mode_name}\n"
-            f"・**NGワード**: {ng_filter.word_count}件"
-        )
-
-    @tree.command(name="reset", description="このチャンネルの会話履歴をリセットして新しく始めます。")
-    async def reset_chat(interaction: discord.Interaction) -> None:
-        channel = interaction.channel
-        channel_id = getattr(channel, "id", None)
-        if channel_id is None:
-            await interaction.response.send_message("エラー: チャンネルが取得できませんでした。")
-            return
-
-        await interaction.response.send_message("✅ 会話履歴をリセットしました。ここから新しい会話を始めます。")
-        reset_msg = await interaction.original_response()
-        state.channel_reset_points[int(channel_id)] = reset_msg.id
+        await interaction.response.send_message(view.build_preview(), view=view)
 
     @tree.command(name="graph", description="これまでの利用結果をグラフで表示します。")
     async def show_graph(interaction: discord.Interaction) -> None:

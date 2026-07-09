@@ -32,6 +32,7 @@ memory/*
 
 # --- NG ---
 NG_WORD_private.txt
+ng/blacklist.json
 *temp
 
 memo.txt

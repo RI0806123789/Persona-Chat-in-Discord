@@ -47,7 +47,18 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    # Markdownのコードブロックを除去
+    text = re.sub(r"^```(?:json)?\n", "", text.strip())
+    text = re.sub(r"\n```$", "", text)
+    
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*?\}", text, re.DOTALL)
     if not match:
         return None
 
@@ -73,3 +84,4 @@ def safe_response_text(response: Any) -> str | None:
         return text if text else None
     except (ValueError, IndexError, AttributeError):
         return None
+

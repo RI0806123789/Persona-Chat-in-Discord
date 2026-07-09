@@ -46,21 +46,21 @@ class UsageTracker:
         print("-" * 124)
 
     def build_graph_buffer(self) -> io.BytesIO:
-        figure, axis = plt.subplots(figsize=(10, 6))
-        x = np.arange(1, len(self.total_tokens) + 1)
-        matplotlib.rc("font", **{"family": "Yu Gothic"})
-        axis.plot(x, self.input_tokens, label="入力トークン数", marker="o", color="red")
-        axis.plot(x, self.output_tokens, label="出力トークン数", marker="o", color="blue")
-        axis.plot(x, self.total_tokens, label="合計トークン数", marker="o", color="green")
-        axis.set_xlabel("利用回数")
-        axis.set_ylabel("トークン数")
-        axis.set_title("Gemini API 利用結果のトークン数推移")
-        axis.legend()
-        axis.grid(True)
+        with plt.rc_context({"font.family": ["Yu Gothic", "Meiryo", "sans-serif"]}):
+            figure, axis = plt.subplots(figsize=(10, 6))
+            x = np.arange(1, len(self.total_tokens) + 1)
+            axis.plot(x, self.input_tokens, label="入力トークン数", marker="o", color="red")
+            axis.plot(x, self.output_tokens, label="出力トークン数", marker="o", color="blue")
+            axis.plot(x, self.total_tokens, label="合計トークン数", marker="o", color="green")
+            axis.set_xlabel("利用回数")
+            axis.set_ylabel("トークン数")
+            axis.set_title("Gemini API 利用結果のトークン数推移")
+            axis.legend()
+            axis.grid(True)
 
-        buffer = io.BytesIO()
-        figure.savefig(buffer, format="png")
-        plt.close(figure)
-        buffer.seek(0)
-        return buffer
+            buffer = io.BytesIO()
+            figure.savefig(buffer, format="png")
+            plt.close(figure)
+            buffer.seek(0)
+            return buffer
 

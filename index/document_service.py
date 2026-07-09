@@ -17,7 +17,7 @@ from constants import (
     QUEUE_PATH,
 )
 from content_moderator import ContentModerator
-from discord_helpers import clean_message_content, fetch_channel_history_text, is_supported_document_attachment
+from discord_helpers import clean_message_content, fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment, send_long_reply
 from gemini_service import GeminiService
 from memory_service import MemoryService
 from ng_word_service import NgWordFilter
@@ -145,7 +145,59 @@ class DocumentService:
                 question = str(task.get("question", "")).strip() or "このドキュメントの要点を整理してください。"
 
             for attachment in attachments:
-                await self._process_attachment(message, question, attachments, attachment)
+                await self._process_attachment(attachment)
+
+            prompt = load_prompt_template(resolve_prompt_path(self._state.current_prompt_file))
+            memory_category = await self._memory.route_category(question)
+            memory_context = self._memory.build_context(memory_category)
+            document_context = self._memory.build_document_memory_context()
+            history_text = await fetch_channel_history_text(
+                message.channel,
+                self._state.channel_reset_points.get(message.channel.id),
+                self._client.user,
+                HISTORY_LIMIT,
+            )
+            full_prompt = build_full_prompt(
+                prompt,
+                build_memory_sections(memory_category, memory_context, document_context),
+                history_text,
+                question,
+            )
+            response_text, usage_info, grounding_sources = await self._gemini.generate(
+                full_prompt,
+                timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
+                grounding=self._state.grounding_enabled,
+            )
+            self._usage.log_snapshot(
+                "文書タスク",
+                question,
+                f"文書添付: {len(attachments)}件",
+                full_prompt,
+                response_text,
+                usage_info,
+            )
+
+            if response_text is None:
+                raise ValueError("Gemini APIの呼び出しに失敗しました。")
+
+            if self._ng_filter is not None and self._ng_filter.contains_ng_word(response_text):
+                detected = self._ng_filter.find_ng_words(response_text)
+                print(f"NGワード検出 (文書応答): {detected}")
+                response_text = self._ng_filter.mask_ng_words(response_text)
+
+            # --- AI モデレーション（文書処理） ---
+            if self._moderator is not None:
+                is_safe, reason = await self._moderator.check(response_text, direction="Bot応答")
+                if not is_safe:
+                    print(f"文書応答モデレーション: {reason}")
+                    response_text = "申し訳ありませんが、適切な応答を生成できませんでした。"
+
+            if grounding_sources:
+                response_text += format_grounding_sources(grounding_sources)
+
+            await send_long_reply(message, response_text, suppress_embeds=bool(grounding_sources))
+            await self._memory.append_pending_log(question, response_text)
+            asyncio.create_task(self._memory.flush_if_needed())
 
             await self._update_task(task_id, status="completed", finished_at=datetime.now(timezone.utc).isoformat())
         except Exception as error:
@@ -174,9 +226,6 @@ class DocumentService:
 
     async def _process_attachment(
         self,
-        message: discord.Message,
-        question: str,
-        all_attachments: Sequence[discord.Attachment],
         attachment: discord.Attachment,
     ) -> None:
         if attachment.size > MAX_DOCUMENT_SIZE_BYTES:
@@ -192,47 +241,6 @@ class DocumentService:
             uploaded_file = await self._gemini.upload_file(temp_path)
             summary_data = await self._gemini.summarize_document(uploaded_file, attachment.filename)
             await self._memory.store_document_summary(summary_data)
-
-            prompt = load_prompt_template(resolve_prompt_path(self._state.current_prompt_file))
-            memory_category = await self._memory.route_category(question)
-            memory_context = self._memory.build_context(memory_category)
-            document_context = self._memory.build_document_memory_context()
-            history_text = await fetch_channel_history_text(
-                message.channel,
-                self._state.channel_reset_points.get(message.channel.id),
-                self._client.user,
-                HISTORY_LIMIT,
-            )
-            full_prompt = build_full_prompt(
-                prompt,
-                build_memory_sections(memory_category, memory_context, document_context),
-                history_text,
-                question,
-            )
-            response_text, usage_info = await self._gemini.generate(
-                full_prompt,
-                timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-            )
-            self._usage.log_snapshot(
-                "文書タスク",
-                question,
-                f"文書添付: {len(all_attachments)}件",
-                full_prompt,
-                response_text,
-                usage_info,
-            )
-
-            if response_text is None:
-                raise ValueError("Gemini APIの呼び出しに失敗しました。")
-
-            if self._ng_filter is not None and self._ng_filter.contains_ng_word(response_text):
-                detected = self._ng_filter.find_ng_words(response_text)
-                print(f"NGワード検出 (文書応答): {detected}")
-                response_text = self._ng_filter.mask_ng_words(response_text)
-
-            await message.reply(response_text)
-            await self._memory.append_pending_log(question, response_text)
-            asyncio.create_task(self._memory.flush_if_needed())
         finally:
             if uploaded_file is not None:
                 await self._gemini.delete_file(uploaded_file)

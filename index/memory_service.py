@@ -85,7 +85,7 @@ class MemoryService:
 
     async def append_pending_log(self, question: str, response_text: str) -> None:
         self.ensure_storage()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         entry = f"[{timestamp}] User: {question}\n[{timestamp}] Bot: {response_text}\n"
         async with self.io_lock:
             await asyncio.to_thread(append_text_to_file, PENDING_LOG_PATH, entry)
@@ -198,7 +198,7 @@ class MemoryService:
             f"--- projects.json ---\n{projects_text}"
         )
 
-        model = self._genai.GenerativeModel(self._state.current_model_name)
+        model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
         response = await model.generate_content_async(
             compactor_prompt,
             generation_config={"temperature": 0, "response_mime_type": "application/json"},

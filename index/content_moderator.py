@@ -96,7 +96,11 @@ class ContentModerator:
         if not text or not text.strip():
             return True, ""
 
-        prompt = _build_prompt(text, direction, self._ng_filter.words)
+        # Bot応答は既にNGワードフィルタ済みのため、モデレーションプロンプトに
+        # NGワードを含めない。含めるとNGワード自体がGeminiの安全フィルタを
+        # 発動させ、安全な応答まで誤ブロックされる。
+        ng_words = self._ng_filter.words if direction != "Bot応答" else []
+        prompt = _build_prompt(text, direction, ng_words)
 
         try:
             model = self._genai.GenerativeModel(self._model_name)
