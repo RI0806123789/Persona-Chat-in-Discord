@@ -42,10 +42,15 @@ def load_ng_words() -> list[str]:
 
 
 def _build_pattern(ng_words: list[str]) -> re.Pattern[str] | None:
-    """NGワードリストから大文字小文字を無視した正規表現パターンを構築する。"""
+    """NGワードリストから大文字小文字を無視した正規表現パターンを構築する。
+
+    `|` は左の選択肢から順にマッチするため、長い語を先に並べて最長一致を
+    優先する（短い語が先だと「ワード」と「ワード表現」の両方がある場合に
+    「ワード表現」が部分マスクされてしまう）。
+    """
     if not ng_words:
         return None
-    escaped = [re.escape(word) for word in ng_words]
+    escaped = [re.escape(word) for word in sorted(ng_words, key=len, reverse=True)]
     return re.compile("|".join(escaped), re.IGNORECASE)
 
 

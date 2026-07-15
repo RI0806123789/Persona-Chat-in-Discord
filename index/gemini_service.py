@@ -26,7 +26,32 @@ class GeminiService:
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
         if grounding and not images:
             return await self._generate_with_grounding(prompt, timeout)
-        return await self._generate_with_sdk(prompt, images, timeout)
+        # 画像あり時は REST 経路が使えないため、SDK 側のグラウンディングツールで対応する
+        return await self._generate_with_sdk(prompt, images, timeout, grounding=grounding)
+
+    def _build_grounding_tools(self) -> list[Any] | None:
+        """SDK 経由のグラウンディング用ツールを構築する。
+
+        gemini-2.x / 3.x は `google_search`、旧 gemini-1.5 系は
+        `google_search_retrieval` を使う。SDK が対応している方を優先して選ぶ。
+        """
+        protos = getattr(self._genai, "protos", None)
+        if protos is None:
+            return None
+
+        if hasattr(protos, "GoogleSearch"):
+            try:
+                return [protos.Tool(google_search=protos.GoogleSearch())]
+            except Exception as error:
+                print(f"grounding tool (google_search) 構築失敗: {error}")
+
+        if hasattr(protos, "GoogleSearchRetrieval"):
+            try:
+                return [protos.Tool(google_search_retrieval=protos.GoogleSearchRetrieval())]
+            except Exception as error:
+                print(f"grounding tool (google_search_retrieval) 構築失敗: {error}")
+
+        return None
 
     async def _generate_with_sdk(
         self,
@@ -37,10 +62,7 @@ class GeminiService:
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
         """SDK 経由での生成（フォールバック時にもグラウンディングを維持）。"""
         try:
-            tools = None
-            if grounding:
-                tools = [self._genai.protos.Tool(google_search_retrieval=self._genai.protos.GoogleSearchRetrieval())]
-                
+            tools = self._build_grounding_tools() if grounding else None
             model = self._genai.GenerativeModel(self._state.current_model_name, tools=tools)
             content: list[Any] = [prompt]
             if images:
@@ -66,8 +88,11 @@ class GeminiService:
                         if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
                             chunks = getattr(candidate.grounding_metadata, "grounding_chunks", [])
                             for chunk in chunks[:MAX_GROUNDING_SOURCES]:
-                                if hasattr(chunk, "web") and hasattr(chunk.web, "uri"):
-                                    sources.append({"title": chunk.web.title, "uri": chunk.web.uri})
+                                web = getattr(chunk, "web", None)
+                                uri = getattr(web, "uri", "") if web is not None else ""
+                                if uri:
+                                    title = getattr(web, "title", "") or ""
+                                    sources.append({"title": title, "uri": uri})
                 except Exception as e:
                     print(f"SDK grounding parsing error: {e}")
 
@@ -83,10 +108,13 @@ class GeminiService:
         _retry_model: str | None = None,
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
         """REST API 直接呼び出しによるグラウンディング付き生成。
-        
-        API エラーやタイムアウト時は、まず最新モデルでリトライし、それでもダメなら SDK 生成にフォールバックする。
+
+        まずユーザーが選択中のモデルで試し、失敗したら既知のグラウンディング
+        対応モデル(GROUNDING_MODEL_NAME)でリトライ、それでもダメなら SDK 生成に
+        フォールバックする。
         """
-        model_name = _retry_model or GROUNDING_MODEL_NAME
+        is_retry = _retry_model is not None
+        model_name = _retry_model or self._state.current_model_name
         url = f"{GEMINI_API_BASE}/{model_name}:generateContent"
         print(f"🔍 Google検索グラウンディング: 有効（モデル: {model_name}）")
 
@@ -94,6 +122,15 @@ class GeminiService:
             "contents": [{"parts": [{"text": prompt}]}],
             "tools": [{"google_search": {}}],
         }
+
+        async def _fallback() -> tuple[str | None, Any | None, list[dict[str, str]]]:
+            # まだリトライしておらず、選択モデルが既知の対応モデルと異なる場合のみ
+            # GROUNDING_MODEL_NAME で一度リトライ。それ以外は SDK にフォールバック。
+            if not is_retry and model_name != GROUNDING_MODEL_NAME:
+                print(f"   => サブモデル（{GROUNDING_MODEL_NAME}）でリトライします...")
+                return await self._generate_with_grounding(prompt, timeout, _retry_model=GROUNDING_MODEL_NAME)
+            print("   => SDK にフォールバック")
+            return await self._generate_with_sdk(prompt, timeout=timeout, grounding=True)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -109,21 +146,13 @@ class GeminiService:
 
             if response.status_code != 200:
                 print(f"🔍 グラウンディング API エラー: {response.status_code}")
-                if _retry_model is None:
-                    print("   => サブモデル（gemini-2.5-flash-lite）でリトライします...")
-                    return await self._generate_with_grounding(prompt, timeout, _retry_model="gemini-2.5-flash-lite")
-                print("   => SDK にフォールバック")
-                return await self._generate_with_sdk(prompt, timeout=timeout, grounding=True)
+                return await _fallback()
 
             data = response.json()
             return self._parse_grounding_response(data)
         except Exception as error:
             print(f"🔍 グラウンディング例外: {error}")
-            if _retry_model is None:
-                 print("   => サブモデル（gemini-2.5-flash-lite）でリトライします...")
-                 return await self._generate_with_grounding(prompt, timeout, _retry_model="gemini-2.5-flash-lite")
-            print("   => SDK にフォールバック")
-            return await self._generate_with_sdk(prompt, timeout=timeout, grounding=True)
+            return await _fallback()
 
     def _parse_grounding_response(
         self, data: dict[str, Any]

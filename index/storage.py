@@ -27,13 +27,39 @@ def write_json_file(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def clear_file(path: Path) -> None:
-    path.write_text("", encoding="utf-8")
+def _find_balanced_json_object(text: str) -> str | None:
+    """テキスト中の最初の `{` から、波括弧の対応が取れる位置までを切り出す。
 
+    文字列リテラル内の波括弧・エスケープを正しく無視するため、単純な
+    正規表現（非貪欲マッチ）ではネストしたJSONを取りこぼす問題を回避する。
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
 
-def append_text_to_file(path: Path, text: str) -> None:
-    with open(path, "a", encoding="utf-8") as file:
-        file.write(text)
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -50,7 +76,7 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     # Markdownのコードブロックを除去
     text = re.sub(r"^```(?:json)?\n", "", text.strip())
     text = re.sub(r"\n```$", "", text)
-    
+
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
@@ -58,17 +84,40 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     except Exception:
         pass
 
-    match = re.search(r"\{.*?\}", text, re.DOTALL)
-    if not match:
+    # 前後に説明文などが付いた場合のフォールバック:
+    # 波括弧のバランスを取ってネストしたJSONオブジェクトを丸ごと抽出する。
+    candidate = _find_balanced_json_object(text)
+    if candidate is None:
         return None
 
     try:
-        parsed = json.loads(match.group(0))
+        parsed = json.loads(candidate)
         if isinstance(parsed, dict):
             return parsed
     except Exception:
         return None
     return None
+
+
+def get_prompt_block_reason(response: Any) -> str | None:
+    """Gemini response の prompt_feedback からブロック理由名を取得する。
+
+    ブロックされていなければ None を返す。
+    注意: block_reason は enum のため、値0 (BLOCK_REASON_UNSPECIFIED) でも
+    truthy になる。int() に変換して比較する必要がある。
+    """
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    if not prompt_feedback:
+        return None
+    block_reason = getattr(prompt_feedback, "block_reason", None)
+    if block_reason is None:
+        return None
+    try:
+        if int(block_reason) == 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return getattr(block_reason, "name", str(block_reason))
 
 
 def safe_response_text(response: Any) -> str | None:

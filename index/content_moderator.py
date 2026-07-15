@@ -9,7 +9,7 @@ import asyncio
 from typing import Any
 
 from ng_word_service import NgWordFilter
-from storage import extract_json_object
+from storage import extract_json_object, get_prompt_block_reason
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,25 @@ _SYSTEM_PROMPT = (
     "または\n"
     '{"safe": false, "reason": "簡潔な判定理由"}\n'
 )
+
+
+def _normalize_safe_flag(value: Any) -> bool:
+    """モデルが返す "safe" フィールドを真偽値に正規化する。
+
+    JSON上は bool が期待されるが、"false" / "no" / 0 などで返るケースがある。
+    判定できない値は安全側（True）に倒す。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "no", "0", "unsafe", "ng"}:
+            return False
+        if normalized in {"true", "yes", "1", "safe", "ok"}:
+            return True
+    return True
 
 
 def _build_prompt(text: str, direction: str, ng_words: list[str]) -> str:
@@ -117,15 +136,10 @@ class ContentModerator:
 
             # Gemini がプロンプト自体をブロックした場合
             # → コンテンツが不適切だと Gemini が判断したので unsafe 扱い
-            # 注意: block_reason は enum なので値0 (BLOCK_REASON_UNSPECIFIED)
-            # でも truthy になる。int() で比較する必要がある。
-            prompt_feedback = getattr(response, "prompt_feedback", None)
-            if prompt_feedback:
-                block_reason = getattr(prompt_feedback, "block_reason", None)
-                if block_reason is not None and int(block_reason) != 0:
-                    reason_name = getattr(block_reason, "name", str(block_reason))
-                    print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
-                    return False, f"安全フィルタによりブロック ({reason_name})"
+            reason_name = get_prompt_block_reason(response)
+            if reason_name is not None:
+                print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
+                return False, f"安全フィルタによりブロック ({reason_name})"
 
             # response.text はプロパティなので getattr のデフォルト値が
             # 使われず例外が発生するケースがある（candidates が空の場合など）
@@ -144,13 +158,15 @@ class ContentModerator:
                 print(f"[モデレーション] 応答パース失敗 — 通過扱い: {result_text!r}")
                 return True, ""
 
-            is_safe = parsed.get("safe", True)
+            # {"safe": "false"} のように文字列で返るケースに備えて明示的に正規化する。
+            # bool("false") は True になるため、単純な bool() では誤判定する。
+            is_safe = _normalize_safe_flag(parsed.get("safe", True))
             reason = str(parsed.get("reason", "")) if not is_safe else ""
 
             if not is_safe:
                 print(f"[モデレーション] 不適切検出 ({direction}): {reason}")
 
-            return bool(is_safe), reason
+            return is_safe, reason
 
         except asyncio.TimeoutError:
             print(f"[モデレーション] タイムアウト ({direction}) — 通過扱い")
@@ -158,3 +174,29 @@ class ContentModerator:
         except Exception as error:
             print(f"[モデレーション] エラー ({direction}): {error}")
             return True, ""
+
+
+async def screen_bot_response(
+    response_text: str,
+    ng_filter: NgWordFilter | None,
+    moderator: "ContentModerator | None",
+    *,
+    log_label: str = "Bot応答",
+) -> str:
+    """Bot が生成した応答に NG ワードマスクと AI モデレーションを適用する。
+
+    NG ワードは ● でマスクし、モデレーションで不適切と判定された場合は
+    定型の謝罪文に差し替える。チャット応答と文書応答で共通の後処理。
+    """
+    if ng_filter is not None and ng_filter.contains_ng_word(response_text):
+        detected = ng_filter.find_ng_words(response_text)
+        print(f"NGワード検出 ({log_label}): {detected}")
+        response_text = ng_filter.mask_ng_words(response_text)
+
+    if moderator is not None:
+        is_safe, reason = await moderator.check(response_text, direction="Bot応答")
+        if not is_safe:
+            print(f"{log_label}モデレーション: {reason}")
+            response_text = "申し訳ありませんが、適切な応答を生成できませんでした。"
+
+    return response_text

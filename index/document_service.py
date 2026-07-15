@@ -1,6 +1,6 @@
 import asyncio
+import codecs
 import importlib
-import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,17 +14,28 @@ from constants import (
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT,
     MAX_DOCUMENT_SIZE_BYTES,
-    QUEUE_PATH,
+    QUEUE_MAX_FINISHED_TASKS,
 )
-from content_moderator import ContentModerator
-from discord_helpers import clean_message_content, fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment, send_long_reply
+from content_moderator import ContentModerator, screen_bot_response
+from database import Database
+from discord_helpers import (
+    clean_message_content,
+    fetch_channel_history_text,
+    format_grounding_sources,
+    is_supported_document_attachment,
+    is_supported_message_channel,
+    send_long_reply,
+)
 from gemini_service import GeminiService
 from memory_service import MemoryService
 from ng_word_service import NgWordFilter
 from paths import load_prompt_template, resolve_prompt_path
 from prompting import build_full_prompt, build_memory_sections
-from storage import read_text_file, write_json_file
 from usage_graph import UsageTracker
+
+
+# 処理が終わった（もう再処理しない）タスクのステータス
+_TERMINAL_STATUSES = {"completed", "failed"}
 
 
 class DocumentService:
@@ -35,6 +46,7 @@ class DocumentService:
         memory: MemoryService,
         gemini: GeminiService,
         usage: UsageTracker,
+        db: Database,
         ng_filter: NgWordFilter | None = None,
         moderator: ContentModerator | None = None,
     ) -> None:
@@ -43,9 +55,9 @@ class DocumentService:
         self._memory = memory
         self._gemini = gemini
         self._usage = usage
+        self._db = db
         self._ng_filter = ng_filter
         self._moderator = moderator
-        self._queue_lock = asyncio.Lock()
 
     async def enqueue_from_message(
         self,
@@ -70,61 +82,47 @@ class DocumentService:
         return task_id
 
     async def run_worker(self) -> None:
-        while True:
-            task = await self._claim_next_task()
-            if task is None:
-                await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
-                continue
-            await self._process_task(task)
-
-    async def _read_tasks(self) -> list[dict[str, Any]]:
-        self._memory.ensure_storage()
         try:
-            raw_text = await asyncio.to_thread(read_text_file, QUEUE_PATH)
-            if not raw_text.strip():
-                return []
-            loaded = json.loads(raw_text)
-            if isinstance(loaded, dict):
-                tasks = loaded.get("tasks", [])
-                return tasks if isinstance(tasks, list) else []
+            await self._recover_stuck_tasks()
         except Exception as error:
-            print(f"キュー読み込みエラー: {error}")
-        return []
+            print(f"文書ワーカー: 中断タスクの復旧に失敗しました: {error}")
 
-    async def _write_tasks(self, tasks: list[dict[str, Any]]) -> None:
-        self._memory.ensure_storage()
-        await asyncio.to_thread(write_json_file, QUEUE_PATH, {"tasks": tasks})
+        while True:
+            # キューの読み書きで予期しない例外（一時的な DB ロック等）が
+            # 発生してもワーカーが停止しないよう、ループ全体を保護してリトライする。
+            try:
+                task = await self._claim_next_task()
+                if task is None:
+                    await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
+                    continue
+                await self._process_task(task)
+            except Exception as error:
+                print(f"文書ワーカー: 予期しないエラー: {error}")
+                await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
+
+    async def _recover_stuck_tasks(self) -> None:
+        """再起動前に "processing" のまま中断されたタスクを "pending" に戻す。
+
+        これがないと、処理中に Bot が落ちたタスクは二度と拾われず放置される。
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        recovered = await asyncio.to_thread(self._db.queue_recover_stuck, now_iso)
+        if recovered:
+            print(f"文書ワーカー: 中断された processing タスク {recovered} 件を pending に戻しました。")
 
     async def _enqueue(self, task: dict[str, Any]) -> None:
-        async with self._queue_lock:
-            tasks = await self._read_tasks()
-            tasks = [item for item in tasks if str(item.get("task_id")) != str(task.get("task_id"))]
-            tasks.append(task)
-            await self._write_tasks(tasks)
+        await asyncio.to_thread(self._db.queue_upsert_task, task)
 
     async def _update_task(self, task_id: str, **updates: Any) -> None:
-        async with self._queue_lock:
-            tasks = await self._read_tasks()
-            updated = False
-            for item in tasks:
-                if str(item.get("task_id")) == task_id:
-                    item.update(updates)
-                    item["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    updated = True
-                    break
-            if updated:
-                await self._write_tasks(tasks)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await asyncio.to_thread(self._db.queue_update_task, task_id, updates, now_iso)
+        # 完了/失敗タスクが際限なく溜まらないよう、終了時に古いものから削除する
+        if updates.get("status") in _TERMINAL_STATUSES:
+            await asyncio.to_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
 
     async def _claim_next_task(self) -> dict[str, Any] | None:
-        async with self._queue_lock:
-            tasks = await self._read_tasks()
-            for item in tasks:
-                if item.get("status") == "pending":
-                    item["status"] = "processing"
-                    item["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    await self._write_tasks(tasks)
-                    return item
-        return None
+        now_iso = datetime.now(timezone.utc).isoformat()
+        return await asyncio.to_thread(self._db.queue_claim_next_pending, now_iso)
 
     async def _process_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("task_id", ""))
@@ -168,6 +166,10 @@ class DocumentService:
                 timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
                 grounding=self._state.grounding_enabled,
             )
+
+            if not response_text:
+                raise ValueError("Gemini APIの呼び出しに失敗しました。")
+
             self._usage.log_snapshot(
                 "文書タスク",
                 question,
@@ -177,25 +179,16 @@ class DocumentService:
                 usage_info,
             )
 
-            if response_text is None:
-                raise ValueError("Gemini APIの呼び出しに失敗しました。")
+            response_text = await screen_bot_response(
+                response_text, self._ng_filter, self._moderator, log_label="文書応答"
+            )
 
-            if self._ng_filter is not None and self._ng_filter.contains_ng_word(response_text):
-                detected = self._ng_filter.find_ng_words(response_text)
-                print(f"NGワード検出 (文書応答): {detected}")
-                response_text = self._ng_filter.mask_ng_words(response_text)
-
-            # --- AI モデレーション（文書処理） ---
-            if self._moderator is not None:
-                is_safe, reason = await self._moderator.check(response_text, direction="Bot応答")
-                if not is_safe:
-                    print(f"文書応答モデレーション: {reason}")
-                    response_text = "申し訳ありませんが、適切な応答を生成できませんでした。"
-
+            # 参考リンクは送信用テキストにのみ追記する（長期記憶にはノイズになるため含めない）
+            reply_text = response_text
             if grounding_sources:
-                response_text += format_grounding_sources(grounding_sources)
+                reply_text += format_grounding_sources(grounding_sources)
 
-            await send_long_reply(message, response_text, suppress_embeds=bool(grounding_sources))
+            await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
             await self._memory.append_pending_log(question, response_text)
             asyncio.create_task(self._memory.flush_if_needed())
 
@@ -220,7 +213,8 @@ class DocumentService:
         channel = self._client.get_channel(channel_id)
         if channel is None:
             channel = await self._client.fetch_channel(channel_id)
-        if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel)):
+        # on_message 側で受け付けるチャンネル種別（DM 含む）と判定を揃える
+        if not is_supported_message_channel(channel):
             raise ValueError("文書処理はメッセージ取得に対応したチャンネルでのみ実行できます。")
         return await channel.fetch_message(message_id)
 
@@ -274,7 +268,12 @@ def validate_pdf_file(temp_path: Path) -> None:
 def validate_text_file(temp_path: Path) -> None:
     with open(temp_path, "rb") as file:
         preview_bytes = file.read(4096)
-    preview_bytes.decode("utf-8-sig")
+    # 4096バイト目がマルチバイト文字（日本語は3バイト）の途中になり得るため、
+    # 途中で切れた場合は末尾の不完全な文字を許容してデコード検証する。
+    # 単純な decode() だと正常な日本語ファイルが境界位置次第で拒否される。
+    truncated = len(preview_bytes) >= 4096
+    decoder = codecs.getincrementaldecoder("utf-8-sig")()
+    decoder.decode(preview_bytes, final=not truncated)
 
 
 async def validate_document_file(temp_path: Path, suffix: str) -> None:

@@ -3,44 +3,35 @@ from discord import app_commands
 
 from app_state import BotState
 from blacklist_service import BlacklistService
+from content_moderator import ContentModerator
+from functions_view import FunctionsView
+from gemini_service import GeminiService
 from ng_word_service import NgWordFilter
-from settings_view import SettingsView
+from stats_service import StatsService
 from usage_graph import UsageTracker
 
 
-def register_commands(tree: app_commands.CommandTree, state: BotState, usage: UsageTracker, ng_filter: NgWordFilter, blacklist: BlacklistService) -> None:
+def register_commands(
+    tree: app_commands.CommandTree,
+    state: BotState,
+    usage: UsageTracker,
+    ng_filter: NgWordFilter,
+    blacklist: BlacklistService,
+    gemini: GeminiService,
+    moderator: ContentModerator,
+    stats: StatsService,
+) -> None:
 
-    @tree.command(name="status", description="現在の設定を表示し、UI上で変更できます。")
-    async def check_status(interaction: discord.Interaction) -> None:
-        blocked_users = blacklist.get_all_blocked_users()
-        blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
-
-        view = SettingsView(
-            state,
-            ng_count=ng_filter.word_count,
-            blacklist_status=blacklist_status,
-        )
-
-        await interaction.response.send_message(view.build_preview(), view=view)
-
-    @tree.command(name="graph", description="これまでの利用結果をグラフで表示します。")
-    async def show_graph(interaction: discord.Interaction) -> None:
-        if not usage.has_data():
-            await interaction.response.send_message("まだ利用データがありません。")
-            return
-
-        buffer = usage.build_graph_buffer()
-        try:
-            picture = discord.File(buffer, filename="usage_graph.png")
-            await interaction.response.send_message("これまでの利用結果のグラフです。", file=picture)
-        except Exception as error:
-            print(f"グラフ送信中に予期せぬエラー: {error}")
-            try:
-                await interaction.followup.send(f"エラー: グラフの送信に失敗しました。 ({error})")
-            except Exception as followup_error:
-                print(f"グラフ送信エラー通知に失敗しました: {followup_error}")
-        finally:
-            buffer.close()
+    @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話）。")
+    async def functions(interaction: discord.Interaction) -> None:
+        # ブロック解除ボタンの表示可否を決めるため、実行者が管理者かどうかを判定する
+        member = interaction.user
+        is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
+        view = FunctionsView(state, usage, ng_filter, blacklist, gemini, moderator, stats, is_admin=is_admin)
+        # 機能パネルは本人だけに見えるよう ephemeral で送信する
+        await interaction.response.send_message(view.build_preview(), view=view, ephemeral=True)
+        # タイムアウト時に UI を取り除けるよう、送信したパネルメッセージを View に持たせる
+        view.message = await interaction.original_response()
 
     @tree.command(name="join", description="ボットがボイスチャンネルに参加します")
     async def join(interaction: discord.Interaction) -> None:
@@ -73,9 +64,4 @@ def register_commands(tree: app_commands.CommandTree, state: BotState, usage: Us
         except Exception as error:
             print(f"切断エラー: {error}")
             await interaction.followup.send("退出に失敗しました。")
-
-    @tree.command(name="ng_reload", description="NGワードリストを再読み込みします。")
-    async def ng_reload(interaction: discord.Interaction) -> None:
-        ng_filter.reload()
-        await interaction.response.send_message(f"✅ NGワードリストを再読み込みしました。（{ng_filter.word_count}件）")
 

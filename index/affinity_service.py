@@ -1,26 +1,24 @@
-import json
 import time
 import math
 import asyncio
-from pathlib import Path
+
+from database import Database
 
 HALF_LIFE = 1800.0  # 30 minutes in seconds
 
 class AffinityService:
-    def __init__(self, data_file: str | Path):
-        self.data_file = Path(data_file)
+    def __init__(self, db: Database):
+        self._db = db
         self.cache: dict[str, dict] = {}
+        self._save_lock = asyncio.Lock()
         self._load()
 
     def _load(self):
-        if self.data_file.exists():
-            try:
-                with open(self.data_file, "r", encoding="utf-8") as f:
-                    self.cache = json.load(f)
-            except Exception as e:
-                print(f"Failed to load affinity data: {e}")
-                self.cache = {}
-        else:
+        # 起動時に DB の affinity テーブルからキャッシュへ読み込む
+        try:
+            self.cache = self._db.affinity_load_all()
+        except Exception as e:
+            print(f"Failed to load affinity data: {e}")
             self.cache = {}
 
     def get_user_data(self, user_id: str) -> dict:
@@ -64,16 +62,13 @@ class AffinityService:
         return data
 
     async def save_background(self):
-        cache_copy = self.cache.copy()
-        def _save():
-            self.data_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(cache_copy, f, ensure_ascii=False, indent=2)
-                
-        try:
-            await asyncio.to_thread(_save)
-        except Exception as e:
-            print(f"Failed to save affinity data: {e}")
+        # 同一テーブルへの並行書き込みを避けるため、保存はロックで直列化する。
+        async with self._save_lock:
+            cache_copy = {user_id: data.copy() for user_id, data in self.cache.items()}
+            try:
+                await asyncio.to_thread(self._db.affinity_save_all, cache_copy)
+            except Exception as e:
+                print(f"Failed to save affinity data: {e}")
 
     def build_dynamic_prompt(self, user_id: str) -> str:
         data = self.get_user_data(user_id)

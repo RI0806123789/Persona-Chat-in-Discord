@@ -32,7 +32,8 @@ memory/*
 
 # --- NG ---
 NG_WORD_private.txt
+# 違反記録（実ユーザーの Discord ID・ユーザー名を含むランタイムデータ）
 ng/blacklist.json
-*temp
 
+code_review.txt
 memo.txt
