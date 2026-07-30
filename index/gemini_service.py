@@ -4,30 +4,42 @@ from typing import Any, Sequence
 
 import httpx
 
-from app_state import BotState
-from constants import DOCUMENT_SUMMARY_TIMEOUT_SECONDS, DOCUMENT_UPLOAD_TIMEOUT_SECONDS, GROUNDING_MODEL_NAME, MAX_GROUNDING_SOURCES
+from constants import (
+    DOCUMENT_SUMMARY_TIMEOUT_SECONDS,
+    DOCUMENT_UPLOAD_TIMEOUT_SECONDS,
+    GROUNDING_MODEL_NAME,
+    GROUNDING_SUBMODEL_RETRY_ENABLED,
+    MAX_GROUNDING_SOURCES,
+)
 from storage import extract_json_object, safe_response_text
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class GeminiService:
-    def __init__(self, state: BotState, genai_module: Any, api_key: str = "") -> None:
-        self._state = state
+    """Gemini API 呼び出しをまとめるサービス。
+
+    どのモデルを使うかはギルド（サーバー）ごとに異なりうるため、モデル名は
+    内部で保持せず、呼び出し側（GuildSettings.current_model_name 等）から
+    毎回 model_name 引数として渡してもらう設計にしている。
+    """
+
+    def __init__(self, genai_module: Any, api_key: str = "") -> None:
         self._genai = genai_module
         self._api_key = api_key
 
     async def generate(
         self,
         prompt: str,
+        model_name: str,
         images: Sequence[Any] | None = None,
         timeout: float | None = None,
         grounding: bool = False,
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
         if grounding and not images:
-            return await self._generate_with_grounding(prompt, timeout)
+            return await self._generate_with_grounding(prompt, model_name, timeout)
         # 画像あり時は REST 経路が使えないため、SDK 側のグラウンディングツールで対応する
-        return await self._generate_with_sdk(prompt, images, timeout, grounding=grounding)
+        return await self._generate_with_sdk(prompt, model_name, images, timeout, grounding=grounding)
 
     def _build_grounding_tools(self) -> list[Any] | None:
         """SDK 経由のグラウンディング用ツールを構築する。
@@ -56,6 +68,7 @@ class GeminiService:
     async def _generate_with_sdk(
         self,
         prompt: str,
+        model_name: str,
         images: Sequence[Any] | None = None,
         timeout: float | None = None,
         grounding: bool = False,
@@ -63,7 +76,7 @@ class GeminiService:
         """SDK 経由での生成（フォールバック時にもグラウンディングを維持）。"""
         try:
             tools = self._build_grounding_tools() if grounding else None
-            model = self._genai.GenerativeModel(self._state.current_model_name, tools=tools)
+            model = self._genai.GenerativeModel(model_name, tools=tools)
             content: list[Any] = [prompt]
             if images:
                 content.extend(images)
@@ -74,7 +87,7 @@ class GeminiService:
             except Exception as inner_error:
                 if grounding:
                     print(f"SDK grounding API error: {inner_error} - falling back to no-grounding")
-                    model = self._genai.GenerativeModel(self._state.current_model_name)
+                    model = self._genai.GenerativeModel(model_name)
                     request = model.generate_content_async(content)
                     response = await asyncio.wait_for(request, timeout=timeout) if timeout else await request
                 else:
@@ -104,6 +117,7 @@ class GeminiService:
     async def _generate_with_grounding(
         self,
         prompt: str,
+        model_name: str,
         timeout: float | None = None,
         _retry_model: str | None = None,
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
@@ -113,10 +127,14 @@ class GeminiService:
         対応モデル(GROUNDING_MODEL_NAME)でリトライ、それでもダメなら SDK 生成に
         フォールバックする。
         """
+        # model_name（ユーザーが選択したモデル）は上書きしないこと。
+        # 上書きすると、サブモデルでのリトライも失敗したときの SDK フォールバックが
+        # 選択モデルではなく GROUNDING_MODEL_NAME で実行されてしまい、
+        # ユーザーが設定したモデルとは別のモデルの回答が黙って返る。
         is_retry = _retry_model is not None
-        model_name = _retry_model or self._state.current_model_name
-        url = f"{GEMINI_API_BASE}/{model_name}:generateContent"
-        print(f"🔍 Google検索グラウンディング: 有効（モデル: {model_name}）")
+        effective_model = _retry_model or model_name
+        url = f"{GEMINI_API_BASE}/{effective_model}:generateContent"
+        print(f"🔍 Google検索グラウンディング: 有効（モデル: {effective_model}）")
 
         body: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -124,13 +142,21 @@ class GeminiService:
         }
 
         async def _fallback() -> tuple[str | None, Any | None, list[dict[str, str]]]:
-            # まだリトライしておらず、選択モデルが既知の対応モデルと異なる場合のみ
-            # GROUNDING_MODEL_NAME で一度リトライ。それ以外は SDK にフォールバック。
-            if not is_retry and model_name != GROUNDING_MODEL_NAME:
+            # サブモデルでのリトライが有効で、まだリトライしておらず、選択モデルが
+            # 既知の対応モデルと異なる場合のみ GROUNDING_MODEL_NAME で一度リトライ。
+            # リトライを無効化すると失敗時の呼び出し回数を1回分減らせる（即 SDK へ）。
+            if (
+                GROUNDING_SUBMODEL_RETRY_ENABLED
+                and not is_retry
+                and effective_model != GROUNDING_MODEL_NAME
+            ):
                 print(f"   => サブモデル（{GROUNDING_MODEL_NAME}）でリトライします...")
-                return await self._generate_with_grounding(prompt, timeout, _retry_model=GROUNDING_MODEL_NAME)
-            print("   => SDK にフォールバック")
-            return await self._generate_with_sdk(prompt, timeout=timeout, grounding=True)
+                return await self._generate_with_grounding(
+                    prompt, model_name, timeout, _retry_model=GROUNDING_MODEL_NAME
+                )
+            # 最終フォールバックは必ずユーザー選択モデル（model_name）で行う。
+            print(f"   => SDK にフォールバック（モデル: {model_name}）")
+            return await self._generate_with_sdk(prompt, model_name, timeout=timeout, grounding=True)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -204,8 +230,8 @@ class GeminiService:
         except Exception as error:
             print(f"Geminiファイル削除エラー: {error}")
 
-    async def summarize_document(self, uploaded_file: Any, document_name: str) -> dict[str, Any]:
-        model = self._genai.GenerativeModel(self._state.current_model_name)
+    async def summarize_document(self, uploaded_file: Any, document_name: str, model_name: str) -> dict[str, Any]:
+        model = self._genai.GenerativeModel(model_name)
         prompt = (
             "このドキュメントの核となる要点とルールを、日本語で構造化して抽出してください。"
             "出力は必ずJSONのみで、次の形式にしてください: "

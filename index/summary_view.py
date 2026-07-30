@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord import ui
 
-from app_state import BotState
+from affinity_service import strip_affinity_tag
+from app_state import GuildSettings
 from choices import SUMMARY_PERIOD_CHOICES
 from constants import SUMMARY_MAX_MESSAGES, SUMMARY_TIMEOUT_SECONDS
 from content_moderator import ContentModerator, screen_bot_response
@@ -21,9 +22,6 @@ from prompting import build_summary_prompt
 from usage_graph import UsageTracker
 from view_parts import BackButton, HubFactory
 
-# 感情タグ [V:.., A:..] を除去するための正規表現（ペルソナが誤って付けた場合の保険）
-_AFFINITY_TAG_PATTERN = r'\[V:\s*[+-]?\d+\s*,\s*A:\s*[+-]?\d+\s*\]'
-
 # Markdown の見出し記号（行頭の # 〜 ######）を除去する正規表現。
 # Discord は h4 以降（####）を描画せず「#### 見出し」がそのまま表示され見づらいため、
 # モデルが指示に反して付けてしまった場合の保険としてプレーンテキスト化する。
@@ -38,7 +36,7 @@ async def generate_channel_summary(
     bot_user: object,
     period: "discord.app_commands.Choice[int]",
     *,
-    state: BotState,
+    guild_settings: GuildSettings,
     gemini: GeminiService,
     moderator: ContentModerator,
     ng_filter: NgWordFilter,
@@ -73,20 +71,21 @@ async def generate_channel_summary(
     if line_count == 0:
         return False, f"この期間（{period.name}）には要約できる会話がありませんでした。"
 
-    # --- ペルソナテンプレート読み込み（/status で選択中のペルソナ） ---
+    # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
-        persona_prompt = load_prompt_template(resolve_prompt_path(state.current_prompt_file))
+        persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
     except FileNotFoundError:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
-        print(f"要約: プロンプトファイル({state.current_prompt_file})が見つかりません。口調なしで続行します。")
+        print(f"要約: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。口調なしで続行します。")
         persona_prompt = ""
 
     full_prompt = build_summary_prompt(persona_prompt, period.name, source_text)
 
-    # モデルは gemini.generate が内部で state.current_model_name（/status の設定）を参照する。
+    # モデルはこのサーバー（ギルド）でキャラ設定パネルにより選択中のものを使う。
     # グラウンディングは既存テキストの要約に不要なため無効。
     response_text, usage_info, _sources = await gemini.generate(
         full_prompt,
+        guild_settings.current_model_name,
         images=None,
         timeout=SUMMARY_TIMEOUT_SECONDS,
         grounding=False,
@@ -96,7 +95,7 @@ async def generate_channel_summary(
         return False, "⚠️ 要約の生成に失敗しました。時間をおいて再度お試しください。"
 
     # 感情タグが混じった場合の保険（ペルソナが誤って付けることがある）
-    response_text = re.sub(_AFFINITY_TAG_PATTERN, "", response_text)
+    response_text = strip_affinity_tag(response_text)
     # Markdown 見出し記号を除去してプレーンテキスト化（#### 等が Discord で見づらいため）
     response_text = re.sub(_MD_HEADING_PATTERN, "", response_text).strip()
 
@@ -180,7 +179,7 @@ class RunSummaryButton(ui.Button):
             channel,
             bot_user,
             view.temp_period,
-            state=view.state,
+            guild_settings=view.guild_settings,
             gemini=view.gemini,
             moderator=view.moderator,
             ng_filter=view.ng_filter,
@@ -214,7 +213,7 @@ class SummaryView(ui.View):
 
     def __init__(
         self,
-        state: BotState,
+        guild_settings: GuildSettings,
         gemini: GeminiService,
         moderator: ContentModerator,
         ng_filter: NgWordFilter,
@@ -224,7 +223,7 @@ class SummaryView(ui.View):
         timeout: float = 120.0,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.state = state
+        self.guild_settings = guild_settings
         self.gemini = gemini
         self.moderator = moderator
         self.ng_filter = ng_filter

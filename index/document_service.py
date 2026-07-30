@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import discord
 
 from app_state import BotState
+from background import spawn
 from constants import (
     DOCUMENT_WORKER_IDLE_SECONDS,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
@@ -138,20 +139,26 @@ class DocumentService:
             if not attachments:
                 raise ValueError("対応する文書添付が見つかりませんでした。")
 
+            # 文書タスクは投稿者の記憶スペースに紐付けて処理する（ユーザー別記憶）。
+            author_id = str(task.get("author_id", "") or "")
             question = clean_message_content(message, self._client.user)
             if not question:
                 question = str(task.get("question", "")).strip() or "このドキュメントの要点を整理してください。"
 
-            for attachment in attachments:
-                await self._process_attachment(attachment)
+            # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
+            guild_id = message.guild.id if message.guild is not None else None
+            guild_settings = self._state.get_guild(guild_id)
 
-            prompt = load_prompt_template(resolve_prompt_path(self._state.current_prompt_file))
+            for attachment in attachments:
+                await self._process_attachment(attachment, author_id, guild_settings.current_model_name)
+
+            prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
             memory_category = await self._memory.route_category(question)
-            memory_context = self._memory.build_context(memory_category)
-            document_context = self._memory.build_document_memory_context()
+            memory_context = self._memory.build_context(memory_category, author_id)
+            document_context = self._memory.build_document_memory_context(author_id)
             history_text = await fetch_channel_history_text(
                 message.channel,
-                self._state.channel_reset_points.get(message.channel.id),
+                guild_settings.channel_reset_points.get(message.channel.id),
                 self._client.user,
                 HISTORY_LIMIT,
             )
@@ -163,8 +170,9 @@ class DocumentService:
             )
             response_text, usage_info, grounding_sources = await self._gemini.generate(
                 full_prompt,
+                guild_settings.current_model_name,
                 timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-                grounding=self._state.grounding_enabled,
+                grounding=guild_settings.grounding_enabled,
             )
 
             if not response_text:
@@ -189,8 +197,8 @@ class DocumentService:
                 reply_text += format_grounding_sources(grounding_sources)
 
             await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
-            await self._memory.append_pending_log(question, response_text)
-            asyncio.create_task(self._memory.flush_if_needed())
+            await self._memory.append_pending_log(author_id, question, response_text)
+            spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
 
             await self._update_task(task_id, status="completed", finished_at=datetime.now(timezone.utc).isoformat())
         except Exception as error:
@@ -221,6 +229,8 @@ class DocumentService:
     async def _process_attachment(
         self,
         attachment: discord.Attachment,
+        author_id: str,
+        model_name: str,
     ) -> None:
         if attachment.size > MAX_DOCUMENT_SIZE_BYTES:
             raise ValueError(f"ファイルサイズが上限を超えています: {attachment.filename}")
@@ -233,8 +243,9 @@ class DocumentService:
             await validate_document_file(temp_path, suffix)
 
             uploaded_file = await self._gemini.upload_file(temp_path)
-            summary_data = await self._gemini.summarize_document(uploaded_file, attachment.filename)
-            await self._memory.store_document_summary(summary_data)
+            summary_data = await self._gemini.summarize_document(uploaded_file, attachment.filename, model_name)
+            # 文書要約は投稿者の記憶スペースへ保存する（ユーザー別記憶）。
+            await self._memory.store_document_summary(author_id, summary_data)
         finally:
             if uploaded_file is not None:
                 await self._gemini.delete_file(uploaded_file)

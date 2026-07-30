@@ -1,12 +1,14 @@
 import discord
 from discord import ui
 
-from app_state import BotState
+from app_state import GuildSettings
 from auto_topic_view import AutoTopicView
 from blacklist_service import BlacklistService
 from content_moderator import ContentModerator
 from gemini_service import GeminiService
 from ng_word_service import NgWordFilter
+from reminder_service import ReminderService
+from reminder_view import ReminderView
 from settings_view import SettingsView
 from stats_service import StatsService
 from stats_view import StatsView
@@ -27,7 +29,7 @@ class OpenSettingsButton(ui.Button):
         blocked_users = hub.blacklist.get_all_blocked_users()
         blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
         settings_view = SettingsView(
-            hub.state,
+            hub.guild_settings,
             ng_count=hub.ng_filter.word_count,
             blacklist_status=blacklist_status,
             make_hub=hub.clone,
@@ -49,7 +51,7 @@ class OpenSummaryButton(ui.Button):
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
         summary_view = SummaryView(
-            hub.state,
+            hub.guild_settings,
             hub.gemini,
             hub.moderator,
             hub.ng_filter,
@@ -106,7 +108,9 @@ class GroundingToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
-        hub.state.grounding_enabled = not hub.state.grounding_enabled
+        hub.guild_settings.grounding_enabled = not hub.guild_settings.grounding_enabled
+        # このトグルは確定操作が無く押した瞬間に反映されるため、その場で保存する
+        await hub.guild_settings.persist()
 
         # ボタンの表示（ON/OFF）を更新するために View を再構築
         hub.clear_items()
@@ -164,10 +168,34 @@ class AutoTopicButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
-        auto_topic_view = AutoTopicView(hub.state, make_hub=hub.clone)
+        auto_topic_view = AutoTopicView(hub.guild_settings, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージを自発会話パネルに差し替える
         await interaction.response.edit_message(content=auto_topic_view.build_preview(), view=auto_topic_view)
         auto_topic_view.message = interaction.message
+        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
+        hub.stop()
+
+
+class ReminderButton(ui.Button):
+    """リマインダーパネル（ReminderView）を開くボタン。
+
+    表示するのは押した本人のリマインダーだけ（内容に予定などの私的情報が入るため）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(label="リマインダー", style=discord.ButtonStyle.primary, emoji="⏰", row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        hub: "FunctionsView" = self.view  # type: ignore[assignment]
+
+        viewer_id = str(interaction.user.id)
+        records = await hub.reminders.list_pending(viewer_id)
+        reminder_view = ReminderView(hub.reminders, records, viewer_id, make_hub=hub.clone)
+        # 同じ（エフェメラルな）メッセージをリマインダーパネルに差し替える
+        await interaction.response.edit_message(
+            content=reminder_view.build_preview(), view=reminder_view
+        )
+        reminder_view.message = interaction.message
         # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
         hub.stop()
 
@@ -278,25 +306,28 @@ class FunctionsView(ui.View):
 
     def __init__(
         self,
-        state: BotState,
+        guild_settings: GuildSettings,
         usage: UsageTracker,
         ng_filter: NgWordFilter,
         blacklist: BlacklistService,
         gemini: GeminiService,
         moderator: ContentModerator,
         stats: StatsService,
+        reminders: ReminderService,
         *,
         is_admin: bool = False,
         timeout: float = 120.0,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.state = state
+        # このパネルが開かれたサーバー（DM の場合は全DM共有スロット）専用の設定。
+        self.guild_settings = guild_settings
         self.usage = usage
         self.ng_filter = ng_filter
         self.blacklist = blacklist
         self.gemini = gemini
         self.moderator = moderator
         self.stats = stats
+        self.reminders = reminders
         self.is_admin = is_admin
         # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
         self.message: discord.Message | None = None
@@ -316,28 +347,30 @@ class FunctionsView(ui.View):
         # ブロック解除は管理者専用。管理者以外にはボタン自体を表示しない。
         if self.is_admin:
             self.add_item(UnblockButton())
-        # row2: Google検索のその場トグル
-        self.add_item(GroundingToggleButton(self.state.grounding_enabled))
+        # row2: パネルを開くリマインダー ＋ Google検索のその場トグル
+        self.add_item(ReminderButton())
+        self.add_item(GroundingToggleButton(self.guild_settings.grounding_enabled))
 
     def clone(self) -> "FunctionsView":
         """各サブパネルの「戻る」用に、同じ依存関係で新しいハブパネルを作る。"""
         return FunctionsView(
-            self.state,
+            self.guild_settings,
             self.usage,
             self.ng_filter,
             self.blacklist,
             self.gemini,
             self.moderator,
             self.stats,
+            self.reminders,
             is_admin=self.is_admin,
         )
 
     def build_preview(self) -> str:
         """ハブパネルの表示テキスト。管理者のみブロック解除の案内を出す。"""
-        grounding_display = "✅ 有効" if self.state.grounding_enabled else "❌ 無効"
+        grounding_display = "✅ 有効" if self.guild_settings.grounding_enabled else "❌ 無効"
         lines = [
             "🛠️ **機能パネル** — 使いたい機能を選んでください。",
-            "・⚙️ キャラ設定 / 📋 会話要約 / 📈 会話統計 / 💬 自発会話 … パネルを開く",
+            "・⚙️ キャラ設定 / 📋 会話要約 / 📈 会話統計 / 💬 自発会話 / ⏰ リマインダー … パネルを開く",
             "・📊 グラフ / 🔄 NGワード再読込 … その場で実行",
             f"・🔍 Google検索: {grounding_display} … ボタンでその場で切替",
         ]

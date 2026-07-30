@@ -1,10 +1,42 @@
 import time
 import math
 import asyncio
+import re
 
 from database import Database
 
 HALF_LIFE = 1800.0  # 30 minutes in seconds
+
+# モデルが返答の末尾に付ける感情タグ `[V:X, A:Y]`。
+# `[V: +5, A: -10]` のように空白を挟むことがあるため各要素の前後に \s* を許容する
+# （これを緩めないとタグが除去されずユーザーへそのまま露出する）。
+# チャット返信・自発的な会話・会話要約のいずれでも同じ形を扱うため、
+# 正規表現とその操作はここに集約している。
+_AFFINITY_TAG_PATTERN = re.compile(r"\[V:\s*([+-]?\d+)\s*,\s*A:\s*([+-]?\d+)\s*\]")
+
+
+def extract_affinity_changes(text: str) -> tuple[str, tuple[int, int] | None]:
+    """感情タグを取り除いた本文と、その変化量を返す。
+
+    Returns:
+        (本文, (機嫌の変化量, テンションの変化量))。タグが無ければ変化量は None を返し、
+        本文は元のまま（余計な strip をしない）。
+    """
+    match = _AFFINITY_TAG_PATTERN.search(text)
+    if match is None:
+        return text, None
+    cleaned = _AFFINITY_TAG_PATTERN.sub("", text).strip()
+    return cleaned, (int(match.group(1)), int(match.group(2)))
+
+
+def strip_affinity_tag(text: str) -> str:
+    """感情タグだけを取り除く（変化量を使わない経路用）。
+
+    自発的な会話・記念日のお祝い・会話要約は特定の相手への返信ではないため
+    親密度を更新しない。ペルソナが指示に反してタグを付けた場合の保険として使う。
+    """
+    return _AFFINITY_TAG_PATTERN.sub("", text).strip()
+
 
 class AffinityService:
     def __init__(self, db: Database):

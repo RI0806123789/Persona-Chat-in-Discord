@@ -1,7 +1,7 @@
 import discord
 from discord import ui
 
-from app_state import BotState
+from app_state import GuildSettings
 from choices import AUTO_TOPIC_INTERVAL_CHOICES, AUTO_TOPIC_INTERVAL_DISPLAY_NAMES
 from view_parts import BackButton, HubFactory
 
@@ -79,14 +79,15 @@ class AutoTopicConfirmButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
 
-        # 一時選択値をグローバルな BotState に反映
-        view.state.auto_topic_enabled = view.temp_enabled
-        view.state.auto_topic_interval_hours = view.temp_interval_hours
+        # 一時選択値をこのサーバー（ギルド）専用の設定に反映し、DB へ保存する
+        view.guild_settings.auto_topic_enabled = view.temp_enabled
+        view.guild_settings.auto_topic_interval_hours = view.temp_interval_hours
+        await view.guild_settings.persist()
 
         confirmed_text = _build_status_text(
             view.temp_enabled,
             view.temp_interval_hours,
-            len(view.state.auto_topic_channels),
+            len(view.guild_settings.auto_topic_channels),
             confirmed=True,
         )
         await interaction.response.edit_message(content=confirmed_text, view=None)
@@ -103,21 +104,21 @@ class AutoTopicView(ui.View):
 
     def __init__(
         self,
-        state: BotState,
+        guild_settings: GuildSettings,
         *,
         make_hub: HubFactory | None = None,
         timeout: float = 120.0,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.state = state
+        self.guild_settings = guild_settings
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
         # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
         self.message: discord.Message | None = None
 
         # 一時選択値（現在の設定を初期値として保存）
-        self.temp_enabled: bool = state.auto_topic_enabled
-        self.temp_interval_hours: int = state.auto_topic_interval_hours
+        self.temp_enabled: bool = guild_settings.auto_topic_enabled
+        self.temp_interval_hours: int = guild_settings.auto_topic_interval_hours
 
         self._add_all_items()
 
@@ -133,7 +134,7 @@ class AutoTopicView(ui.View):
         return _build_status_text(
             self.temp_enabled,
             self.temp_interval_hours,
-            len(self.state.auto_topic_channels),
+            len(self.guild_settings.auto_topic_channels),
         )
 
     async def on_timeout(self) -> None:

@@ -1,7 +1,7 @@
 import discord
 from discord import ui
 
-from app_state import BotState
+from app_state import GuildSettings
 from choices import (
     MODEL_CHOICES,
     MODEL_DISPLAY_NAMES,
@@ -143,10 +143,11 @@ class ConfirmButton(ui.Button):
             view.stop()
             return
 
-        # 一時選択値をグローバルな BotState に反映
-        view.state.current_prompt_file = view.temp_persona
-        view.state.current_model_name = view.temp_model
-        view.state.current_respond_mode = view.temp_respond_mode
+        # 一時選択値をこのサーバー（ギルド）専用の設定に反映し、DB へ保存する
+        view.guild_settings.current_prompt_file = view.temp_persona
+        view.guild_settings.current_model_name = view.temp_model
+        view.guild_settings.current_respond_mode = view.temp_respond_mode
+        await view.guild_settings.persist()
 
         confirmed_text = _build_status_text(
             view.temp_persona,
@@ -187,7 +188,7 @@ class ResetButton(ui.Button):
 
         # リセットポイントをこのメッセージのIDに設定
         if interaction.message is not None:
-            view.state.channel_reset_points[int(channel_id)] = interaction.message.id
+            view.guild_settings.channel_reset_points[int(channel_id)] = interaction.message.id
 
         await interaction.response.edit_message(
             content="🔄 会話履歴をリセットしました。ここから新しい会話を始めます。",
@@ -205,7 +206,7 @@ class SettingsView(ui.View):
 
     def __init__(
         self,
-        state: BotState,
+        guild_settings: GuildSettings,
         ng_count: int,
         blacklist_status: str,
         *,
@@ -213,7 +214,7 @@ class SettingsView(ui.View):
         timeout: float = 120.0,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.state = state
+        self.guild_settings = guild_settings
         self.ng_count = ng_count
         self.blacklist_status = blacklist_status
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
@@ -222,9 +223,9 @@ class SettingsView(ui.View):
         self.message: discord.Message | None = None
 
         # 一時選択値（現在の設定を初期値として保存）
-        self.temp_persona: str = state.current_prompt_file
-        self.temp_model: str = state.current_model_name
-        self.temp_respond_mode: str = state.current_respond_mode
+        self.temp_persona: str = guild_settings.current_prompt_file
+        self.temp_model: str = guild_settings.current_model_name
+        self.temp_respond_mode: str = guild_settings.current_respond_mode
 
         # UIパーツを View に追加
         self._add_all_items()

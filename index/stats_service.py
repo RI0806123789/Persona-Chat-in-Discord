@@ -2,7 +2,6 @@ import asyncio
 import io
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import matplotlib
 
@@ -11,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from constants import (
+    ROUTER_MODEL_NAME,
     STATS_ANALYSIS_TIMEOUT_SECONDS,
     STATS_ANALYSIS_TTL_HOURS,
     STATS_MAX_USERS_IN_SELECT,
@@ -21,6 +21,7 @@ from constants import (
 )
 from database import Database
 from storage import extract_json_object
+from timeutil import resolve_timezone, timezone_label
 
 # matplotlib の日本語フォント指定（usage_graph.py と同じ作法）
 _FONT_CONTEXT = {"font.family": ["Yu Gothic", "Meiryo", "sans-serif"]}
@@ -54,12 +55,7 @@ class StatsService:
             print(f"会話統計の読み込みに失敗: {error}")
             self.cache = {}
         self._save_lock = asyncio.Lock()
-        try:
-            self._tz = ZoneInfo(STATS_TIMEZONE)
-        except Exception as error:
-            # タイムゾーンデータが無い環境では UTC にフォールバックする
-            print(f"タイムゾーン({STATS_TIMEZONE})の読み込みに失敗、UTCで集計します: {error}")
-            self._tz = timezone.utc
+        self._tz = resolve_timezone(STATS_TIMEZONE, purpose="会話統計の時間帯集計")
 
     # ---- 記録 -------------------------------------------------------------
 
@@ -204,8 +200,11 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
 
         prompt = self._build_analysis_prompt(samples)
         try:
+            # 話題・性格推定はユーザーが選択中のペルソナ/モデルとは無関係な内部解析
+            # タスクのため、記憶ルーティング等と同じ固定モデル（ROUTER_MODEL_NAME）を使う。
             text, _usage, _sources = await self.gemini.generate(
                 prompt,
+                ROUTER_MODEL_NAME,
                 images=None,
                 timeout=STATS_ANALYSIS_TIMEOUT_SECONDS,
                 grounding=False,
@@ -247,7 +246,9 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
             x = np.arange(24)
             axis.bar(x, hourly, color="tab:blue")
             axis.set_xticks(x)
-            axis.set_xlabel(f"時刻（{STATS_TIMEZONE}）")
+            # 集計に実際に使った tz を表示する（定数のままだと、tzdata が無く
+            # UTC へフォールバックした環境で「Asia/Tokyo」と偽って表示してしまう）。
+            axis.set_xlabel(f"時刻（{timezone_label(self._tz)}）")
             axis.set_ylabel("発言回数")
             axis.set_title("よく話す時間帯")
             axis.grid(True, axis="y", alpha=0.3)

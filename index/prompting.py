@@ -45,6 +45,29 @@ def build_auto_topic_prompt(persona_prompt: str, memory_sections: str, history_t
     )
 
 
+def build_anniversary_prompt(persona_prompt: str, user_display_name: str, label: str, history_text: str) -> str:
+    """記念日・誕生日の自動お祝いメッセージ生成プロンプトを組み立てる。
+
+    自発的な会話（無会話への話題提供）と同じくチャンネル履歴のみを材料にし、
+    個人の長期記憶（profile）はここでは渡さない（プライバシー保護のため、
+    共有チャンネルには「今日が記念日である」という事実以上の個人情報を出さない）。
+    """
+    return (
+        persona_prompt
+        + "\n\n--- タスク: 記念日のお祝い ---\n"
+        + f"今日は {user_display_name} さんの「{label}」です。あなたから、このチャンネルでお祝いの言葉をかけてください。\n"
+        + "\n## 厳守する出力ルール\n"
+        + f"- 冒頭で {user_display_name} さんに呼びかけ、「{label}」であることに触れてお祝いすること。\n"
+        + "- 1〜3文程度の短いお祝いメッセージにすること。長い説明はしない。\n"
+        + "- 過去の会話履歴に関連する話題があれば軽く絡めてもよいが、必須ではない。\n"
+        + "- 感情タグ（[V:.., A:..] の形式）は絶対に付けないこと。\n"
+        + "\n--- 過去の会話履歴（参考。無くてもよい） ---\n"
+        + history_text
+        + "\n--- 履歴ここまで ---\n"
+        + "\n上記を踏まえて、お祝いメッセージの一言だけを出力してください。"
+    )
+
+
 def build_summary_prompt(persona_prompt: str, period_label: str, source_text: str) -> str:
     """会話ログを議事録として要約するためのプロンプトを組み立てる。
 

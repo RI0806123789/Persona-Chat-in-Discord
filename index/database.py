@@ -6,8 +6,8 @@ SQLite で管理する。SQL 文はすべてこのモジュールに集約する
   - affinity     … ユーザーごとの親密度・感情（旧 affinity.json）
   - user_stats   … ユーザー別会話統計（旧 user_stats.json）
   - queue_tasks  … 文書処理タスクキュー（旧 queue.json）
-  - pending_log  … 記憶圧縮前の一時会話ログ（旧 pending_log.txt）
-  - profile      … プロフィール記憶（トップレベルキーごとに1行、値はJSON文字列）
+  - pending_log  … 記憶圧縮前の一時会話ログ（旧 pending_log.txt）。user_id 列でユーザー別。
+  - profile      … プロフィール記憶。(user_id, key) の複合主キーでユーザー別。値はJSON文字列。
 
 projects.json は LLM が構造を自由に決める JSON のため、
 テーブル化せず従来どおりファイルのまま扱う。
@@ -19,7 +19,8 @@ projects.json は LLM が構造を自由に決める JSON のため、
 ■ profile.json は「手書き追加用の受け皿」
 profile.json は毎回の起動時にチェックされ、中身があれば profile テーブルへ
 マージ（同名キーはファイル側で上書き）した後、ファイルを {} に戻す。
-つまりユーザーが profile.json に事実を書き足してボットを再起動するだけで、
+ユーザー別記憶に対応するため形式は {ユーザーID: {キー: 値, ...}, ...}。
+つまり profile.json に対象ユーザーIDごとの事実を書き足して再起動するだけで、
 その内容が自動的にデータベースの記憶へ追加される。
 
 ■ スキーマを後から変更したくなったら（列の追加など）
@@ -39,12 +40,12 @@ from pathlib import Path
 from typing import Any
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
-#   SCHEMA_VERSION = 3 に上げて、ここに
-#   3: ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"],
+#   SCHEMA_VERSION = 4 に上げて、ここに
+#   4: ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"],
 #   のように追記する。既存 DB・新規 DB の両方に自動適用される。
 _MIGRATIONS: dict[int, list[str]] = {
     # バージョン2: プロフィール記憶を profile.json から DB へ移行
@@ -53,6 +54,62 @@ _MIGRATIONS: dict[int, list[str]] = {
             key   TEXT PRIMARY KEY,                    -- プロフィールのトップレベルキー
             value TEXT NOT NULL                        -- 値（JSON文字列）
         )"""
+    ],
+    # バージョン3: 記憶をユーザー別に分離する。
+    #   - profile: 主キーを (user_id, key) の複合主キーに変更（テーブルを作り直す）。
+    #     旧・全体共有の行は移行後に _migrate_legacy_profile_rows で owner へ割り当てる。
+    #   - pending_log: user_id 列を追加（旧・全体共有の行は owner へ振り直す）。
+    3: [
+        "ALTER TABLE pending_log ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+        # profile は主キーを変えるため、旧テーブルを退避 → 新テーブルを作成する。
+        # 退避テーブルの行は _migrate_legacy_profile_rows() が owner へ移して破棄する。
+        "ALTER TABLE profile RENAME TO profile_legacy_v2",
+        """CREATE TABLE profile (
+            user_id TEXT NOT NULL,                     -- Discord ユーザーID（文字列）
+            key     TEXT NOT NULL,                     -- プロフィールのトップレベルキー
+            value   TEXT NOT NULL,                     -- 値（JSON文字列）
+            PRIMARY KEY (user_id, key)
+        )""",
+    ],
+    # バージョン4: サーバー（ギルド）ごとの設定と記念日の投稿記録を永続化する。
+    #   これらは従来インメモリ（GuildSettings）だけに持っていたため再起動で失われていた。
+    #   なお会話リセット地点・自発会話の監視チャンネルは「実行時に自然に再構築される
+    #   一時状態」のため永続化しない（インメモリのまま）。
+    4: [
+        # DEFAULT 句の値は「列を追加した時点の埋め草」でしかない（保存時は常に全列を
+        # 書き込む）。実際の既定値は constants.py の DEFAULT_* が唯一の情報源。
+        """CREATE TABLE IF NOT EXISTS guild_settings (
+            guild_id                  INTEGER PRIMARY KEY,        -- Discord サーバーID（DM は 0）
+            prompt_file               TEXT    NOT NULL DEFAULT '',-- ペルソナのプロンプトファイル
+            model_name                TEXT    NOT NULL DEFAULT '',-- Gemini のモデル名
+            respond_mode              TEXT    NOT NULL DEFAULT '',-- 応答モード（全発言/メンションのみ）
+            grounding_enabled         INTEGER NOT NULL DEFAULT 1, -- Google検索グラウンディング（0/1）
+            auto_topic_enabled        INTEGER NOT NULL DEFAULT 0, -- 自発的な会話の有効/無効（0/1）
+            auto_topic_interval_hours INTEGER NOT NULL DEFAULT 6  -- 自発的な会話の無会話しきい値（時間）
+        )""",
+        """CREATE TABLE IF NOT EXISTS anniversary_posts (
+            guild_id    INTEGER NOT NULL,              -- お祝いを投稿したサーバーID
+            user_id     TEXT    NOT NULL,              -- お祝い対象の Discord ユーザーID
+            label       TEXT    NOT NULL,              -- 記念日の呼び名（例: 誕生日）
+            posted_date TEXT    NOT NULL,              -- 最後に投稿した日付（YYYY-MM-DD）
+            PRIMARY KEY (guild_id, user_id, label)
+        )""",
+    ],
+    # バージョン5: リマインダー（会話から自動登録し、時刻が来たら通知する）を追加。
+    5: [
+        """CREATE TABLE IF NOT EXISTS reminders (
+            reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, -- 登録順を保つ連番
+            user_id     TEXT    NOT NULL,                  -- 依頼した Discord ユーザーID
+            user_name   TEXT    NOT NULL DEFAULT '',       -- 依頼時の表示名（一覧表示用）
+            guild_id    INTEGER NOT NULL DEFAULT 0,        -- 依頼されたサーバーID（DM は 0）
+            channel_id  INTEGER NOT NULL,                  -- 通知を投稿するチャンネルID
+            message     TEXT    NOT NULL,                  -- 通知する本文
+            remind_at   TEXT    NOT NULL,                  -- 通知予定時刻（UTC の ISO 8601）
+            created_at  TEXT    NOT NULL,                  -- 登録時刻（UTC の ISO 8601）
+            status      TEXT    NOT NULL DEFAULT 'pending' -- pending/done/canceled
+        )""",
+        # 見回り（status と remind_at での絞り込み）が主なアクセスパターンのため索引を張る。
+        "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (status, remind_at)",
     ],
 }
 
@@ -95,6 +152,8 @@ _CREATE_TABLE_STATEMENTS = [
         response   TEXT NOT NULL                          -- ボットの応答
     )""",
 ]
+# 注: pending_log.user_id 列はバージョン3の移行(_MIGRATIONS[3])で追加される。
+# 初版テーブル定義（上）は変更禁止のため、ここには含めない。
 
 # queue_tasks の列名一覧。UPDATE 文へ列名を埋め込む際のホワイトリストに使う。
 _QUEUE_COLUMNS = (
@@ -131,10 +190,18 @@ class Database:
     （途中でクラッシュしてもファイルが壊れない — 旧 JSON 方式にはなかった利点）。
     """
 
-    def __init__(self, db_path: str | Path, legacy_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        legacy_dir: str | Path | None = None,
+        legacy_owner_id: str = "",
+    ) -> None:
         self._db_path = Path(db_path)
         # 旧 JSON ファイルの置き場所。省略時は DB と同じディレクトリ（memory/）。
         self._legacy_dir = Path(legacy_dir) if legacy_dir is not None else self._db_path.parent
+        # ユーザー別記憶への移行時、旧・全体共有データ（profile / pending_log）を
+        # 引き継ぐ先の Discord ユーザーID。空文字なら引き継がず破棄する。
+        self._legacy_owner_id = str(legacy_owner_id or "")
         self._lock = threading.Lock()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -143,11 +210,12 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
 
     def initialize(self) -> None:
-        """テーブル作成 → スキーマ移行 → 旧ファイル取り込み → profile.json 吸収。起動時に1回呼ぶ。"""
+        """テーブル作成 → スキーマ移行 → 旧行の owner 移行 → 旧ファイル取り込み → profile.json 吸収。起動時に1回呼ぶ。"""
         with self._lock, self._conn:
             for statement in _CREATE_TABLE_STATEMENTS:
                 self._conn.execute(statement)
             self._apply_migrations()
+        self._migrate_legacy_profile_rows()
         self._import_legacy_files()
         self._absorb_profile_json()
 
@@ -167,6 +235,40 @@ class Database:
             self._conn.execute(f"PRAGMA user_version = {version}")
             if _MIGRATIONS.get(version):
                 print(f"データベース: スキーマをバージョン {version} へ移行しました。")
+
+    def _migrate_legacy_profile_rows(self) -> None:
+        """ユーザー別記憶への移行の後始末（冪等）。
+
+        バージョン3の移行で退避した profile_legacy_v2（旧・全体共有プロフィール）の
+        行を owner の user_id に割り当てて新 profile へ移し、退避テーブルを削除する。
+        あわせて pending_log の user_id 未設定行（旧・全体共有）も owner へ振り直す。
+
+        スキーマ移行本体（_apply_migrations）とは別トランザクションで走るため、
+        途中でクラッシュしても次回起動時にこのメソッドが再実行されて完了する
+        （テーブルの有無・行の user_id で判定するため二重実行されても安全）。
+        owner が空文字の場合は引き継ぎ元を破棄する（旧データを捨てる）。
+        """
+        owner = self._legacy_owner_id
+        with self._lock, self._conn:
+            legacy_exists = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='profile_legacy_v2'"
+            ).fetchone()
+            if legacy_exists is not None:
+                if owner:
+                    # 既に owner に同名キーがあれば旧値で上書きしない（新 DB 側を正とする）
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO profile (user_id, key, value)"
+                        " SELECT ?, key, value FROM profile_legacy_v2",
+                        (owner,),
+                    )
+                    print(f"データベース: 旧・全体共有プロフィールを user_id={owner} へ移行しました。")
+                self._conn.execute("DROP TABLE profile_legacy_v2")
+            if owner:
+                cursor = self._conn.execute(
+                    "UPDATE pending_log SET user_id = ? WHERE user_id = ''", (owner,)
+                )
+                if cursor.rowcount:
+                    print(f"データベース: pending_log の未割当 {cursor.rowcount} 件を user_id={owner} へ振り直しました。")
 
     # ---- 旧 JSON / テキストファイルの取り込み --------------------------------
 
@@ -293,19 +395,24 @@ class Database:
         if current is not None:
             entries.append(current)
 
+        # 旧 pending_log.txt はユーザー別記憶の導入前のもの＝全体共有。owner に紐付ける。
+        owner = self._legacy_owner_id
         with self._lock, self._conn:
             for entry in entries:
                 self._conn.execute(
-                    "INSERT INTO pending_log (created_at, question, response) VALUES (?, ?, ?)",
-                    (entry["created_at"], entry["question"], entry["response"]),
+                    "INSERT INTO pending_log (user_id, created_at, question, response) VALUES (?, ?, ?, ?)",
+                    (owner, entry["created_at"], entry["question"], entry["response"]),
                 )
 
     def _absorb_profile_json(self) -> None:
         """profile.json に書き足された内容を profile テーブルへ吸収する（毎起動時）。
 
-        中身があればトップレベルキー単位でマージ（同名キーはファイル側が勝つ）し、
-        ファイルを {} に戻す。JSON として読めない場合はファイルを壊さず残し、
-        警告だけ出してスキップする（手書きミスでデータを失わないため）。
+        ユーザー別記憶に対応するため、形式は {ユーザーID: {キー: 値, ...}, ...}。
+        各ユーザーごとにトップレベルキー単位でマージ（同名キーはファイル側が勝つ）し、
+        ファイルを {} に戻す。トップレベル値が dict でないもの（旧・全体共有形式の
+        手書き）は owner のプロフィールとして取り込む（後方互換）。
+        JSON として読めない場合はファイルを壊さず残し、警告だけ出してスキップする
+        （手書きミスでデータを失わないため）。
         """
         path = self._legacy_dir / "profile.json"
         if not path.exists():
@@ -317,9 +424,24 @@ class Database:
             data = json.loads(raw_text)
             if not isinstance(data, dict) or not data:
                 return
-            self.profile_merge(data)
+
+            # 値が dict のトップレベルキー ＝ ユーザーID とみなす。
+            # 値が dict でないキーが1つでもあれば「旧・全体共有形式の手書き」と判断し、
+            # 全体を owner のプロフィールとして取り込む。
+            looks_per_user = all(isinstance(value, dict) for value in data.values())
+            absorbed: dict[str, list[str]] = {}
+            if looks_per_user:
+                for user_id, profile in data.items():
+                    if isinstance(profile, dict) and profile:
+                        self.profile_merge(str(user_id), profile)
+                        absorbed[str(user_id)] = list(profile.keys())
+            elif self._legacy_owner_id:
+                self.profile_merge(self._legacy_owner_id, data)
+                absorbed[self._legacy_owner_id] = list(data.keys())
+
             path.write_text("{}", encoding="utf-8")
-            print(f"データベース: profile.json の内容 {list(data.keys())} を profile テーブルへ追加しました。")
+            if absorbed:
+                print(f"データベース: profile.json の内容 {absorbed} を profile テーブルへ追加しました。")
         except json.JSONDecodeError as error:
             print(f"データベース: profile.json が JSON として読めないため取り込みをスキップします: {error}")
         except Exception as error:
@@ -327,30 +449,244 @@ class Database:
 
     # ---- profile（プロフィール記憶） ------------------------------------------
 
-    def profile_load(self) -> dict[str, Any]:
-        """プロフィール記憶全体を {キー: 値} 形式で返す（旧 profile.json と同じ形）。"""
+    def profile_load(self, user_id: str) -> dict[str, Any]:
+        """指定ユーザーのプロフィール記憶を {キー: 値} 形式で返す（旧 profile.json と同じ形）。"""
         with self._lock:
-            rows = self._conn.execute("SELECT * FROM profile ORDER BY key").fetchall()
+            rows = self._conn.execute(
+                "SELECT key, value FROM profile WHERE user_id = ? ORDER BY key",
+                (str(user_id),),
+            ).fetchall()
         return {row["key"]: _json_loads_or(row["value"], None) for row in rows}
 
-    def profile_merge(self, updates: dict[str, Any]) -> None:
-        """トップレベルキー単位でマージする（同名キーは updates 側で上書き）。"""
+    def profile_merge(self, user_id: str, updates: dict[str, Any]) -> None:
+        """指定ユーザーのトップレベルキー単位でマージする（同名キーは updates 側で上書き）。"""
         with self._lock, self._conn:
             for key, value in updates.items():
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
-                    (str(key), json.dumps(value, ensure_ascii=False)),
+                    "INSERT OR REPLACE INTO profile (user_id, key, value) VALUES (?, ?, ?)",
+                    (str(user_id), str(key), json.dumps(value, ensure_ascii=False)),
                 )
 
-    def profile_replace_all(self, profile: dict[str, Any]) -> None:
-        """プロフィール全体を置き換える（記憶圧縮の結果を保存する際に使う）。"""
+    def profile_load_all_for_key(self, key: str) -> dict[str, Any]:
+        """全ユーザーの指定キー1件分の値を {user_id: 値} 形式で返す。
+
+        記念日チェックのように「全ユーザーを横断してある1項目だけ見たい」場合に使う
+        （profile_load はユーザー1人分の全キーを返すため、全ユーザー分の走査には向かない）。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT user_id, value FROM profile WHERE key = ?", (str(key),)
+            ).fetchall()
+        return {row["user_id"]: _json_loads_or(row["value"], None) for row in rows}
+
+    def profile_replace_all(self, user_id: str, profile: dict[str, Any]) -> None:
+        """指定ユーザーのプロフィール全体を置き換える（記憶圧縮の結果を保存する際に使う）。
+
+        他ユーザーの行には一切触れない（WHERE user_id で対象を限定する）。
+        """
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM profile")
+            self._conn.execute("DELETE FROM profile WHERE user_id = ?", (str(user_id),))
             for key, value in profile.items():
                 self._conn.execute(
-                    "INSERT INTO profile (key, value) VALUES (?, ?)",
-                    (str(key), json.dumps(value, ensure_ascii=False)),
+                    "INSERT INTO profile (user_id, key, value) VALUES (?, ?, ?)",
+                    (str(user_id), str(key), json.dumps(value, ensure_ascii=False)),
                 )
+
+    # ---- guild_settings（サーバーごとの設定） ---------------------------------
+
+    def guild_settings_load_all(self) -> dict[int, dict[str, Any]]:
+        """保存済みのギルド設定を {guild_id: {列名: 値}} 形式で全件返す（起動時の復元用）。
+
+        DM の設定は guild_id=0 の行として保存されている（DM にはギルドIDが無いため）。
+        """
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM guild_settings").fetchall()
+        return {
+            row["guild_id"]: {
+                "prompt_file": row["prompt_file"],
+                "model_name": row["model_name"],
+                "respond_mode": row["respond_mode"],
+                "grounding_enabled": bool(row["grounding_enabled"]),
+                "auto_topic_enabled": bool(row["auto_topic_enabled"]),
+                "auto_topic_interval_hours": row["auto_topic_interval_hours"],
+            }
+            for row in rows
+        }
+
+    def guild_settings_save(
+        self,
+        guild_id: int,
+        *,
+        prompt_file: str,
+        model_name: str,
+        respond_mode: str,
+        grounding_enabled: bool,
+        auto_topic_enabled: bool,
+        auto_topic_interval_hours: int,
+    ) -> None:
+        """1サーバー分の設定を丸ごと保存する（既存行があれば置き換える）。
+
+        設定は数個の値しかないため、差分更新はせず常に全列を書き込む（呼び出し側が
+        どの項目を変えたかを気にしなくて済む）。DM は guild_id=0 で保存する。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO guild_settings"
+                " (guild_id, prompt_file, model_name, respond_mode, grounding_enabled,"
+                "  auto_topic_enabled, auto_topic_interval_hours)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(guild_id),
+                    str(prompt_file),
+                    str(model_name),
+                    str(respond_mode),
+                    int(bool(grounding_enabled)),
+                    int(bool(auto_topic_enabled)),
+                    int(auto_topic_interval_hours),
+                ),
+            )
+
+    # ---- anniversary_posts（記念日のお祝い投稿記録） --------------------------
+
+    def anniversary_posts_load_all(self) -> dict[int, dict[str, str]]:
+        """記念日の投稿記録を {guild_id: {"ユーザーID:呼び名": "YYYY-MM-DD"}} 形式で返す。
+
+        内側の辞書は GuildSettings.anniversary_posted_dates と同じ形にしてあるため、
+        起動時にそのまま代入して復元できる。
+        """
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM anniversary_posts").fetchall()
+        result: dict[int, dict[str, str]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[f"{row['user_id']}:{row['label']}"] = row["posted_date"]
+        return result
+
+    def anniversary_post_record(self, guild_id: int, user_id: str, label: str, posted_date: str) -> None:
+        """お祝いを投稿したことを記録する（同じサーバー・同じ記念日の行は上書き）。
+
+        主キーが (guild_id, user_id, label) なので、毎年お祝いしても行は増えない
+        （その記念日の最終投稿日だけが残る）。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO anniversary_posts (guild_id, user_id, label, posted_date)"
+                " VALUES (?, ?, ?, ?)",
+                (int(guild_id), str(user_id), str(label), str(posted_date)),
+            )
+
+    # ---- reminders（リマインダー） --------------------------------------------
+
+    def reminder_add(
+        self,
+        *,
+        user_id: str,
+        user_name: str,
+        guild_id: int,
+        channel_id: int,
+        message: str,
+        remind_at: str,
+        created_at: str,
+    ) -> int:
+        """リマインダーを1件登録し、その reminder_id を返す。
+
+        remind_at / created_at は UTC の ISO 8601 文字列。同じ形式で揃えることで、
+        期限判定を文字列比較のまま行える（時刻順と辞書順が一致する）。
+        """
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO reminders"
+                " (user_id, user_name, guild_id, channel_id, message, remind_at, created_at, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (
+                    str(user_id),
+                    str(user_name),
+                    int(guild_id),
+                    int(channel_id),
+                    str(message),
+                    str(remind_at),
+                    str(created_at),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def reminder_claim_due(self, now_iso: str) -> list[dict[str, Any]]:
+        """期限が来た未通知リマインダーを done に変えて返す（無ければ空リスト）。
+
+        SELECT と UPDATE を同一トランザクションで行うため、見回りが重なっても
+        同じリマインダーが二重に通知されることはない（queue_tasks と同じ作法）。
+        通知の送信自体が失敗した場合は呼び出し側でログに残す — done のままにして
+        再送しないのは、通知の重複より「時間外れの再通知」の方が困るため。
+        """
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT * FROM reminders WHERE status = 'pending' AND remind_at <= ?"
+                " ORDER BY remind_at, reminder_id",
+                (str(now_iso),),
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                "UPDATE reminders SET status = 'done' WHERE status = 'pending' AND remind_at <= ?",
+                (str(now_iso),),
+            )
+        claimed = []
+        for row in rows:
+            record = dict(row)
+            record["status"] = "done"
+            claimed.append(record)
+        return claimed
+
+    def reminder_list_pending(self, user_id: str) -> list[dict[str, Any]]:
+        """指定ユーザーの未通知リマインダーを、通知が近い順で返す。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM reminders WHERE user_id = ? AND status = 'pending'"
+                " ORDER BY remind_at, reminder_id",
+                (str(user_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reminder_count_pending(self, user_id: str) -> int:
+        """指定ユーザーの未通知リマインダーの件数を返す（登録上限の判定に使う）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS count FROM reminders WHERE user_id = ? AND status = 'pending'",
+                (str(user_id),),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def reminder_cancel(self, reminder_id: int, user_id: str) -> dict[str, Any] | None:
+        """リマインダーを取り消す。取り消せた場合はその内容を返す。
+
+        user_id を条件に含めるため、他人のリマインダーは取り消せない（UI 側の
+        絞り込みだけに頼らず、SQL でも本人のものに限定する）。
+        """
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT * FROM reminders WHERE reminder_id = ? AND user_id = ? AND status = 'pending'",
+                (int(reminder_id), str(user_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE reminders SET status = 'canceled' WHERE reminder_id = ?",
+                (int(reminder_id),),
+            )
+        record = dict(row)
+        record["status"] = "canceled"
+        return record
+
+    def reminder_prune_finished(self, max_keep: int) -> None:
+        """通知済み・取り消し済みのレコードを新しい方から max_keep 件だけ残して削除する。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM reminders WHERE status IN ('done', 'canceled')"
+                " AND reminder_id NOT IN ("
+                "   SELECT reminder_id FROM reminders WHERE status IN ('done', 'canceled')"
+                "   ORDER BY reminder_id DESC LIMIT ?"
+                ")",
+                (int(max_keep),),
+            )
 
     # ---- affinity（親密度・感情） --------------------------------------------
 
@@ -518,19 +854,31 @@ class Database:
 
     # ---- pending_log（記憶圧縮前の一時ログ） ----------------------------------
 
-    def pending_append(self, created_at: str, question: str, response: str) -> None:
+    def pending_append(self, user_id: str, created_at: str, question: str, response: str) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO pending_log (created_at, question, response) VALUES (?, ?, ?)",
-                (created_at, question, response),
+                "INSERT INTO pending_log (user_id, created_at, question, response) VALUES (?, ?, ?, ?)",
+                (str(user_id), created_at, question, response),
             )
 
-    def pending_fetch_entries(self) -> list[dict[str, Any]]:
-        """一時ログの全件を追記順で返す。"""
+    def pending_distinct_user_ids(self) -> list[str]:
+        """一時ログを持つユーザーIDの一覧を返す（記憶圧縮の対象ユーザー列挙に使う）。"""
         with self._lock:
-            rows = self._conn.execute("SELECT * FROM pending_log ORDER BY id").fetchall()
+            rows = self._conn.execute(
+                "SELECT DISTINCT user_id FROM pending_log ORDER BY user_id"
+            ).fetchall()
+        return [row["user_id"] for row in rows]
+
+    def pending_fetch_entries(self, user_id: str) -> list[dict[str, Any]]:
+        """指定ユーザーの一時ログを追記順で返す。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM pending_log WHERE user_id = ? ORDER BY id",
+                (str(user_id),),
+            ).fetchall()
         return [dict(row) for row in rows]
 
-    def pending_clear(self) -> None:
+    def pending_clear(self, user_id: str) -> None:
+        """指定ユーザーの一時ログだけを削除する（他ユーザーの分は残す）。"""
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM pending_log")
+            self._conn.execute("DELETE FROM pending_log WHERE user_id = ?", (str(user_id),))
