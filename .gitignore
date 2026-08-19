@@ -1,7 +1,15 @@
 # --- Secrets: NEVER commit these ---
+# APIキーは ver0.1.6 でプロジェクトルートの .env へ移行した。
+# config_private.py は廃止済みだが、無視設定は残す — 移行前のチェックアウトが
+# 手元に残っている環境で `git add .` すると実キーごとコミットされるため。
 config_private.py
 *.env
 .env
+
+# --- systemd unit（実パス・ユーザー名入りのプライベート版）---
+# 公開用テンプレートは deploy/bot.service.example（こちらはコミットする）。
+# 完全パス一致のため .example 側はマッチしない（否定行は不要）。
+deploy/bot.service
 
 # --- Python ---
 __pycache__/
@@ -23,9 +31,11 @@ Thumbs.db
 
 # --- Third-party binaries: too large for git (avcodec-62.dll alone is
 #     ~100MB, over GitHub's single-file limit). ---
-#     FFmpeg はもう不要（読み上げは miniaudio がメモリ上で PCM 変換する）。
-#     以前 index/ に配置していた場合、これらは削除してよい。
-#     誤ってコミットされないよう無視設定だけは残しておく。
+#     FFmpeg は ver0.1.5 で不要になり（読み上げは miniaudio がメモリ上で PCM 変換する）、
+#     ver0.1.6 で実体も削除済み。それでもこの無視設定は恒久的に残すこと —
+#     フォーク先や本人の別マシンにはまだ同じバイナリが残っている可能性があり、
+#     外すと次の `git add .` で 100MB 超のファイルが混入する。残すコストはゼロ。
+#     `*.dll` は FFmpeg 専用ではなく汎用の保険（wheel 由来の DLL がツリーに紛れ込む事故を防ぐ）。
 ffmpeg-master-latest-win64-gpl-shared/
 ffmpeg.exe
 ffplay.exe
@@ -47,5 +57,5 @@ ng/blacklist.json
 memo/
 chatlog/
 assets/
-
+.claude/
 

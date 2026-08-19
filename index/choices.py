@@ -29,7 +29,7 @@ RESPOND_MODE_CHOICES = [
     app_commands.Choice(name="メンションのみに反応", value="mention"),
 ]
 
-# /summarize の期間選択肢。value は「何時間さかのぼるか」を表す（1か月=30日=720時間）。
+# /functions → 📋 会話要約 の期間選択肢。value は「何時間さかのぼるか」を表す（1か月=30日=720時間）。
 SUMMARY_PERIOD_CHOICES = [
     app_commands.Choice(name="1時間", value=1),
     app_commands.Choice(name="12時間", value=12),

@@ -10,6 +10,7 @@ from app_state import BotState, GuildSettings
 from constants import (
     ANNIVERSARY_HISTORY_LIMIT,
     ANNIVERSARY_PROFILE_KEY,
+    ANNIVERSARY_PUBLIC_LABELS,
     ANNIVERSARY_TIMEOUT_SECONDS,
     ANNIVERSARY_TIMEZONE,
     AUTO_TOPIC_HISTORY_LIMIT,
@@ -235,6 +236,8 @@ class AutoTopicService:
         記念日は自然な会話の中で記憶圧縮（memory_service._compact_memory）が
         LLM の判断で profile へ書き込む自由記述寄りの情報のため、形式が
         期待通りでないエントリはすべて静かにスキップする（フェイルセーフ）。
+        私的な記念日の露出を防ぐため、投稿対象は
+        _is_public_anniversary_label() を通ったラベルだけに絞る。
         """
         try:
             all_anniversaries = await asyncio.to_thread(
@@ -262,6 +265,11 @@ class AutoTopicService:
                 day = entry.get("day")
                 if not label or not isinstance(month, int) or not isinstance(day, int):
                     continue
+                # 私的な記念日を共有チャンネルへ出さないための許可リスト照合。
+                # 対象外は「記憶としては持つがお祝いはしない」だけの正常な状態で、
+                # 毎時の見回りで何度も通るためログは出さず静かにスキップする。
+                if not self._is_public_anniversary_label(label):
+                    continue
                 if self._is_today(today, month, day):
                     due.append((str(user_id), label))
 
@@ -270,6 +278,22 @@ class AutoTopicService:
                 await self._celebrate_user(user_id, label, today_str)
             except Exception as error:
                 print(f"記念日チェック: お祝い投稿エラー (user_id={user_id}, label={label}): {error}")
+
+    @staticmethod
+    def _is_public_anniversary_label(label: str) -> bool:
+        """公開チャンネルでお祝いしてよい記念日ラベルかどうかを判定する。
+
+        anniversaries は記憶圧縮（memory_service._compact_memory）の LLM が
+        自由記述で書き込むため、「退院記念日」「離婚記念日」のように DM でだけ
+        話した私的な記念日が混ざりうる。それをそのまま共有チャンネルで祝うと、
+        本人が公開するつもりのなかった事情が他の参加者へ露出してしまう。
+        そのため constants.ANNIVERSARY_PUBLIC_LABELS の許可リストに載っている
+        ラベルだけを自動お祝いの対象にする。
+
+        照合は完全一致で行う。部分一致にすると「離婚記念日」「退院記念日」が
+        「記念日」を含むという理由で通ってしまい、許可リストの意味が無くなる。
+        """
+        return label in ANNIVERSARY_PUBLIC_LABELS
 
     @staticmethod
     def _is_today(today: Any, month: int, day: int) -> bool:

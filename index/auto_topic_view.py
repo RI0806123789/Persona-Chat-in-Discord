@@ -3,7 +3,7 @@ from discord import ui
 
 from app_state import GuildSettings
 from choices import AUTO_TOPIC_INTERVAL_CHOICES, AUTO_TOPIC_INTERVAL_DISPLAY_NAMES
-from view_parts import BackButton, HubFactory
+from view_parts import BackButton, HubFactory, PanelView
 
 
 def _build_status_text(
@@ -49,8 +49,7 @@ class AutoTopicIntervalSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
         view.temp_interval_hours = int(self.values[0])
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -65,8 +64,7 @@ class AutoTopicToggleButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
         view.temp_enabled = not view.temp_enabled
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -94,7 +92,7 @@ class AutoTopicConfirmButton(ui.Button):
         view.stop()
 
 
-class AutoTopicView(ui.View):
+class AutoTopicView(PanelView):
     """自発的な会話の設定パネル全体を表す View。
 
     しきい値セレクトと ON/OFF トグルを保持し、確定を押すまで BotState を
@@ -107,14 +105,16 @@ class AutoTopicView(ui.View):
         guild_settings: GuildSettings,
         *,
         make_hub: HubFactory | None = None,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ 自発会話パネルは時間切れになりました。設定は変更されていません。"
+                "再度 /functions を実行してください。"
+            )
+        )
         self.guild_settings = guild_settings
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
-        # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
-        self.message: discord.Message | None = None
 
         # 一時選択値（現在の設定を初期値として保存）
         self.temp_enabled: bool = guild_settings.auto_topic_enabled
@@ -136,15 +136,3 @@ class AutoTopicView(ui.View):
             self.temp_interval_hours,
             len(self.guild_settings.auto_topic_channels),
         )
-
-    async def on_timeout(self) -> None:
-        """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ 自発会話パネルは時間切れになりました。設定は変更されていません。再度 /functions を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"自発会話パネルのタイムアウト処理エラー: {error}")

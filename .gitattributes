@@ -1,0 +1,8 @@
+# systemd の unit ファイルは改行コードを LF に固定する。
+# CRLF になると ExecStart= のパス末尾に \r が混入し、systemd が
+# 「そんなファイルは無い」としてサービスの起動に失敗する（原因が非常に分かりにくい）。
+# 開発は Windows・稼働は Ubuntu という構成のため、チェックアウト時の自動変換で
+# 事故が起きうる。deploy/bot.service 本体は .gitignore 済みだが、
+# そこへコピーされる .example 側を LF に保てば実害を防げる。
+deploy/*.service      text eol=lf
+deploy/*.service.example text eol=lf

@@ -121,12 +121,19 @@ class BotState:
     dm_settings: GuildSettings = field(default_factory=GuildSettings)
 
     last_activity_timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # ウェルカムメッセージを投稿済みのサーバーID。**インメモリのみ**（永続化しない）。
+    # on_guild_join は実際に招待されたときにしか発火せず、再起動・再接続では
+    # 発火しないため、プロセスをまたぐ重複投稿は原理的に起きない。この集合は
+    # 「同一プロセス内で万一イベントが重複して届いた場合」の保険にすぎないので、
+    # auto_topic_channels と同じ「実行時に自然に再構築される一時状態」として扱う。
+    welcomed_guild_ids: set[int] = field(default_factory=set)
     memory_background_started: bool = False
     document_worker_started: bool = False
     commands_synced: bool = False
     auto_topic_background_started: bool = False
     anniversary_background_started: bool = False
     reminder_background_started: bool = False
+    feedback_prune_background_started: bool = False
 
     # 設定の保存先。restore_from_database() で紐づけられる。
     _db: Any = field(default=None, repr=False, compare=False)

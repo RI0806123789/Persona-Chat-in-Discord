@@ -95,3 +95,24 @@ class NgWordFilter:
         if self._pattern is None:
             return text
         return self._pattern.sub(lambda m: "●" * len(m.group()), text)
+
+    def mask_with_log(self, text: str, *, label: str) -> str:
+        """NGワードが含まれていればログに出したうえでマスクし、無ければ元のテキストを返す。
+
+        マスク仕様を変えるときに1か所で済ませるために集約している。以前、感情タグの
+        正規表現が3ファイルに重複して差異が生まれ、タグがユーザーへ露出する不具合に
+        つながった前例があるため、同じ再発を避ける。
+
+        Args:
+            text: 判定対象のテキスト（ユーザー入力・Bot応答・リマインダー本文など）。
+            label: ログに出す文脈名（例: "Bot応答" / "自発的な会話" / "リマインダー"）。
+                どの経路で検出されたのか追えるよう、呼び出し側で必ず指定すること。
+
+        Returns:
+            NGワードを含む場合はマスク済みのテキスト。含まない場合は加工しない元のテキスト。
+        """
+        if not self.contains_ng_word(text):
+            return text
+        detected = self.find_ng_words(text)
+        print(f"NGワード検出 ({label}): {detected}")
+        return self.mask_ng_words(text)

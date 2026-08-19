@@ -3,36 +3,53 @@
 `/join` でボットがボイスチャンネルに接続している間だけ、テキストチャンネルへの
 AI の返信を音声で読み上げる。接続していなければ黙って何もしない（no-op）。
 
-**FFmpeg には依存しない。** gTTS が返すのは mp3 だが、`ffmpeg.exe` のような外部プロセスを
-毎回起動する代わりに、miniaudio（C ライブラリを同梱した pip パッケージ。exe 不要）で
-メモリ上のまま「48kHz / ステレオ / 16bit」の生 PCM へデコードし、`discord.PCMAudio` に
-渡す。Discord のボイス送信はこの形式の PCM をそのまま受け取れるため、変換用の
-外部バイナリも一時ファイルも要らない。CPU 1コア / メモリ 1GB 級の小さなサーバーでも
-動かせるようにするための構成。
+**声はペルソナごとに変わる。** 主エンジンの **edge-tts**（Microsoft Edge の読み上げが
+使っているニューラル音声。APIキー不要）に、キャラクターごとの話者・声の高さ・話す速さを
+指定して合成する。edge-tts には音色を変える機能が無いため、同じ話者を使い回すキャラの
+差だけ `voice_dsp` の EQ で付ける。どのキャラをどう鳴らすかは `constants.py` の
+`VOICE_PROFILES`。
+
+**edge-tts が失敗したら gTTS へ退避する。** edge-tts は公式に third-party 利用が
+認められた API ではなく、過去に Microsoft 側の仕様変更で一時的に使えなくなった経緯が
+ある。退避時はキャラ差が失われるが、読み上げ機能ごと止まるよりはよいと判断している。
+
+**FFmpeg には依存しない。** どちらのエンジンも mp3（24kHz モノラル）を返すが、
+`ffmpeg.exe` のような外部プロセスを毎回起動する代わりに、miniaudio（C ライブラリを
+同梱した pip パッケージ。exe 不要）でメモリ上のまま「48kHz / ステレオ / 16bit」の
+生 PCM へデコードし、`discord.PCMAudio` に渡す。Discord のボイス送信はこの形式の
+PCM をそのまま受け取れるため、変換用の外部バイナリも一時ファイルも要らない。
+CPU 1コア / メモリ 1GB 級の小さなサーバーでも動かせるようにするための構成。
 """
 
 import asyncio
 import io
 import re
+from typing import Any, Mapping
 
 import discord
+import edge_tts
 import miniaudio
+import numpy as np
 from gtts import gTTS
 
 from background import spawn
 from constants import (
+    EDGE_TTS_VOICE_FEMALE,
     TTS_CHANNELS,
     TTS_LANG,
     TTS_MAX_CHARS,
+    TTS_PLAY_TIMEOUT_MARGIN_SECONDS,
     TTS_QUEUE_MAX,
     TTS_SAMPLE_RATE,
     TTS_TIMEOUT_SECONDS,
     TTS_TRUNCATION_NOTICE,
+    VOICE_PROFILES,
 )
+from voice_dsp import apply_equalizer, needs_equalizer, resolve_profile
 
 # 読み上げに不向きな要素を落とすためのパターン群。
 # 音声で聞いて意味をなさないもの（URL・記号・コード）は読み上げる価値がないうえ、
-# gTTS は URL を1文字ずつ読み上げてしまい非常に長くなるため必ず除去する。
+# 音声エンジンは URL を1文字ずつ読み上げてしまい非常に長くなるため必ず除去する。
 _CODE_BLOCK_PATTERN = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_PATTERN = re.compile(r"`[^`]*`")
 _URL_PATTERN = re.compile(r"https?://\S+")
@@ -43,6 +60,38 @@ _MENTION_PATTERN = re.compile(r"<[@#][!&]?\d+>")
 # Markdown の装飾記号と引用・見出し記号（読み上げでは雑音にしかならない）
 _MARKDOWN_SYMBOL_PATTERN = re.compile(r"[*_~>#|`]")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+# edge-tts が受け付けるパラメータの形式（パッケージ内部の検証と同じもの）。
+# 起動時にプロファイルを点検するために持つ。
+_EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
+_EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
+
+# int16 で表せる範囲。加工でこれを超えたまま変換すると音が割れるため必ず丸める。
+_INT16_MIN = -32768.0
+_INT16_MAX = 32767.0
+
+# edge-tts が失敗し続けている間、返信のたびに同じログを出さないための状態。
+# 「失敗し始めたとき」と「復旧したとき」の2回だけ記録する。
+_edge_tts_failing = False
+
+
+def _validate_profiles() -> None:
+    """`VOICE_PROFILES` の pitch / rate が edge-tts の形式に合っているか点検する。
+
+    形式が違うと `edge_tts.Communicate` が `ValueError` を投げ、以後ずっと
+    gTTS へ退避し続けることになる（音は出るのでキャラ差が消えたことに
+    気づきにくい）。設定ミスは実行時ではなく起動時に気づけるようにする。
+    """
+    for prompt_file, profile in VOICE_PROFILES.items():
+        rate = profile.get("rate", "+0%")
+        pitch = profile.get("pitch", "+0Hz")
+        if not isinstance(rate, str) or not _EDGE_RATE_PATTERN.match(rate):
+            print(f"警告: ボイスプロファイルの rate が不正です（{prompt_file}: {rate!r}）。'+5%' のような形式で指定してください。")
+        if not isinstance(pitch, str) or not _EDGE_PITCH_PATTERN.match(pitch):
+            print(f"警告: ボイスプロファイルの pitch が不正です（{prompt_file}: {pitch!r}）。'+10Hz' のような形式で指定してください。")
+
+
+_validate_profiles()
 
 
 def build_speech_text(response_text: str) -> str:
@@ -65,29 +114,110 @@ def build_speech_text(response_text: str) -> str:
     return text
 
 
-def _synthesize_pcm(text: str) -> bytes:
-    """テキストを Discord へそのまま送出できる生 PCM に変換する。
+async def _fetch_edge_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
+    """edge-tts で mp3 を取得する。
 
-    gTTS のネットワーク呼び出しと miniaudio のデコードはどちらも同期処理のため、
-    呼び出し側から `asyncio.to_thread` で別スレッドに逃がして使う
-    （イベントループを止めるとボット全体の応答が固まるため）。
+    edge-tts は async ネイティブで、通信は WebSocket 越しの非同期処理。
+    そのままイベントループ上で await してよい（待っている間ループは塞がらない）。
+    **`asyncio.to_thread` の中で `asyncio.run()` して呼ばないこと** —
+    イベントループが入れ子になり正常に動作しない。
     """
-    mp3_buffer = io.BytesIO()
-    gTTS(text=text, lang=TTS_LANG).write_to_fp(mp3_buffer)
+    communicate = edge_tts.Communicate(
+        text,
+        str(profile.get("voice") or EDGE_TTS_VOICE_FEMALE),
+        rate=str(profile.get("rate") or "+0%"),
+        pitch=str(profile.get("pitch") or "+0Hz"),
+    )
+    buffer = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buffer.write(chunk["data"])
+    return buffer.getvalue()
 
-    # miniaudio 側で 48kHz / ステレオ / 16bit への変換まで済ませる。
-    # gTTS の mp3 は 24kHz モノラルなので、この指定が実質リサンプリングを兼ねる。
+
+def _fetch_gtts_mp3(text: str) -> bytes:
+    """退避用。gTTS で mp3 を取得する（同期処理なので別スレッドから呼ぶこと）。"""
+    buffer = io.BytesIO()
+    gTTS(text=text, lang=TTS_LANG).write_to_fp(buffer)
+    return buffer.getvalue()
+
+
+async def _fetch_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
+    """主エンジン（edge-tts）で合成し、駄目なら gTTS へ退避する。"""
+    global _edge_tts_failing
+
+    try:
+        mp3 = await _fetch_edge_mp3(text, profile)
+        if mp3:
+            if _edge_tts_failing:
+                print("TTS: edge-tts が復旧しました。通常の読み上げに戻ります。")
+                _edge_tts_failing = False
+            return mp3
+        reason = "音声が返ってきませんでした"
+    except Exception as error:
+        reason = f"{type(error).__name__}: {error}"
+
+    if not _edge_tts_failing:
+        # 失敗が続く間は返信のたびにログが溢れるため、状態が変わったときだけ残す。
+        print(f"TTS: edge-tts に失敗したため gTTS で読み上げます（{reason}）")
+        _edge_tts_failing = True
+
+    # 退避時は話者・高さ・速さを再現できないためキャラ差は失われる（音色だけは掛かる）。
+    return await asyncio.to_thread(_fetch_gtts_mp3, text)
+
+
+def _decode_to_pcm(mp3_bytes: bytes, profile: Mapping[str, Any]) -> bytes:
+    """mp3 を Discord へそのまま送出できる生 PCM に変換し、音色を適用する。
+
+    デコードも EQ も同期の CPU 処理のため、呼び出し側から `asyncio.to_thread` で
+    別スレッドに逃がして使う（イベントループを止めるとボット全体の応答が固まる）。
+    """
+    if not needs_equalizer(profile):
+        # 音色を変えないペルソナ。miniaudio 側で 48kHz / ステレオ / 16bit への
+        # 変換まで済ませ、numpy を一切通さない。
+        decoded = miniaudio.decode(
+            mp3_bytes,
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=TTS_CHANNELS,
+            sample_rate=TTS_SAMPLE_RATE,
+        )
+        return decoded.samples.tobytes()
+
+    # 音色を変えるペルソナ。EQ はモノラル1ch分だけ掛ければ足りるので、
+    # ステレオ化は最後に回す（計算量が半分で済む）。
     decoded = miniaudio.decode(
-        mp3_buffer.getvalue(),
+        mp3_bytes,
         output_format=miniaudio.SampleFormat.SIGNED16,
-        nchannels=TTS_CHANNELS,
+        nchannels=1,
         sample_rate=TTS_SAMPLE_RATE,
     )
-    return decoded.samples.tobytes()
+    mono = np.frombuffer(decoded.samples.tobytes(), dtype=np.int16)
+    shaped = apply_equalizer(mono, profile, sample_rate=TTS_SAMPLE_RATE)
+
+    # EQ のブーストで int16 の範囲を超えることがあるので、必ずクリップしてから丸める。
+    clipped = np.clip(shaped, _INT16_MIN, _INT16_MAX).astype(np.int16)
+    # モノラル1ch分を L/R へ複製してインターリーブする（Discord はステレオしか受け取らない）。
+    return np.repeat(clipped, TTS_CHANNELS).tobytes()
+
+
+async def _synthesize_pcm(text: str, profile: Mapping[str, Any]) -> bytes:
+    """テキストを Discord へそのまま送出できる生 PCM に変換する。
+
+    ネットワーク待ち（edge-tts）は非同期のままイベントループ上で、
+    CPU 処理（デコードと EQ）は別スレッドで実行する。
+    """
+    mp3_bytes = await _fetch_mp3(text, profile)
+    return await asyncio.to_thread(_decode_to_pcm, mp3_bytes, profile)
 
 
 async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
-    """PCM を再生し、再生が終わる（または失敗する）まで待つ。"""
+    """PCM を再生し、再生が終わる（または失敗する）まで待つ。
+
+    完了待ちには必ず上限を設ける。`after` コールバックはボイス接続が正常な
+    `disconnect()` を経ずに切れる（回線の瞬断など）と呼ばれないことがあり、
+    無期限に待つとそのサーバーの読み上げワーカーが永久に返らなくなる
+    （キューの登録も消せないため、再起動まで読み上げが止まる）。
+    """
     loop = asyncio.get_running_loop()
     finished = asyncio.Event()
 
@@ -98,14 +228,40 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
             print(f"読み上げの再生エラー: {error}")
         loop.call_soon_threadsafe(finished.set)
 
+    # 待ち時間の上限は「音声の実再生秒数 + 余裕」。16bit なので 1 サンプル 2 バイト、
+    # 1 秒あたり (サンプリング周波数 × チャンネル数 × 2) バイトになる。
+    play_seconds = len(pcm) / float(TTS_SAMPLE_RATE * TTS_CHANNELS * 2)
+    timeout_seconds = play_seconds + TTS_PLAY_TIMEOUT_MARGIN_SECONDS
+
     voice_client.play(discord.PCMAudio(io.BytesIO(pcm)), after=after_playing)
-    await finished.wait()
+    try:
+        await asyncio.wait_for(finished.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        # getattr の既定値付きで取るのは、切断済みだと guild プロパティの参照自体が
+        # 失敗しうるため（ログのためにここで例外を出したくない）。
+        guild = getattr(voice_client, "guild", None)
+        guild_id = getattr(guild, "id", "不明")
+        print(
+            f"TTS: 再生の完了通知が {timeout_seconds:.1f} 秒以内に届かなかったため、"
+            f"この読み上げを打ち切って次へ進みます（guild_id={guild_id}）。"
+            "ボイス接続が正常な切断を経ずに切れた可能性があります。"
+        )
+        try:
+            # まだ鳴っている場合に次の読み上げと音が重ならないよう止めておく。
+            # 既に切断されていると例外になりうるが、打ち切り自体は続行する。
+            voice_client.stop()
+        except Exception:
+            pass
 
 
 # ギルドIDごとの読み上げ待ちキュー。再生中に届いた返信を捨てずに順番に読むために持つ。
 # ワーカーは最初の依頼で起動し、キューが空になったら自分を片付けて終了するので、
 # 参加していないサーバーの分までタスクが常駐することはない。
-_speech_queues: dict[int, asyncio.Queue[str]] = {}
+#
+# 積むのは「読み上げるテキスト」と「そのときのボイスプロファイル」の組。
+# プロファイルを積む時点で確定させておくと、待っている間に /functions でペルソナを
+# 切り替えられても、既に積まれた分は依頼時のキャラクターの声のまま読み上げられる。
+_speech_queues: dict[int, asyncio.Queue[tuple[str, Mapping[str, Any]]]] = {}
 
 
 async def _run_speech_worker(guild: discord.Guild) -> None:
@@ -114,7 +270,7 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
     try:
         while True:
             try:
-                text = queue.get_nowait()
+                text, profile = queue.get_nowait()
             except asyncio.QueueEmpty:
                 # ここから return までに await を挟まないこと。挟むと、キューが空だと
                 # 判断した後・登録を消す前に新しい依頼が積まれ、その分が
@@ -130,7 +286,7 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
 
             try:
                 pcm = await asyncio.wait_for(
-                    asyncio.to_thread(_synthesize_pcm, text),
+                    _synthesize_pcm(text, profile),
                     timeout=TTS_TIMEOUT_SECONDS,
                 )
                 await _play_pcm(voice_client, pcm)
@@ -144,11 +300,19 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
         _speech_queues.pop(guild.id, None)
 
 
-async def play_tts_response(message: discord.Message, response_text: str | None) -> None:
+async def play_tts_response(
+    message: discord.Message,
+    response_text: str | None,
+    prompt_file: str | None = None,
+) -> None:
     """AI の返信をボイスチャンネルで読み上げる。
 
     ボットが `/join` でボイスチャンネルに接続しているときだけ動作し、
     それ以外は何もせずに戻る（テキストチャットは読み上げの成否に影響されない）。
+
+    `prompt_file` はそのサーバーで選ばれているペルソナ（`GuildSettings` の
+    `current_prompt_file`）。話者・声の高さ・話す速さ・音色をキャラクターに
+    合わせるために使う。省略・未登録のペルソナの場合は既定の声で読み上げる。
     """
     if not response_text or response_text.isspace():
         return
@@ -167,16 +331,19 @@ async def play_tts_response(message: discord.Message, response_text: str | None)
         # 装飾やURLだけの返信を除去した結果、読み上げる中身が残らなかった場合。
         return
 
+    # 待ち行列に並ぶ前に、いま選ばれているキャラクターの声を確定させておく。
+    request = (speech_text, resolve_profile(prompt_file))
+
     queue = _speech_queues.get(guild.id)
     if queue is None:
         queue = asyncio.Queue(maxsize=TTS_QUEUE_MAX)
         _speech_queues[guild.id] = queue
-        queue.put_nowait(speech_text)
+        queue.put_nowait(request)
         spawn(_run_speech_worker(guild), label="ボイス読み上げ")
         return
 
     try:
-        queue.put_nowait(speech_text)
+        queue.put_nowait(request)
     except asyncio.QueueFull:
         # 読み上げが追いつかないほど返信が続いた場合。古い返信を延々と喋り続けるより、
         # 遅れた分は捨てて会話の現在地に追従する方が自然なため、この返信は見送る。

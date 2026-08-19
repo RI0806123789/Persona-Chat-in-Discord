@@ -2,20 +2,40 @@
 # `sqlite3`（DB）や `venv`（仮想環境）は Python の標準ライブラリのためここには書かない
 # （Ubuntu では python3 / python3-venv パッケージに含まれる。README のセットアップ参照）。
 #
-# ボイス読み上げに FFmpeg は不要（gTTS の mp3 は miniaudio がメモリ上で PCM へ変換する）。
+# ボイス読み上げに FFmpeg は不要（音声エンジンが返す mp3 は miniaudio がメモリ上で PCM へ変換する）。
 # ただし Linux では Opus 共有ライブラリだけ OS 側に必要: sudo apt install -y libopus0
 # （Windows は discord.py が Opus の DLL を同梱しているため何もしなくてよい）。
-discord.py
+#
+# [voice] を必ず付けること。/join のボイス接続に必要な davey（DAVE = Discord の
+# 音声E2E暗号化プロトコル）と PyNaCl が、この extra 経由でまとめて入る。
+# Discord は 2026-03-02 から全ボイスチャンネルで DAVE を必須化しており、
+# davey が無いと接続時に "davey library needed in order to use voice" で失敗する。
+# PyNaCl はここでバージョン制約付き（<1.6）で入るため、個別に書かないこと
+# （個別に無指定で書くと制約を超えた版が入ってしまう）。
+discord.py[voice]
 google-generativeai
+# 読み上げの主エンジン。Microsoft Edge の「音声で読み上げる」機能が使っている
+# ニューラル音声を呼び出す。APIキー・アカウント登録・課金いずれも不要。
+# 日本語話者は ja-JP-NanamiNeural（女性）と ja-JP-KeitaNeural（男性）の2人で、
+# 話者・声の高さ・話す速さをサーバー側で指定できるためキャラクターごとに声を変えられる。
+edge-tts
+# 読み上げの退避先。edge-tts は公式に third-party 利用が認められた API ではなく、
+# 過去に Microsoft 側の仕様変更で一時的に使えなくなった経緯があるため、
+# 失敗したときに読み上げ機能ごと止まらないよう残してある（index/voice.py の _fetch_mp3）。
 gTTS
-# gTTS が返す mp3 を、外部プロセス（ffmpeg.exe）を起動せずメモリ上で
+# 音声エンジンが返す mp3 を、外部プロセス（ffmpeg.exe）を起動せずメモリ上で
 # 48kHz/ステレオ/16bit の生 PCM へデコードするために使う。
 # C ライブラリを同梱した binary wheel のため pip だけで完結する。
 miniaudio
-# Discord のボイス通信の暗号化に必要（libsodium を同梱した wheel のため別途インストール不要）。
-PyNaCl
 httpx
 matplotlib
 numpy
 Pillow
 PyPDF2
+# APIキー（Gemini / Discord）をプロジェクトルート直下の .env から読み込むために使う
+# （index/settings_loader.py）。以前は実キーを config_private.py という .py ファイルに
+# 直接書いていたが、.env 方式なら systemd の EnvironmentFile= や Docker の --env-file で
+# OS の環境変数として渡す運用へ、コードを変えずにそのまま移行できる。
+# 未インストールでも settings_loader.py は警告を出して os.environ だけで続行するため、
+# 環境変数でキーを渡す運用ならこのパッケージは無くても動く。
+python-dotenv

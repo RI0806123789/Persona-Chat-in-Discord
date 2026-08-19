@@ -9,8 +9,16 @@
 ボット自体は動かせるようにするフェイルオープン設計）。
 """
 
-from datetime import timezone, tzinfo
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo
+
+# 日本語の曜日名。datetime.weekday() は月曜=0・日曜=6 を返すため、この並び順と一致する。
+#
+# 現在 content_moderator.py（リマインダー登録時に現在日時をプロンプトへ埋める）と
+# reminder_service.py（リマインダーの表示）が同じテーブルを別々に持っており、
+# 片方だけ表記を変える（例: "月" → "月曜"）と登録時と表示時で曜日表記が食い違う。
+# 曜日名を足したり書式を変えたりするときは、必ずこのテーブルだけを直すこと。
+WEEKDAY_NAMES_JA = ("月", "火", "水", "木", "金", "土", "日")
 
 
 def resolve_timezone(name: str, *, purpose: str = "") -> tzinfo:
@@ -39,3 +47,15 @@ def timezone_label(tz: tzinfo) -> str:
     9時間ずれた時刻での登録につながる。
     """
     return str(tz)
+
+
+def format_weekday(dt: datetime) -> str:
+    """datetime から日本語の曜日1文字（"月"〜"日"）を返す。
+
+    プロンプトへ埋める現在日時と、ユーザーへ見せるリマインダーの日時表示の両方から
+    使うことを想定している（WEEKDAY_NAMES_JA のコメント参照）。
+
+    Args:
+        dt: 曜日を取り出す日時。tz 有無は問わない（weekday() はどちらでも使える）。
+    """
+    return WEEKDAY_NAMES_JA[dt.weekday()]

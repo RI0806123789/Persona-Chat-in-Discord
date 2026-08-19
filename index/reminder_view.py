@@ -2,7 +2,7 @@ import discord
 from discord import ui
 
 from reminder_service import ReminderService
-from view_parts import BackButton, HubFactory
+from view_parts import BackButton, HubFactory, PanelView
 
 
 def _build_status_text(records: list[dict], service: ReminderService) -> str:
@@ -10,7 +10,8 @@ def _build_status_text(records: list[dict], service: ReminderService) -> str:
     if not records:
         return (
             "⏰ **リマインダーパネル** — 予定されているリマインダーはありません。\n"
-            "※ 会話の中で「30分後にゴミ出しって知らせて」のように頼むと登録されます。"
+            "※ 会話の中で「30分後にゴミ出しって知らせて」のように頼むと登録されます。\n"
+            "※ 「毎朝7時に薬って知らせて」のように頼むと、繰り返しで登録されます。"
         )
 
     lines = ["⏰ **リマインダーパネル** — 予定されているリマインダーです。"]
@@ -20,6 +21,8 @@ def _build_status_text(records: list[dict], service: ReminderService) -> str:
     if len(records) > 25:
         lines.append(f"…ほか {len(records) - 25} 件")
     lines.append("※ 取り消したいものはセレクトメニューから選んでください。")
+    # 繰り返しは通知しても消えず登録枠を占め続けるため、その点をここで案内する。
+    lines.append("※ （毎日）などの繰り返しは、取り消すまでこの一覧に残り続けます。")
     return "\n".join(lines)
 
 
@@ -61,7 +64,7 @@ class ReminderCancelSelect(ui.Select):
         view.stop()
 
 
-class ReminderView(ui.View):
+class ReminderView(PanelView):
     """リマインダーの一覧・取り消しパネル。
 
     表示するのは実行者本人のリマインダーだけ（内容に予定などの私的情報が入るため）。
@@ -75,34 +78,28 @@ class ReminderView(ui.View):
         viewer_id: str,
         *,
         make_hub: HubFactory | None = None,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ リマインダーパネルは時間切れになりました。"
+                "再度 /functions を実行してください。"
+            )
+        )
         self.service = service
         self.records = records
         self.viewer_id = viewer_id
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
-        # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
-        self.message: discord.Message | None = None
 
+        self._add_all_items()
+
+    def _add_all_items(self) -> None:
+        """UI パーツを View に追加する。"""
         # 1件も無いときはセレクトを出さない（空の選択肢は Discord 側でエラーになる）
-        if records:
-            self.add_item(ReminderCancelSelect(records, service))
+        if self.records:
+            self.add_item(ReminderCancelSelect(self.records, self.service))
         self.add_item(BackButton(row=1))
 
     def build_preview(self) -> str:
         """現在のリマインダー一覧からパネル表示テキストを組み立てる。"""
         return _build_status_text(self.records, self.service)
-
-    async def on_timeout(self) -> None:
-        """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ リマインダーパネルは時間切れになりました。再度 /functions を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"リマインダーパネルのタイムアウト処理エラー: {error}")

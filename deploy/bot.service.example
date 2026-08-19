@@ -1,0 +1,117 @@
+# =============================================================================
+# Persona Chat in Discord — systemd ユニット（公開用テンプレート）
+#
+# このファイルは Git 管理対象。実運用では deploy/bot.service（.gitignore 済み）
+# へコピーし、<PROJECT_DIR> と <USER> を自分の環境の実値へ置換して使う。
+# 実パスやユーザー名はサーバー構成を推測する手掛かりになるため、公開側には残さない。
+#
+# サービス名は「bot」。導入・運用の手順は README を参照。
+# =============================================================================
+
+[Unit]
+Description=Persona Chat in Discord (Gemini ベースの Discord ボット)
+
+# Discord と Gemini の両方へ接続できて初めて意味を持つプロセスなので、
+# 「NIC の設定が始まった」ことしか保証しない network.target ではなく、
+# 実際に通信可能になるまで待つ network-online.target を待機対象にする。
+# Wants= を書かないと network-online.target 自体が起動されず After= が空振りするため、
+# この 2 行は必ずセットで書く。
+After=network-online.target
+Wants=network-online.target
+
+# 再起動のレート制限を無効化する（0 = 何度でも再起動を試みる）。
+# 既定は「10 秒間に 5 回失敗したら諦めて failed のまま放置」だが、それだと
+# 回線断のような一時的な障害で連続クラッシュしたとき、ボットが二度と復帰しない。
+# 「落ちても手動回復が要らないこと」がこのサービスの目的なので、諦めない側へ倒す。
+# RestartSec=10 と組み合わせても起動試行は毎分 6 回程度にしかならず、
+# CPU 1 コアの VPS でも負荷は無視できる。
+#
+# 【副作用】API キー未設定のような「直さない限り必ず落ちる」設定ミスでも
+# 永久に再起動し続ける（自然には止まらない）。起動直後に落ち続けている場合は
+#   journalctl -u bot -n 50
+# にトレースバックが残っているので、そこで気づくこと。
+#
+# 【配置セクション注意】このディレクティブは systemd 229 以降 [Unit] に置く。
+# それより古い systemd では [Service] の StartLimitInterval= が相当する
+# （Ubuntu 20.04 以降は systemd 245+ なので、このままでよい）。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+
+# ボットは自分のホーム配下のリポジトリを読み書きするだけなので root では動かさない。
+# 万一の脆弱性でも被害範囲をこのユーザーの権限に閉じ込めるため。
+User=<USER>
+Group=<USER>
+
+# 【最重要】必ず index/ の中から起動する。
+# このプロジェクトのモジュールはパッケージ化されておらず（__init__.py が無い）、
+# 互いをベア名で import し合う（from app_state import BotState）。加えて
+# プロンプトや memory/ のパスも index/ を基準に解決されるため、
+# 別のディレクトリから起動すると ModuleNotFoundError やパス解決の失敗になる。
+WorkingDirectory=<PROJECT_DIR>/index
+
+# systemd はシェルを介さずプロセスを起動するため、source .venv/bin/activate は効かない。
+# 仮想環境の python を絶対パスで直接指定するのが正しい呼び出し方
+# （この python を使えば venv 内の site-packages が自動的に参照される）。
+ExecStart=<PROJECT_DIR>/.venv/bin/python bot.py
+
+# journald へログを即座に反映させるため、Python の出力バッファリングを切る。
+# 付けないと出力がバッファに溜まり、journalctl -f でリアルタイムに追えないうえ、
+# 落ちた瞬間のログが flush されずに失われることがある。
+Environment=PYTHONUNBUFFERED=1
+
+# ログや例外メッセージには日本語と絵文字が含まれる。ロケール次第で標準出力が
+# ASCII 扱いになり UnicodeEncodeError でそこの処理ごと止まる事故を防ぐため、
+# エンコーディングを明示しておく。
+Environment=PYTHONIOENCODING=utf-8
+
+# API キーはアプリ自身が python-dotenv でプロジェクトルートの .env を
+# 絶対パス指定で読み込むため、systemd 側から渡す必要はない。
+# systemd 経由で環境変数を注入したくなった場合のみ、次の行を有効化する。
+# EnvironmentFile=<PROJECT_DIR>/.env
+
+# 落ちたら必ず起こし直す。手動回復を不要にすることが目的なので、異常終了だけを見る
+# on-failure ではなく、正常終了（exit 0）も含めて拾う always にする。
+Restart=always
+
+# 再起動までの待ち時間。0 秒にすると Discord 側のレート制限に当たったときに
+# 総当たりで再接続を叩き続けてしまうため、少し間を置いてから起こす。
+RestartSec=10
+
+# ログは journald に集約する。自前のログファイルを持たないので、
+# ローテーションもサイズ管理も journald 任せにできる。
+StandardOutput=journal
+StandardError=journal
+
+# journalctl -t bot でも追えるように識別子を付ける。
+# 指定しないと ExecStart 由来の "python" になり、他の Python プロセスと混ざる。
+SyslogIdentifier=bot
+
+# --- セキュリティ強化（ボットの動作を壊さない範囲だけ）---
+# 実行中に setuid などで新たな特権を獲得できないようにする。このボットには副作用が無い。
+NoNewPrivileges=yes
+
+# /tmp をこのサービス専用の名前空間にする。文書処理が添付ファイルを
+# tempfile.NamedTemporaryFile 経由で /tmp へ落とすため、他プロセスから
+# 中身を覗かれないようにする狙い。サービス自身の読み書きは通常どおりできる。
+PrivateTmp=yes
+#
+# ProtectSystem=strict / ProtectHome=yes は入れないこと。
+# このボットは実行中に memory/（SQLite DB・JSON）と ng/（ブラックリスト）へ書き込む。
+# これらはユーザーのホーム配下にあるため、上記を有効にすると書き込みが
+# read-only エラーで失敗し、記憶やモデレーションが黙って壊れる。
+# どうしても導入するなら ReadWritePaths= で memory/ と ng/ を個別に開ける必要がある。
+
+# --- ウォッチドッグ（現時点では未導入）---
+# WatchdogSec= を設定すると「一定時間ハートビートが無ければ強制再起動」にできるが、
+# アプリ側で sd_notify(WATCHDOG=1) を定期送信する実装が必須で、送信が滞ると
+# 健全なプロセスまで殺してしまう。
+# 現在対処したいのは「プロセスが落ちる」ケースであり、それは Restart=always で拾える。
+# 「生きているのに応答しない」ハング型はまだ観測されていないため入れない。
+# 実際にハング型のフリーズが起きたら、ここで WatchdogSec の導入を検討すること。
+
+[Install]
+# GUI なしサーバーの既定ターゲットで自動起動する。
+# systemctl enable したときにこの指定が読まれてシンボリックリンクが張られる。
+WantedBy=multi-user.target

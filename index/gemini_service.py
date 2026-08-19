@@ -11,6 +11,7 @@ from constants import (
     GROUNDING_SUBMODEL_RETRY_ENABLED,
     MAX_GROUNDING_SOURCES,
 )
+from prompting import build_document_summary_prompt
 from storage import extract_json_object, safe_response_text
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -232,12 +233,7 @@ class GeminiService:
 
     async def summarize_document(self, uploaded_file: Any, document_name: str, model_name: str) -> dict[str, Any]:
         model = self._genai.GenerativeModel(model_name)
-        prompt = (
-            "このドキュメントの核となる要点とルールを、日本語で構造化して抽出してください。"
-            "出力は必ずJSONのみで、次の形式にしてください: "
-            '{"summary":"...","key_points":["..."],"warnings":["..."],"usage_notes":["..."]}'
-            f"\nファイル名: {document_name}"
-        )
+        prompt = build_document_summary_prompt(document_name)
         response = await asyncio.wait_for(
             model.generate_content_async(
                 [prompt, uploaded_file],

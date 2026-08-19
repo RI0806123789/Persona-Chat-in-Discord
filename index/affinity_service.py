@@ -4,6 +4,7 @@ import asyncio
 import re
 
 from database import Database
+from prompting import build_affinity_prompt
 
 HALF_LIFE = 1800.0  # 30 minutes in seconds
 
@@ -103,18 +104,6 @@ class AffinityService:
                 print(f"Failed to save affinity data: {e}")
 
     def build_dynamic_prompt(self, user_id: str) -> str:
+        # 文面そのものは prompting.py に集約している（ここは現在値を渡すだけ）。
         data = self.get_user_data(user_id)
-        affinity = data["affinity"]
-        valence = data["valence"]
-        arousal = data["arousal"]
-        
-        return f"""
-【現在のあなたの状態】
-・このユーザーへの親密度(Affinity): {affinity}/100
-・現在の機嫌(Valence): {valence}/100
-・現在のテンション(Arousal): {arousal}/100
-
-上記を踏まえて返答を生成してください。
-また、今回の返答によって生じた感情の変化量を、返答の末尾に必ず `[V:X, A:Y]` の形式で追記してください。
-Xは機嫌の変動量、Yはテンションの変動量です。（例: `[V:+5, A:-10]` や `[V:0, A:+2]`）
-"""
+        return build_affinity_prompt(data["affinity"], data["valence"], data["arousal"])

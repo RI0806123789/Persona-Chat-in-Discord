@@ -3,7 +3,6 @@ import sys
 
 import discord
 from discord import app_commands
-from discord.ext import tasks
 import google.generativeai as genai
 
 # Windows の既定コンソール（cp932）は絵文字などを出力できず、print した時点で
@@ -21,7 +20,7 @@ for _stream in (sys.stdout, sys.stderr):
 from app_state import BotState
 from affinity_service import AffinityService, extract_affinity_changes
 from auto_topic_service import AutoTopicService
-from background import spawn
+from background import make_guarded_loop, spawn
 from blacklist_service import BlacklistService
 from commands import register_commands
 from constants import (
@@ -29,6 +28,7 @@ from constants import (
     AUTO_TOPIC_CHECK_MINUTES,
     BLACKLIST_MAX_VIOLATIONS,
     DATABASE_PATH,
+    FEEDBACK_PRUNE_MINUTES,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT,
     LEGACY_MEMORY_OWNER_ID,
@@ -48,10 +48,13 @@ from discord_helpers import (
     is_supported_document_attachment,
     is_supported_message_channel,
     load_image_attachments,
+    post_welcome_message,
     send_long_reply,
 )
 from document_service import DocumentService
+from feedback_service import FeedbackService, set_default_service
 from gemini_service import GeminiService
+from help_view import build_welcome_text, resolve_bot_name
 from memory_service import MemoryService
 from ng_word_service import NgWordFilter
 from paths import load_prompt_template, resolve_prompt_path
@@ -95,61 +98,56 @@ documents = DocumentService(client, state, memory, gemini, usage, database, ng_f
 stats = StatsService(database, gemini)
 auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
 reminders = ReminderService(client, database, ng_filter)
+feedback = FeedbackService(client, database)
+# 集計パネル（会話統計 → 👍 フィードバック）は機能ハブ経由で生成されるため、
+# UI 層がこのインスタンスを引けるよう既定として登録しておく。
+set_default_service(feedback)
 
 register_commands(tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders)
 
 
-@tasks.loop(minutes=MEMORY_MAINTENANCE_MINUTES)
-async def memory_maintenance_loop() -> None:
-    try:
-        await memory.flush_if_needed()
-    except Exception as error:
-       print(f"バックグラウンド記憶処理エラー: {error}")
+# --- 定期実行の見回りループ ---
+# どれも「間隔を指定 / 接続完了を待つ / 本体を try-except で包んでログを出す」の
+# 3点セットなので、background.make_guarded_loop にまとめて作らせる
+# （生成するだけで開始はしないため、start() は下の on_ready で行う）。
+memory_maintenance_loop = make_guarded_loop(
+    memory.flush_if_needed,
+    label="バックグラウンド記憶処理エラー",
+    client=client,
+    minutes=MEMORY_MAINTENANCE_MINUTES,
+)
 
+auto_topic_loop = make_guarded_loop(
+    auto_topic.run_pending_checks,
+    label="自発的な会話の見回りエラー",
+    client=client,
+    minutes=AUTO_TOPIC_CHECK_MINUTES,
+)
 
-@memory_maintenance_loop.before_loop
-async def before_memory_maintenance_loop() -> None:
-    await client.wait_until_ready()
-
-
-@tasks.loop(minutes=AUTO_TOPIC_CHECK_MINUTES)
-async def auto_topic_loop() -> None:
-    try:
-        await auto_topic.run_pending_checks()
-    except Exception as error:
-        print(f"自発的な会話の見回りエラー: {error}")
-
-
-@auto_topic_loop.before_loop
-async def before_auto_topic_loop() -> None:
-    await client.wait_until_ready()
-
-
-@tasks.loop(minutes=ANNIVERSARY_CHECK_MINUTES)
-async def anniversary_loop() -> None:
-    try:
-        await auto_topic.run_anniversary_checks()
-    except Exception as error:
-        print(f"記念日チェックエラー: {error}")
-
-
-@anniversary_loop.before_loop
-async def before_anniversary_loop() -> None:
-    await client.wait_until_ready()
-
+anniversary_loop = make_guarded_loop(
+    auto_topic.run_anniversary_checks,
+    label="記念日チェックエラー",
+    client=client,
+    minutes=ANNIVERSARY_CHECK_MINUTES,
+)
 
 # リマインダーは分単位の指定に応えるため、記念日（時間単位）よりずっと短い間隔で見回る。
-@tasks.loop(seconds=REMINDER_CHECK_SECONDS)
-async def reminder_loop() -> None:
-    try:
-        await reminders.run_due_checks()
-    except Exception as error:
-        print(f"リマインダー確認エラー: {error}")
+reminder_loop = make_guarded_loop(
+    reminders.run_due_checks,
+    label="リマインダー確認エラー",
+    client=client,
+    seconds=REMINDER_CHECK_SECONDS,
+)
 
-
-@reminder_loop.before_loop
-async def before_reminder_loop() -> None:
-    await client.wait_until_ready()
+# フィードバック記録の間引き。以前は評価が押されるたびに実行していたが、
+# DB のロックを握って主経路の返信まで遅らせていたためここへ移した。
+# tasks.loop は start() 直後に1回目を実行するので、起動時の間引きも兼ねる。
+feedback_prune_loop = make_guarded_loop(
+    feedback.prune_stored,
+    label="フィードバック記録の整理エラー",
+    client=client,
+    minutes=FEEDBACK_PRUNE_MINUTES,
+)
 
 
 @client.event
@@ -179,9 +177,34 @@ async def on_ready() -> None:
         reminder_loop.start()
         state.reminder_background_started = True
 
+    if not state.feedback_prune_background_started:
+        feedback_prune_loop.start()
+        state.feedback_prune_background_started = True
+
     if not state.commands_synced:
         await tree.sync()
         state.commands_synced = True
+
+
+@client.event
+async def on_guild_join(guild: discord.Guild) -> None:
+    """新しいサーバーへ招待されたときに、使い方の案内を1回だけ投稿する。
+
+    「メンションしないと反応しない」ことも「機能が /functions に集約されている」
+    ことも、招待しただけでは誰も気づけない。最初の一歩をここで案内する。
+
+    投稿先の選定・連投防止・送信は discord_helpers.post_welcome_message が
+    まとめて担い、本文は help_view が組み立てる（ヘルプと同じ文言を使うため）。
+    ここでの try/except は、本文の組み立てなど想定外の失敗まで含めて
+    案内の失敗でイベント処理を落とさないための最後の受け皿
+    （案内が出せなくてもボット自体は普通に使えるのでフェイルオープンにする）。
+    必要な guilds インテントは Intents.default() に含まれるため設定変更は不要。
+    """
+    try:
+        welcome_text = build_welcome_text(resolve_bot_name(client.user))
+        await post_welcome_message(guild, welcome_text, state.welcomed_guild_ids)
+    except Exception as error:
+        print(f"ウェルカムメッセージの処理エラー（guild={guild.id}）: {error}")
 
 
 async def notify_violation(message: discord.Message, notice: str) -> None:
@@ -297,7 +320,9 @@ async def on_message(message: discord.Message) -> None:
     response_text = await handle_chat_message(message, question, memory_category)
     if response_text:
         # ボットが /join でボイスチャンネルに接続中のときだけ読み上げる（それ以外は no-op）。
-        await play_tts_response(message, response_text)
+        # 声の高さ・速さ・音色をキャラクターに合わせるため、そのサーバーで選ばれている
+        # ペルソナを渡す（サービス層に BotState を読ませない規約に沿って値だけを渡す）。
+        await play_tts_response(message, response_text, guild_settings.current_prompt_file)
 
 
 async def handle_chat_message(message: discord.Message, question: str, memory_category: str = "none") -> str | None:
@@ -372,10 +397,37 @@ async def handle_chat_message(message: discord.Message, question: str, memory_ca
         if grounding_sources:
             reply_text += format_grounding_sources(grounding_sources)
 
-        await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
+        sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
+        # 送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
+        # どのモデル・ペルソナの返信だったかは後から辿れないため、この時点の値を渡す。
+        feedback.track_reply(
+            sent,
+            target_user_id=user_id,
+            model_name=guild_settings.current_model_name,
+            prompt_file=guild_settings.current_prompt_file,
+        )
         await memory.append_pending_log(user_id, question, response_text)
         spawn(memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
         return response_text
+
+
+@client.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+    """ボット返信への 👍/👎 を評価として記録する。
+
+    on_reaction_add ではなく raw 版を使う（前者はメッセージがキャッシュに
+    載っている間しか発火せず、少し前の返信への評価を取りこぼすため）。
+    このイベントはボット自身が付けた初期リアクションでも発火するが、
+    その除外はサービス側（_resolve_vote_target）が行う。
+    必要な reactions インテントは Intents.default() に含まれるため設定変更は不要。
+    """
+    await feedback.handle_reaction_add(payload)
+
+
+@client.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
+    """👍/👎 が外されたときに、その評価の記録を取り消す。"""
+    await feedback.handle_reaction_remove(payload)
 
 
 def main() -> None:

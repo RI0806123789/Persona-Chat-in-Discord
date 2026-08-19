@@ -22,6 +22,7 @@ from constants import (
     ROUTER_TIMEOUT_SECONDS,
 )
 from database import Database
+from prompting import build_memory_compaction_prompt, build_router_prompt
 from storage import (
     extract_json_object,
     get_prompt_block_reason,
@@ -171,12 +172,7 @@ class MemoryService:
 
         try:
             model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
-            router_prompt = (
-                "以下の質問に答えるために、ユーザーのプロフィール情報(profile)、進行中のプロジェクト情報(projects)、"
-                "または過去の情報は不要(none)のどれが適切ですか？ JSONで category だけを返してください。\n"
-                f"質問: {question}\n"
-                '出力形式: {"category": "profile|projects|none"}'
-            )
+            router_prompt = build_router_prompt(question)
             response = await asyncio.wait_for(
                 model.generate_content_async(
                     router_prompt,
@@ -214,27 +210,36 @@ class MemoryService:
         if self.flush_lock.locked():
             return
 
+        # ロックの役割分担:
+        #   flush_lock … フラッシュ処理そのものが同時に二重に走らないようにする（全体を保持）。
+        #   io_lock    … ファイルI/O・DB書き込みの直列化だけに使う（読み書きのたびに短く取る）。
+        # io_lock を最後まで保持したままにすると、Gemini 呼び出し
+        # （最大 MEMORY_FLUSH_MAX_USERS_PER_RUN 人 × MEMORY_COMPACT_TIMEOUT_SECONDS）の間、
+        # 無関係な別ユーザーの append_pending_log までブロックされてしまう。
+        # 取得順序は必ず flush_lock → io_lock（逆順で取る箇所を作らないこと）。
         async with self.flush_lock:
             async with self.io_lock:
                 self.ensure_storage()
                 user_ids = await asyncio.to_thread(self._db.pending_distinct_user_ids)
-                if not user_ids:
-                    return
+            if not user_ids:
+                return
 
-                # 他人の会話ログを同じ Gemini 呼び出しに混ぜないため、ユーザーごとに
-                # 個別に圧縮する。1 回のフラッシュで処理する人数は上限で区切り、
-                # 一度に大量の API 呼び出しが走らないようにする（残りは次回の見回りで処理）。
-                processed = 0
-                for user_id in user_ids:
-                    if processed >= MEMORY_FLUSH_MAX_USERS_PER_RUN:
-                        break
+            # 他人の会話ログを同じ Gemini 呼び出しに混ぜないため、ユーザーごとに
+            # 個別に圧縮する。1 回のフラッシュで処理する人数は上限で区切り、
+            # 一度に大量の API 呼び出しが走らないようにする（残りは次回の見回りで処理）。
+            processed = 0
+            for user_id in user_ids:
+                if processed >= MEMORY_FLUSH_MAX_USERS_PER_RUN:
+                    break
+                async with self.io_lock:
                     entries = await asyncio.to_thread(self._db.pending_fetch_entries, str(user_id))
-                    if not entries:
-                        continue
-                    if not force and not self._is_flush_required(len(entries)):
-                        continue
-                    processed += 1
-                    await self._flush_user(str(user_id), entries)
+                if not entries:
+                    continue
+                # _is_flush_required は同期の純粋判定なのでロックは要らない。
+                if not force and not self._is_flush_required(len(entries)):
+                    continue
+                processed += 1
+                await self._flush_user(str(user_id), entries)
 
     async def _flush_user(self, user_id: str, entries: list[dict[str, Any]]) -> None:
         """1 ユーザー分の pending_log を profile / projects へ圧縮統合する。
@@ -243,13 +248,27 @@ class MemoryService:
         （他ユーザーの情報は一切混ぜない）。フェイルセーフ設計で、パース失敗時は
         pending_log を保持（リトライ）するが、連続失敗やセーフティブロック時は
         無限ループを避けるためそのユーザーの pending_log をクリアする。
+
+        **Gemini 呼び出し（`_compact_memory`）の間は io_lock を手放す**（他ユーザーの
+        会話ログ追記を数十秒ブロックしないため）。そのぶん「待っている間に増えたもの」を
+        巻き込まないよう、次の2点を守ること:
+          - pending_log の削除は圧縮に使った行の最大 id までに限定する。
+          - projects.json は書き込み直前に読み直し、増えた文書要約を継ぎ足す。
         """
         pending_text = self._format_pending_entries(entries)
+        # 圧縮対象に含まれた行の最大 id。削除範囲はここまでに限定する
+        # （Gemini を待っている間に追記された新しい会話ログを道連れに消さないため）。
+        max_entry_id = self._max_entry_id(entries)
 
-        profile_snapshot = await asyncio.to_thread(self._db.profile_load, user_id)
+        async with self.io_lock:
+            profile_snapshot = await asyncio.to_thread(self._db.profile_load, user_id)
+            wrapper = self._load_projects_wrapper()
+        projects_snapshot = self._user_projects(wrapper, user_id)
         profile_text = json.dumps(profile_snapshot, ensure_ascii=False, indent=2)
-        wrapper = self._load_projects_wrapper()
-        projects_text = json.dumps(self._user_projects(wrapper, user_id), ensure_ascii=False, indent=2)
+        projects_text = json.dumps(projects_snapshot, ensure_ascii=False, indent=2)
+        # 圧縮前の文書要約の件数。Gemini を待っている間に store_document_summary が
+        # 追記した分を、書き戻すときに拾い直すための目印にする。
+        document_summary_count = self._document_summary_count(projects_snapshot)
 
         try:
             profile_data, projects_data = await self._compact_memory(
@@ -262,26 +281,83 @@ class MemoryService:
             # → このユーザーの pending_log をクリアして無限ループを防止
             print(f"記憶圧縮: プロンプトがブロックされました (user_id={user_id}, {error})")
             print(f"記憶圧縮: 処理不能な pending_log をクリアします (user_id={user_id})。")
-            await asyncio.to_thread(self._db.pending_clear, user_id)
+            async with self.io_lock:
+                await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             return
         except Exception as error:
-            await self._register_compact_failure(user_id, f"記憶圧縮エラー (user_id={user_id}): {error}")
+            await self._register_compact_failure(
+                user_id, f"記憶圧縮エラー (user_id={user_id}): {error}", max_entry_id
+            )
             return
 
         if profile_data is None or projects_data is None:
             await self._register_compact_failure(
                 user_id,
                 f"記憶圧縮エラー (user_id={user_id}): JSONの生成またはパースに失敗したため、pending_log は保持します。",
+                max_entry_id,
             )
             return
 
         self._compact_fail_count[user_id] = 0
-        await asyncio.to_thread(self._db.profile_replace_all, user_id, profile_data)
-        # projects.json はこのユーザーのスライスだけ差し替える（他ユーザーの分は保持）。
-        wrapper = self._load_projects_wrapper()
-        wrapper["users"][user_id] = projects_data
-        await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
-        await asyncio.to_thread(self._db.pending_clear, user_id)
+        async with self.io_lock:
+            await asyncio.to_thread(self._db.profile_replace_all, user_id, profile_data)
+            # projects.json はこのユーザーのスライスだけ差し替える（他ユーザーの分は保持）。
+            # 圧縮前のスナップショットではなく読み直すのは、待っている間に別経路
+            # （文書要約の保存）が同じファイルを更新している可能性があるため。
+            wrapper = self._load_projects_wrapper()
+            self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_count)
+            wrapper["users"][user_id] = projects_data
+            await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
+            await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+
+    @staticmethod
+    def _max_entry_id(entries: list[dict[str, Any]]) -> int:
+        """圧縮対象の pending_log 行の最大 id を返す（削除範囲の上限に使う）。
+
+        `pending_fetch_entries` は `SELECT *` なので各行に AUTOINCREMENT の id が入る。
+        万一 id を読めない行しか無い場合は 0 を返し、結果として何も削除されない
+        （消しすぎるより、次回の見回りでやり直す方が安全なため）。
+        """
+        ids: list[int] = []
+        for entry in entries:
+            try:
+                ids.append(int(entry["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return max(ids) if ids else 0
+
+    @staticmethod
+    def _document_summary_count(projects: dict[str, Any]) -> int:
+        """projects スライス内の文書要約の件数を返す（型が違えば 0 とみなす）。"""
+        summaries = projects.get("document_summaries")
+        return len(summaries) if isinstance(summaries, list) else 0
+
+    def _merge_new_document_summaries(
+        self,
+        wrapper: dict[str, Any],
+        user_id: str,
+        projects_data: dict[str, Any],
+        previous_count: int,
+    ) -> None:
+        """圧縮中に追記された文書要約を、LLM の出力（projects_data）へ継ぎ足す。
+
+        **呼び出し側が io_lock を保持していること**（この関数はロックを取らない）。
+
+        `_compact_memory` を待っている間に `store_document_summary` が
+        document_summaries へ追記していると、LLM 出力での丸ごと差し替えでその分が
+        消えてしまう。圧縮前の件数を目印に「後から増えた分」だけを拾い直す。
+        型が期待どおりでなければ安全側に倒して何もしない。
+        """
+        latest = self._user_projects(wrapper, user_id).get("document_summaries")
+        if not isinstance(latest, list) or len(latest) <= previous_count:
+            return
+
+        merged = projects_data.get("document_summaries")
+        if not isinstance(merged, list):
+            merged = []
+        merged.extend(latest[previous_count:])
+        # 既存の store_document_summary と同じく、新しい方から上限件数だけ残す。
+        projects_data["document_summaries"] = merged[-DOCUMENT_SUMMARY_LIMIT:]
 
     @staticmethod
     def _format_pending_entries(entries: list[dict[str, Any]]) -> str:
@@ -292,15 +368,20 @@ class MemoryService:
             lines.append(f"[{entry['created_at']}] Bot: {entry['response']}")
         return "\n".join(lines)
 
-    async def _register_compact_failure(self, user_id: str, log_message: str) -> None:
+    async def _register_compact_failure(self, user_id: str, log_message: str, max_entry_id: int) -> None:
         """記憶圧縮の失敗を記録する。基本は pending_log を保持してリトライするが、
-        連続失敗が上限に達したらそのユーザーの分をクリアして無限リトライを防ぐ。"""
+        連続失敗が上限に達したらそのユーザーの分をクリアして無限リトライを防ぐ。
+
+        `max_entry_id` は圧縮対象だった行の最大 id。クリアはそこまでに限定する
+        （Gemini 呼び出し中に追記された新しい会話ログまで消さないため）。
+        """
         print(log_message)
         count = self._compact_fail_count.get(user_id, 0) + 1
         self._compact_fail_count[user_id] = count
         if count >= MEMORY_COMPACT_MAX_FAILURES:
             print(f"記憶圧縮: 連続失敗のため pending_log をクリアします (user_id={user_id})。")
-            await asyncio.to_thread(self._db.pending_clear, user_id)
+            async with self.io_lock:
+                await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             self._compact_fail_count[user_id] = 0
 
     def _is_flush_required(self, entry_count: int) -> bool:
@@ -315,19 +396,11 @@ class MemoryService:
         profile_text: str,
         projects_text: str,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        compactor_prompt = (
-            "次の一時ログと既存の記憶JSONから、永続化すべき重要な事実だけを抽出し、"
-            "profile と projects を整理したJSONを返してください。不要な古い情報は削除してください。"
-            "出力は必ずJSONのみで、形式は {\"profile\": {...}, \"projects\": {...}} にしてください。\n\n"
-            "【記念日・誕生日の扱い】一時ログの中でユーザーが誕生日や記念日など"
-            "「毎年同じ月日に繰り返し祝いたいイベント」について話していた場合、"
-            f'profile 内に "{ANNIVERSARY_PROFILE_KEY}" というキーで次の形式のリストとして保存してください: '
-            '[{"label": "呼び名(例: 誕生日)", "month": 1〜12の整数, "day": 1〜31の整数}]。'
-            "既存の記念日エントリがあれば失わないようマージし（同じ label は上書き、それ以外は保持）、"
-            "月日が確定できない情報や単発の出来事（例: 今日の予定）は記念日として保存しないでください。\n\n"
-            f"--- 一時ログ (pending_log) ---\n{pending_text}\n\n"
-            f"--- プロフィール記憶 (profile) ---\n{profile_text}\n\n"
-            f"--- プロジェクト記憶 (projects) ---\n{projects_text}"
+        compactor_prompt = build_memory_compaction_prompt(
+            pending_text,
+            profile_text,
+            projects_text,
+            ANNIVERSARY_PROFILE_KEY,
         )
 
         model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)

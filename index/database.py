@@ -37,10 +37,12 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from constants import STATS_OPT_OUT_DEFAULT
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -110,6 +112,44 @@ _MIGRATIONS: dict[int, list[str]] = {
         )""",
         # 見回り（status と remind_at での絞り込み）が主なアクセスパターンのため索引を張る。
         "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (status, remind_at)",
+    ],
+    # バージョン6: リマインダーの繰り返し（毎日/毎週/毎月）に対応する。
+    #   - recurrence        … 繰り返し種別。'none' は従来どおりの単発。
+    #   - recurrence_anchor … 初回の通知予定時刻（UTC の ISO 8601）。毎月の繰り返しで
+    #                         「31日 → 2月は28日 → 3月は31日」と元の日付へ戻すための基準。
+    #                         既存行は空文字のままでよい（recurrence='none' のため使わない）。
+    # DEFAULT 句により既存のリマインダーはすべて 'none' になり、挙動は完全に後方互換。
+    # 索引 idx_reminders_due は変更不要（繰り返し行も pending のまま同じ索引に乗る）。
+    6: [
+        "ALTER TABLE reminders ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none'",
+        "ALTER TABLE reminders ADD COLUMN recurrence_anchor TEXT NOT NULL DEFAULT ''",
+    ],
+    # バージョン7: ボット返信への 👍/👎 フィードバックを記録する。
+    #   応答品質のチューニングとモデル選定の判断材料にするため、評価そのものに加えて
+    #   「どのモデル・どのペルソナの返信だったか」も一緒に残す。
+    #   同じ人が同じ返信へ何度も投票できないよう (message_id, user_id) を主キーにする
+    #   （押し替えは INSERT OR REPLACE で上書きされる）。
+    7: [
+        """CREATE TABLE IF NOT EXISTS feedback (
+            message_id     INTEGER NOT NULL,              -- 評価対象のボット返信メッセージID
+            user_id        TEXT    NOT NULL,              -- 評価した人の Discord ユーザーID
+            guild_id       INTEGER NOT NULL DEFAULT 0,    -- 返信が投稿されたサーバーID（DM は 0）
+            channel_id     INTEGER NOT NULL DEFAULT 0,    -- 返信が投稿されたチャンネルID
+            target_user_id TEXT    NOT NULL DEFAULT '',   -- その返信の宛先（会話相手）のユーザーID
+            model_name     TEXT    NOT NULL DEFAULT '',   -- 返信の生成に使った Gemini モデル
+            prompt_file    TEXT    NOT NULL DEFAULT '',   -- 返信時のペルソナ（プロンプトファイル）
+            rating         INTEGER NOT NULL,              -- 1 = 👍 / -1 = 👎
+            created_at     TEXT    NOT NULL,              -- 記録時刻（UTC の ISO 8601）
+            PRIMARY KEY (message_id, user_id)
+        )""",
+        # 集計はサーバー単位・新しい順で行うため索引を張る。
+        "CREATE INDEX IF NOT EXISTS idx_feedback_guild ON feedback (guild_id, created_at)",
+    ],
+    # バージョン8: 会話統計の収集を本人が停止できるようにする（opt-out）。
+    #   0 = 収集する（従来どおり）/ 1 = 収集しない。
+    #   既存行はすべて 0 になるため、これまでの利用者の挙動は変わらない。
+    8: [
+        "ALTER TABLE user_stats ADD COLUMN stats_opt_out INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
@@ -586,17 +626,26 @@ class Database:
         message: str,
         remind_at: str,
         created_at: str,
+        recurrence: str = "none",
+        recurrence_anchor: str = "",
     ) -> int:
         """リマインダーを1件登録し、その reminder_id を返す。
 
         remind_at / created_at は UTC の ISO 8601 文字列。同じ形式で揃えることで、
         期限判定を文字列比較のまま行える（時刻順と辞書順が一致する）。
+
+        recurrence は 'none'（単発）/'daily'/'weekly'/'monthly'。既定値を持つため、
+        繰り返しを指定しない既存の呼び出しは従来どおり単発として登録される。
+        recurrence_anchor は初回の通知予定時刻で、毎月の繰り返しが
+        「31日 → 2月は28日 → 3月は31日」と元の日付へ戻るための基準になる
+        （丸めた日付に引きずられないよう、以後この値は更新しない）。
         """
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO reminders"
-                " (user_id, user_name, guild_id, channel_id, message, remind_at, created_at, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                " (user_id, user_name, guild_id, channel_id, message, remind_at, created_at, status,"
+                "  recurrence, recurrence_anchor)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (
                     str(user_id),
                     str(user_name),
@@ -605,35 +654,85 @@ class Database:
                     str(message),
                     str(remind_at),
                     str(created_at),
+                    str(recurrence),
+                    str(recurrence_anchor),
                 ),
             )
             return int(cursor.lastrowid)
 
-    def reminder_claim_due(self, now_iso: str) -> list[dict[str, Any]]:
-        """期限が来た未通知リマインダーを done に変えて返す（無ければ空リスト）。
+    def reminder_claim_due(
+        self, now_iso: str, next_at: Callable[[dict[str, Any]], str | None]
+    ) -> list[dict[str, Any]]:
+        """期限が来た未通知リマインダーをクレームして返す（無ければ空リスト）。
 
+        単発（recurrence='none'）は done にする。繰り返しは next_at() が返す
+        次回時刻へ remind_at を進め、status は pending のまま残す
+        （新しい行を作らないため、UI から見た reminder_id が変わらない）。
         SELECT と UPDATE を同一トランザクションで行うため、見回りが重なっても
         同じリマインダーが二重に通知されることはない（queue_tasks と同じ作法）。
-        通知の送信自体が失敗した場合は呼び出し側でログに残す — done のままにして
+        通知の送信自体が失敗した場合は呼び出し側でログに残す — 進めたままにして
         再送しないのは、通知の重複より「時間外れの再通知」の方が困るため。
+
+        Args:
+            now_iso: 期限判定に使う現在時刻（UTC の ISO 8601）。
+            next_at: 1行分の記録を受け取り、次回の remind_at（UTC の ISO 8601）を
+                返す**同期**関数。もう繰り返さないなら None を返す。
+                **この関数の中から Database のメソッドを呼ばないこと** —
+                self._lock は再入不可の threading.Lock なので、同じスレッドから
+                再取得するとデッドロックしてボット全体が固まる。
+                また async def にすると await されずコルーチンが返って壊れる。
+
+        Returns:
+            クレームした記録のリスト。通知文の組み立てで使えるよう、進めた後の
+            時刻を next_remind_at に入れて返す（単発は None）。
         """
+        claimed: list[dict[str, Any]] = []
         with self._lock, self._conn:
             rows = self._conn.execute(
                 "SELECT * FROM reminders WHERE status = 'pending' AND remind_at <= ?"
                 " ORDER BY remind_at, reminder_id",
                 (str(now_iso),),
             ).fetchall()
-            if not rows:
-                return []
-            self._conn.execute(
-                "UPDATE reminders SET status = 'done' WHERE status = 'pending' AND remind_at <= ?",
-                (str(now_iso),),
-            )
-        claimed = []
-        for row in rows:
-            record = dict(row)
-            record["status"] = "done"
-            claimed.append(record)
+            for row in rows:
+                record = dict(row)
+                reminder_id = int(record["reminder_id"])
+                recurrence = str(record.get("recurrence", "none") or "none")
+                # 暦の知識はサービス層に置き、DB 層は「何を書くか」だけを受け取る。
+                # 計算が例外で落ちても見回り全体を止めない（その行は単発と同じく done で終える）。
+                try:
+                    next_iso = next_at(record)
+                    calculation_failed = False
+                except Exception as error:
+                    print(
+                        f"データベース: リマインダーの次回時刻を計算できませんでした"
+                        f" (id={reminder_id}): {error}"
+                    )
+                    next_iso = None
+                    calculation_failed = True
+
+                if next_iso:
+                    self._conn.execute(
+                        "UPDATE reminders SET remind_at = ? WHERE reminder_id = ?",
+                        (str(next_iso), reminder_id),
+                    )
+                    record["next_remind_at"] = str(next_iso)
+                    # status は pending のまま（次回も同じ行が見回りに拾われる）。
+                    # 返す記録の remind_at は **進める前の（本来の）通知予定時刻**のまま
+                    # にしておく — 呼び出し側の遅延判定（_is_stale）がここを見るため、
+                    # 未来の時刻へ書き換えると遅れの抑制が永久に効かなくなる。
+                else:
+                    # 単発は done（従来どおり）。計算が例外で落ちた行も done で終える。
+                    # 繰り返しなのに次回時刻を作れなかった行（追い付き上限に達した・
+                    # 値が壊れているなど）は canceled にして系列を止める —
+                    # 毎分再クレームされて通知が溢れるより「止まる」方を選ぶ。
+                    status = "done" if (recurrence == "none" or calculation_failed) else "canceled"
+                    self._conn.execute(
+                        "UPDATE reminders SET status = ? WHERE reminder_id = ?",
+                        (status, reminder_id),
+                    )
+                    record["status"] = status
+                    record["next_remind_at"] = None
+                claimed.append(record)
         return claimed
 
     def reminder_list_pending(self, user_id: str) -> list[dict[str, Any]]:
@@ -688,6 +787,109 @@ class Database:
                 (int(max_keep),),
             )
 
+    # ---- feedback（ボット返信への 👍/👎 評価） --------------------------------
+
+    def feedback_record(
+        self,
+        *,
+        message_id: int,
+        user_id: str,
+        guild_id: int,
+        channel_id: int,
+        target_user_id: str,
+        model_name: str,
+        prompt_file: str,
+        rating: int,
+        created_at: str,
+    ) -> None:
+        """フィードバックを1件記録する（同じ人が同じ返信へ再投票したら上書き）。
+
+        主キーが (message_id, user_id) なので、👍 → 👎 の押し替えでも行は増えず
+        rating だけが入れ替わる。model_name / prompt_file を一緒に残すのは、
+        「どのモデル・どのペルソナの返信が評価されたか」を後から比べるため。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO feedback"
+                " (message_id, user_id, guild_id, channel_id, target_user_id,"
+                "  model_name, prompt_file, rating, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(message_id),
+                    str(user_id),
+                    int(guild_id),
+                    int(channel_id),
+                    str(target_user_id),
+                    str(model_name),
+                    str(prompt_file),
+                    int(rating),
+                    str(created_at),
+                ),
+            )
+
+    def feedback_delete(self, message_id: int, user_id: str, rating: int) -> None:
+        """フィードバックを1件削除する（リアクションを外したときに呼ぶ）。
+
+        該当行が無くても何も起きない（他人のメッセージや対象外の絵文字を
+        外したときにも呼ばれうるため、存在しないことを異常としない）。
+
+        **rating を条件に含めること。** Discord は 👍 と 👎 の同時付与を禁じて
+        いないため、両方を押したユーザーが片方を外す操作がありうる。主キー
+        （message_id, user_id）だけで消すと、まだ付いている側の評価まで
+        巻き添えで消えて集計が過小になる。「外した絵文字と保存済みの評価が
+        一致するときだけ消す」ことで、残っている側の記録を守る。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM feedback WHERE message_id = ? AND user_id = ? AND rating = ?",
+                (int(message_id), str(user_id), int(rating)),
+            )
+
+    def feedback_summary(self, guild_id: int) -> list[dict[str, Any]]:
+        """指定サーバーのフィードバックを「モデル×ペルソナ」で集計して返す。
+
+        guild_id で絞るのは、集計の閲覧がそのサーバーの管理者に限られるため
+        （DM 分は guild_id=0 として保存されるので、誰の集計にも混ざらない）。
+        件数の多い組み合わせが先に来るよう並べ替えて返す（表示は上位数件で打ち切るため）。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT model_name, prompt_file,"
+                "       SUM(rating = 1) AS good,"
+                "       SUM(rating = -1) AS bad,"
+                "       COUNT(*) AS total"
+                " FROM feedback WHERE guild_id = ?"
+                " GROUP BY model_name, prompt_file"
+                " ORDER BY total DESC, model_name, prompt_file",
+                (int(guild_id),),
+            ).fetchall()
+        return [
+            {
+                "model_name": row["model_name"],
+                "prompt_file": row["prompt_file"],
+                "good": int(row["good"] or 0),
+                "bad": int(row["bad"] or 0),
+                "total": int(row["total"] or 0),
+            }
+            for row in rows
+        ]
+
+    def feedback_prune(self, max_keep: int) -> None:
+        """フィードバックを新しい方から max_keep 件だけ残して削除する。
+
+        reminder_prune_finished と同じ「古い分から捨てる」方針。主キーが
+        (message_id, user_id) の複合キーで NOT IN に使いづらいため、
+        SQLite が全行に持つ暗黙の rowid で絞り込む。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM feedback WHERE rowid NOT IN ("
+                "   SELECT rowid FROM feedback"
+                "   ORDER BY created_at DESC, message_id DESC LIMIT ?"
+                ")",
+                (int(max_keep),),
+            )
+
     # ---- affinity（親密度・感情） --------------------------------------------
 
     def affinity_load_all(self) -> dict[str, dict[str, Any]]:
@@ -738,11 +940,18 @@ class Database:
                 "last_seen": row["last_seen"],
                 "recent_samples": _json_loads_or(row["recent_samples"], []),
                 "analysis": _json_loads_or(row["analysis"], None),
+                # 本人が統計収集を停止しているか（opt-out）。1 = 収集しない。
+                "opt_out": bool(row["stats_opt_out"]),
             }
         return result
 
     def stats_save_all(self, cache: dict[str, dict[str, Any]]) -> None:
-        """キャッシュ全体で置き換える（旧「ファイル全体を書き直す」動作と等価）。"""
+        """キャッシュ全体で置き換える（旧「ファイル全体を書き直す」動作と等価）。
+
+        DELETE → 全行 INSERT の総入れ替えのため、**列を1つでも書き漏らすと
+        その値は誰かが発言するたびに DEFAULT へ黙って戻る**。列を増やしたときは
+        必ず stats_load_all と対にして往復（保存→読み込み→保存）を確認すること。
+        """
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM user_stats")
             for user_id, entry in cache.items():
@@ -750,8 +959,8 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO user_stats"
                     " (user_id, user_name, total_count, hourly, first_seen, last_seen,"
-                    "  recent_samples, analysis)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "  recent_samples, analysis, stats_opt_out)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(user_id),
                         str(entry.get("user_name", "")),
@@ -761,6 +970,8 @@ class Database:
                         str(entry.get("last_seen", "")),
                         json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
                         json.dumps(analysis, ensure_ascii=False) if analysis else None,
+                        # キーが無い（旧形式の）エントリは既定値から引く。
+                        int(bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))),
                     ),
                 )
 
@@ -882,3 +1093,16 @@ class Database:
         """指定ユーザーの一時ログだけを削除する（他ユーザーの分は残す）。"""
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM pending_log WHERE user_id = ?", (str(user_id),))
+
+    def pending_clear_upto(self, user_id: str, max_id: int) -> None:
+        """指定ユーザーの一時ログのうち、id が max_id 以下の行だけを削除する。
+
+        記憶圧縮は Gemini 呼び出しの間 io_lock を手放すため、その数十秒の間に
+        新しい会話ログが追記されうる。圧縮対象に含まれていないその分まで
+        消さないよう、削除範囲を「圧縮に使った行の最大 id」で区切る。
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM pending_log WHERE user_id = ? AND id <= ?",
+                (str(user_id), int(max_id)),
+            )

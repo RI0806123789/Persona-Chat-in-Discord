@@ -9,13 +9,10 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from constants import MEMORY_ROUTE_CATEGORIES, REMINDER_TIMEZONE
+from constants import MEMORY_ROUTE_CATEGORIES, REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE
 from ng_word_service import NgWordFilter
-from storage import extract_json_object, get_prompt_block_reason
-from timeutil import resolve_timezone, timezone_label
-
-# 現在日時をプロンプトへ渡すときの曜日表記（「来週の月曜」などの解釈を助ける）。
-_WEEKDAY_NAMES = ("月", "火", "水", "木", "金", "土", "日")
+from storage import extract_json_object, get_prompt_block_reason, safe_response_text
+from timeutil import format_weekday, resolve_timezone, timezone_label
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +72,15 @@ def _build_combined_system_prompt(now_text: str, timezone_label: str) -> str:
         + "- 依頼だが日時が特定できない場合も null にすること（推測で日時を作らない）。\n"
         + '- "at" は "YYYY-MM-DD HH:MM"（24時間表記）の形式にすること。\n'
         + '- "message" は通知に載せる短い内容だけにすること（依頼文をそのまま入れない）。\n'
+        + '- "repeat" は繰り返しの種類。1回だけなら "none"、「毎日」「毎朝」なら "daily"、'
+        + '「毎週◯曜」なら "weekly"、「毎月◯日」なら "monthly"。'
+        + '判断できなければ "none" にすること。\n'
+        + '- 繰り返しの依頼でも "at" は必須（1回目の日時）。時刻が特定できなければ null にすること。\n'
         + "\n## 出力形式\n"
         + "必ず以下のJSON **のみ** を返してください。説明文は不要です。\n"
         + '{"safe": true, "category": "profile|projects|none", "reminder": null}\n'
         + "リマインダー依頼の場合は reminder を次の形にしてください。\n"
-        + '{"safe": true, "category": "none", "reminder": {"at": "2026-01-31 09:00", "message": "ゴミ出し"}}\n'
+        + '{"safe": true, "category": "none", "reminder": {"at": "2026-01-31 09:00", "message": "ゴミ出し", "repeat": "none"}}\n'
         + "不適切と判定した場合は次の形にしてください。\n"
         + '{"safe": false, "reason": "簡潔な判定理由", "category": "none", "reminder": null}\n'
     )
@@ -140,6 +141,8 @@ def _normalize_reminder(value: Any) -> dict[str, str] | None:
     """モデルが返す reminder を検証して正規化する。形式が違えば None（依頼なし扱い）。
 
     日時が実在するか・未来かの判定は ReminderService 側で行う（ここは形の確認だけ）。
+    repeat（繰り返し種別）は許容値リストで検証し、外れた値・欠落は "none"（単発）に
+    倒す — 繰り返しの解釈を誤って延々と通知し続けるより、1回で終わる方が安全なため。
     """
     if not isinstance(value, dict):
         return None
@@ -147,7 +150,10 @@ def _normalize_reminder(value: Any) -> dict[str, str] | None:
     message = str(value.get("message", "")).strip()
     if not at or not message:
         return None
-    return {"at": at, "message": message}
+    repeat = str(value.get("repeat", "none") or "none").strip().lower()
+    if repeat not in REMINDER_RECURRENCE_VALUES:
+        repeat = "none"
+    return {"at": at, "message": message, "repeat": repeat}
 
 
 # ---------------------------------------------------------------------------
@@ -208,11 +214,12 @@ class ContentModerator:
                 print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
                 return False, f"安全フィルタによりブロック ({reason_name})", None
 
-            # response.text はプロパティなので getattr のデフォルト値が
-            # 使われず例外が発生するケースがある（candidates が空の場合など）
-            try:
-                result_text = response.text or ""
-            except (ValueError, IndexError):
+            # response.text はプロパティなので getattr のデフォルト値が使われず、
+            # 候補が空・ブロック済みだと例外が出る。捕捉する例外の種類を取りこぼさない
+            # よう、独自に try/except せず storage.safe_response_text 経由で読む
+            # （取得できなかった場合と空応答の場合はどちらも None が返る）。
+            result_text = safe_response_text(response)
+            if result_text is None:
                 # candidates が空 = Gemini が応答を生成できなかった
                 # プロンプトにブロック理由がある場合は上で処理済みなので、
                 # ここに来るのは原因不明のケース → unsafe 扱い
@@ -277,7 +284,8 @@ class ContentModerator:
         Returns:
             (is_safe, reason, category, reminder) のタプル。
             category は "profile" / "projects" / "none" のいずれか。
-            reminder はリマインダー依頼なら {"at": "YYYY-MM-DD HH:MM", "message": ...}、
+            reminder はリマインダー依頼なら
+            {"at": "YYYY-MM-DD HH:MM", "message": ..., "repeat": "none|daily|weekly|monthly"}、
             依頼でなければ None。
             タイムアウトや例外時は安全側かつ記憶不要側に倒し (True, "", "none", None) を返す。
         """
@@ -285,8 +293,10 @@ class ContentModerator:
             return True, "", "none", None
 
         # 「30分後」などの相対表現を解釈させるため、基準となる現在日時を渡す。
+        # 曜日名（「来週の月曜」などの解釈を助ける）は timeutil の唯一のテーブルから取る
+        # — ここで独自に持つと、リマインダーの表示側と表記が食い違う。
         now = datetime.now(self._tz)
-        now_text = f"{now:%Y-%m-%d %H:%M}（{_WEEKDAY_NAMES[now.weekday()]}曜日）"
+        now_text = f"{now:%Y-%m-%d %H:%M}（{format_weekday(now)}曜日）"
 
         # ユーザー入力の判定なので、単独モデレーションと同様に NG ワードを参考提示する。
         prompt = _build_prompt(

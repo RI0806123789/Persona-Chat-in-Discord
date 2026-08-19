@@ -6,15 +6,17 @@ from auto_topic_view import AutoTopicView
 from blacklist_service import BlacklistService
 from content_moderator import ContentModerator
 from gemini_service import GeminiService
+from help_view import HelpView, resolve_bot_name
 from ng_word_service import NgWordFilter
 from reminder_service import ReminderService
 from reminder_view import ReminderView
 from settings_view import SettingsView
+from stats_privacy_view import StatsPrivacyView
 from stats_service import StatsService
 from stats_view import StatsView
 from summary_view import SummaryView
 from usage_graph import UsageTracker
-from view_parts import BackButton, HubFactory
+from view_parts import BackButton, HubFactory, PanelView, swap_panel
 
 
 class OpenSettingsButton(ui.Button):
@@ -35,10 +37,7 @@ class OpenSettingsButton(ui.Button):
             make_hub=hub.clone,
         )
         # 同じ（エフェメラルな）メッセージをキャラ設定パネルに差し替える
-        await interaction.response.edit_message(content=settings_view.build_preview(), view=settings_view)
-        settings_view.message = interaction.message
-        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
-        hub.stop()
+        await swap_panel(interaction, hub, settings_view, settings_view.build_preview())
 
 
 class OpenSummaryButton(ui.Button):
@@ -59,10 +58,7 @@ class OpenSummaryButton(ui.Button):
             make_hub=hub.clone,
         )
         # 同じ（エフェメラルな）メッセージを要約パネルに差し替える
-        await interaction.response.edit_message(content=summary_view.build_preview(), view=summary_view)
-        summary_view.message = interaction.message
-        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
-        hub.stop()
+        await swap_panel(interaction, hub, summary_view, summary_view.build_preview())
 
 
 class GraphButton(ui.Button):
@@ -113,8 +109,7 @@ class GroundingToggleButton(ui.Button):
         await hub.guild_settings.persist()
 
         # ボタンの表示（ON/OFF）を更新するために View を再構築
-        hub.clear_items()
-        hub._add_all_items()
+        hub.refresh_items()
         await interaction.response.edit_message(content=hub.build_preview(), view=hub)
 
 
@@ -153,10 +148,7 @@ class StatsButton(ui.Button):
         is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
         stats_view = StatsView(hub.stats, viewer_id=str(member.id), is_admin=is_admin, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージを統計パネルに差し替える
-        await interaction.response.edit_message(content=stats_view.build_preview(), view=stats_view)
-        stats_view.message = interaction.message
-        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
-        hub.stop()
+        await swap_panel(interaction, hub, stats_view, stats_view.build_preview())
 
 
 class AutoTopicButton(ui.Button):
@@ -170,10 +162,7 @@ class AutoTopicButton(ui.Button):
 
         auto_topic_view = AutoTopicView(hub.guild_settings, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージを自発会話パネルに差し替える
-        await interaction.response.edit_message(content=auto_topic_view.build_preview(), view=auto_topic_view)
-        auto_topic_view.message = interaction.message
-        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
-        hub.stop()
+        await swap_panel(interaction, hub, auto_topic_view, auto_topic_view.build_preview())
 
 
 class ReminderButton(ui.Button):
@@ -192,12 +181,54 @@ class ReminderButton(ui.Button):
         records = await hub.reminders.list_pending(viewer_id)
         reminder_view = ReminderView(hub.reminders, records, viewer_id, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージをリマインダーパネルに差し替える
-        await interaction.response.edit_message(
-            content=reminder_view.build_preview(), view=reminder_view
+        await swap_panel(interaction, hub, reminder_view, reminder_view.build_preview())
+
+
+class HelpButton(ui.Button):
+    """使い方パネル（HelpView）を開くボタン。
+
+    メンションで会話できることや各機能の入口は、招待しただけでは気づけない。
+    その説明をまとめた読み物パネルへの入口で、権限による制限は設けない
+    （使い方は全員が見てよい情報のため）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(label="使い方", style=discord.ButtonStyle.secondary, emoji="❓", row=3)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        hub: "FunctionsView" = self.view  # type: ignore[assignment]
+
+        # ボット名はハードコードせず、押された時点のクライアントから解決する
+        # （別名のボットで同じコードを動かしてもメンション例が正しくなるように）。
+        help_view = HelpView(
+            bot_name=resolve_bot_name(interaction.client.user),
+            make_hub=hub.clone,
         )
-        reminder_view.message = interaction.message
-        # ハブは役目を終えたので停止（タイムアウトでの誤上書きを防ぐ）
-        hub.stop()
+        # 同じ（エフェメラルな）メッセージを使い方パネルに差し替える
+        await swap_panel(interaction, hub, help_view, help_view.build_preview())
+
+
+class StatsPrivacyButton(ui.Button):
+    """統計プライバシーパネル（StatsPrivacyView）を開くボタン。
+
+    会話統計・性格推定の収集を本人が停止したり、蓄積データを削除したりする入口。
+    対象は常に押した本人の分だけで、他人の設定は見ることも変えることもできない。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(label="統計プライバシー", style=discord.ButtonStyle.secondary, emoji="🔒", row=4)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        hub: "FunctionsView" = self.view  # type: ignore[assignment]
+
+        privacy_view = StatsPrivacyView(
+            hub.stats,
+            viewer_id=str(interaction.user.id),
+            viewer_name=interaction.user.display_name,
+            make_hub=hub.clone,
+        )
+        # 同じ（エフェメラルな）メッセージを統計プライバシーパネルに差し替える
+        await swap_panel(interaction, hub, privacy_view, privacy_view.build_preview())
 
 
 class UnblockButton(ui.Button):
@@ -225,11 +256,10 @@ class UnblockButton(ui.Button):
             return
 
         unblock_view = UnblockView(hub.blacklist, blocked_users, make_hub=hub.clone)
-        await interaction.response.edit_message(
-            content="🚫 ブロックを解除するユーザーを選択してください。", view=unblock_view
+        # 同じ（エフェメラルな）メッセージをブロック解除パネルに差し替える
+        await swap_panel(
+            interaction, hub, unblock_view, "🚫 ブロックを解除するユーザーを選択してください。"
         )
-        unblock_view.message = interaction.message
-        hub.stop()
 
 
 class UnblockSelect(ui.Select):
@@ -265,7 +295,7 @@ class UnblockSelect(ui.Select):
         view.stop()
 
 
-class UnblockView(ui.View):
+class UnblockView(PanelView):
     """ブロック解除用のパネル。ブロック中ユーザーの選択メニューを持つ。"""
 
     def __init__(
@@ -274,29 +304,27 @@ class UnblockView(ui.View):
         blocked_users: list,
         *,
         make_hub: HubFactory | None = None,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ ブロック解除パネルは時間切れになりました。"
+                "再度 /functions を実行してください。"
+            )
+        )
         self.blacklist = blacklist
+        self.blocked_users = blocked_users
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
-        self.message: discord.Message | None = None
-        self.add_item(UnblockSelect(blocked_users))
+
+        self._add_all_items()
+
+    def _add_all_items(self) -> None:
+        """UI パーツを View に追加する。"""
+        self.add_item(UnblockSelect(self.blocked_users))
         self.add_item(BackButton(row=1))
 
-    async def on_timeout(self) -> None:
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ ブロック解除パネルは時間切れになりました。再度 /functions を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"ブロック解除パネルのタイムアウト処理エラー: {error}")
 
-
-class FunctionsView(ui.View):
+class FunctionsView(PanelView):
     """各種機能への入口となるハブパネル。
 
     Discord の View は最大5行までのため、キャラ設定パネルと要約パネルを1枚に合体できない。
@@ -316,9 +344,13 @@ class FunctionsView(ui.View):
         reminders: ReminderService,
         *,
         is_admin: bool = False,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ 機能パネルは時間切れになりました。"
+                "再度 /functions を実行してください。"
+            )
+        )
         # このパネルが開かれたサーバー（DM の場合は全DM共有スロット）専用の設定。
         self.guild_settings = guild_settings
         self.usage = usage
@@ -329,8 +361,6 @@ class FunctionsView(ui.View):
         self.stats = stats
         self.reminders = reminders
         self.is_admin = is_admin
-        # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
-        self.message: discord.Message | None = None
 
         self._add_all_items()
 
@@ -350,6 +380,10 @@ class FunctionsView(ui.View):
         # row2: パネルを開くリマインダー ＋ Google検索のその場トグル
         self.add_item(ReminderButton())
         self.add_item(GroundingToggleButton(self.guild_settings.grounding_enabled))
+        # row3: 使い方（各機能の説明。オンボーディングの入口）
+        self.add_item(HelpButton())
+        # row4: 統計プライバシー（本人の統計収集停止・データ削除）
+        self.add_item(StatsPrivacyButton())
 
     def clone(self) -> "FunctionsView":
         """各サブパネルの「戻る」用に、同じ依存関係で新しいハブパネルを作る。"""
@@ -373,19 +407,9 @@ class FunctionsView(ui.View):
             "・⚙️ キャラ設定 / 📋 会話要約 / 📈 会話統計 / 💬 自発会話 / ⏰ リマインダー … パネルを開く",
             "・📊 グラフ / 🔄 NGワード再読込 … その場で実行",
             f"・🔍 Google検索: {grounding_display} … ボタンでその場で切替",
+            "・❓ 使い方 … 会話のしかたと各機能の説明を表示",
+            "・🔒 統計プライバシー … 会話統計の収集停止・データ削除（あなた自身の分だけ）",
         ]
         if self.is_admin:
             lines.append("・🚫 ブロック解除 … 管理者専用")
         return "\n".join(lines)
-
-    async def on_timeout(self) -> None:
-        """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ 機能パネルは時間切れになりました。再度 /functions を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"機能パネルのタイムアウト処理エラー: {error}")

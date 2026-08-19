@@ -14,12 +14,14 @@ from constants import (
     STATS_ANALYSIS_TIMEOUT_SECONDS,
     STATS_ANALYSIS_TTL_HOURS,
     STATS_MAX_USERS_IN_SELECT,
+    STATS_OPT_OUT_DEFAULT,
     STATS_PERSONALITY_MIN_SAMPLES,
     STATS_RECENT_SAMPLES_MAX,
     STATS_TIMEZONE,
     STATS_TOPIC_COUNT,
 )
 from database import Database
+from prompting import build_stats_analysis_prompt
 from storage import extract_json_object
 from timeutil import resolve_timezone, timezone_label
 
@@ -42,13 +44,18 @@ class StatsService:
     集計対象は「ボットへの発言のみ」。データは SQLite（memory/bot.db の
     user_stats テーブル）に永続化する。保存は asyncio.Lock で直列化する
     （単一プロセス前提）。
+
+    本人が収集そのものを停止できる（opt-out）。停止判定は record() /
+    ensure_analysis() の内部で行い、呼び出し側には判断させない
+    （呼び出し箇所が増えたときのチェック漏れを防ぐため）。
     """
 
     def __init__(self, db: Database, gemini: Any) -> None:
         self._db = db
         self.gemini = gemini
         # { user_id: { user_name, total_count, hourly[24], first_seen, last_seen,
-        #              recent_samples[], analysis{ topics, big_five, personality, computed_at } } }
+        #              recent_samples[], analysis{ topics, big_five, personality, computed_at },
+        #              opt_out } }
         try:
             self.cache: dict[str, dict] = db.stats_load_all()
         except Exception as error:
@@ -70,7 +77,15 @@ class StatsService:
             "last_seen": now_iso,
             "recent_samples": [],
             "analysis": None,
+            # 収集停止（opt-out）の既定値。定数から引くことで、運用方針を
+            # 「原則収集しない（オプトイン）」へ切り替えられるようにしている。
+            "opt_out": STATS_OPT_OUT_DEFAULT,
         }
+
+    @staticmethod
+    def _entry_opted_out(entry: dict) -> bool:
+        """エントリが収集停止中かを返す（キーが無い旧形式は既定値で扱う）。"""
+        return bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))
 
     def _to_local_hour(self, when: datetime) -> int:
         """発言時刻（UTC aware 想定）を集計用タイムゾーンの「時」に変換する。"""
@@ -81,6 +96,12 @@ class StatsService:
     async def record(self, user_id: str, user_name: str, text: str, when: datetime) -> None:
         """1件の発言を集計に反映する。失敗してもチャット本体は止めない（フェイルオープン）。"""
         try:
+            # 収集停止中なら何も記録しない（発言回数・時間帯・サンプルすべて）。
+            # エントリ生成より前に判定すること — 後ろに置くと、停止中でも空の
+            # エントリが作られて has_data() や表示名の解決に影響する。
+            if self.is_opted_out(user_id):
+                return
+
             entry = self.cache.get(user_id)
             if entry is None:
                 entry = self._new_entry(user_name)
@@ -112,7 +133,13 @@ class StatsService:
         except Exception as error:
             print(f"会話統計の記録に失敗: {error}")
 
-    async def save_background(self) -> None:
+    async def save_background(self) -> bool:
+        """キャッシュ全体を DB へ書き出す。保存できたかを返す。
+
+        戻り値はプライバシー操作（収集停止の切り替え・データ削除）が
+        「保存できませんでした」とユーザーへ伝えるために使う。集計の記録など
+        従来の呼び出しは戻り値を無視してよい（失敗してもチャットは止めない）。
+        """
         # 同一テーブルへの並行書き込みを避けるため、保存はロックで直列化する。
         async with self._save_lock:
             cache_copy = {user_id: data.copy() for user_id, data in self.cache.items()}
@@ -120,6 +147,58 @@ class StatsService:
                 await asyncio.to_thread(self._db.stats_save_all, cache_copy)
             except Exception as error:
                 print(f"会話統計の保存に失敗: {error}")
+                return False
+        return True
+
+    # ---- 収集停止（opt-out） ----------------------------------------------
+
+    def is_opted_out(self, user_id: str) -> bool:
+        """そのユーザーが統計収集を停止しているかを返す。
+
+        on_message の主経路（record）から毎回呼ばれるため、DB へは行かず
+        キャッシュだけを見る。一度も発言していないユーザーはエントリが無いので、
+        既定値 STATS_OPT_OUT_DEFAULT を返す（True にすればオプトイン運用になる）。
+        """
+        entry = self.cache.get(user_id)
+        if entry is None:
+            return STATS_OPT_OUT_DEFAULT
+        return self._entry_opted_out(entry)
+
+    async def set_opt_out(self, user_id: str, user_name: str, opted_out: bool) -> bool:
+        """統計収集の停止/再開を設定する。保存できたかを返す。
+
+        一度も発言していないユーザーはエントリが無いため、その場で作ってから
+        フラグを立てる（「発言してからでないと停止できない」を避けるため）。
+        """
+        entry = self.cache.get(user_id)
+        if entry is None:
+            entry = self._new_entry(user_name)
+            self.cache[user_id] = entry
+        elif user_name:
+            entry["user_name"] = user_name
+        entry["opt_out"] = bool(opted_out)
+        return await self.save_background()
+
+    async def clear_user_data(self, user_id: str) -> bool:
+        """そのユーザーの蓄積データ（集計値・発言サンプル・解析キャッシュ）を消す。
+
+        **行ごとは消さない。** del self.cache[user_id] にすると収集停止の設定まで
+        一緒に消えてしまうため、フィールドだけをリセットして opt_out は残す。
+        保存できたかを返す（プライバシー操作の失敗は隠さずユーザーへ伝える）。
+        """
+        entry = self.cache.get(user_id)
+        if entry is None:
+            # 記録が無い＝消すものが無い。成功として扱う（行は作らない）。
+            return True
+        now_iso = datetime.now(timezone.utc).isoformat()
+        entry["total_count"] = 0
+        entry["hourly"] = [0] * 24
+        entry["recent_samples"] = []
+        entry["analysis"] = None
+        # 「いつから記録されていたか」も消えた状態にする（過去の痕跡を残さない）。
+        entry["first_seen"] = now_iso
+        entry["last_seen"] = now_iso
+        return await self.save_background()
 
     # ---- 参照ヘルパー -----------------------------------------------------
 
@@ -133,11 +212,16 @@ class StatsService:
         return str(user_id)
 
     def get_user_options(self) -> list[tuple[str, str, int]]:
-        """管理者向けユーザー選択メニュー用に (user_id, 表示名, 発言回数) を回数の多い順で返す。"""
+        """管理者向けユーザー選択メニュー用に (user_id, 表示名, 発言回数) を回数の多い順で返す。
+
+        収集停止中のユーザーは載せない（「収集を止めたい」という意思表示には
+        「他人に見られたくない」が含まれると解釈する）。まだ発言していない人も
+        同じく載らないため、外形上は両者を区別できない＝停止したこと自体は漏れない。
+        """
         items = [
             (uid, data.get("user_name") or uid, int(data.get("total_count", 0)))
             for uid, data in self.cache.items()
-            if int(data.get("total_count", 0)) > 0
+            if int(data.get("total_count", 0)) > 0 and not self._entry_opted_out(data)
         ]
         items.sort(key=lambda t: t[2], reverse=True)
         return items[:STATS_MAX_USERS_IN_SELECT]
@@ -157,32 +241,6 @@ class StatsService:
         elapsed_hours = (datetime.now(timezone.utc) - when).total_seconds() / 3600.0
         return elapsed_hours < STATS_ANALYSIS_TTL_HOURS
 
-    def _build_analysis_prompt(self, samples: list[str]) -> str:
-        joined = "\n".join(f"- {s}" for s in samples)
-        return f"""以下は、あるユーザーが Discord でボットに送った発言の一覧です。
-この発言だけを根拠に、(1) よく話す話題 と (2) ビッグファイブ性格特性の推定 を行ってください。
-
-発言一覧:
----
-{joined}
----
-
-出力は次の JSON のみ。前後に説明文やコードフェンスを付けないでください。
-{{
-  "topics": [{{"label": "話題名(短く)", "weight": 0〜1の重要度}}],
-  "big_five": {{
-    "openness": 0〜100の整数,
-    "conscientiousness": 0〜100の整数,
-    "extraversion": 0〜100の整数,
-    "agreeableness": 0〜100の整数,
-    "neuroticism": 0〜100の整数
-  }},
-  "personality": "性格の総評（推定である旨を含め日本語で1〜2文）"
-}}
-
-topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
-発言が少ない場合でも無理に断定せず、控えめに推定してください。"""
-
     async def ensure_analysis(self, user_id: str, force: bool = False) -> dict | None:
         """話題・性格推定の解析結果を返す。TTL 内ならキャッシュ、なければ LLM で再計算する。
 
@@ -191,6 +249,11 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
         entry = self.cache.get(user_id)
         if not entry:
             return None
+        # 収集停止中は再計算しない（発言サンプルを LLM へ送らない）。record を
+        # 止めるだけでは、既に溜まっているサンプルで解析が走りうるためここでも見る。
+        # 既存のキャッシュは本人が自分の分を見返せるようそのまま返す。
+        if self._entry_opted_out(entry):
+            return entry.get("analysis")
         samples = entry.get("recent_samples") or []
         cached = entry.get("analysis")
         if not samples:
@@ -198,7 +261,9 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
         if not force and cached and self._is_fresh(cached.get("computed_at")):
             return cached
 
-        prompt = self._build_analysis_prompt(samples)
+        # プロンプト文面は prompting.py に集約している（STATS_TOPIC_COUNT のような
+        # 定数は prompting が constants を import しない規約のため引数で渡す）。
+        prompt = build_stats_analysis_prompt(samples, STATS_TOPIC_COUNT)
         try:
             # 話題・性格推定はユーザーが選択中のペルソナ/モデルとは無関係な内部解析
             # タスクのため、記憶ルーティング等と同じ固定モデル（ROUTER_MODEL_NAME）を使う。
@@ -299,11 +364,15 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
             return self._save_figure(figure)
 
     def build_ranking_graph(self, top_n: int = 15) -> io.BytesIO | None:
-        """発言回数のユーザー別ランキング横棒グラフ（管理者用の全体比較）。"""
+        """発言回数のユーザー別ランキング横棒グラフ（管理者用の全体比較）。
+
+        収集停止中のユーザーは、データが残っていてもランキングに出さない
+        （get_user_options と同じ理由）。
+        """
         items = [
             (data.get("user_name") or uid, int(data.get("total_count", 0)))
             for uid, data in self.cache.items()
-            if int(data.get("total_count", 0)) > 0
+            if int(data.get("total_count", 0)) > 0 and not self._entry_opted_out(data)
         ]
         if not items:
             return None
@@ -324,16 +393,29 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
     # ---- ダッシュボード組み立て ------------------------------------------
 
     async def build_dashboard(
-        self, user_id: str, item: str
+        self, user_id: str, item: str, viewer_id: str | None = None
     ) -> tuple[str, list[tuple[str, io.BytesIO]]]:
         """指定ユーザー・指定項目のダッシュボード（説明文＋グラフ画像群）を組み立てる。
 
         戻り値 (caption, images):
             caption … エフェメラルに表示する説明テキスト
             images  … (ファイル名, PNG バッファ) のリスト。呼び出し側が File 化して送る。
+
+        viewer_id は「誰が見ているか」。収集停止中のユーザーのデータは、本人には
+        注記つきで見せるが、他人（管理者）には「まだありません」と同じ文言を返して
+        停止していること自体を露見させない。**省略時（None）は本人が見ているものと
+        して扱う** — 現在の唯一の呼び出し元（stats_view.RunStatsButton）が閲覧者を
+        渡さないため。管理者は停止中のユーザーをセレクトから選べない
+        （get_user_options が除外する）ので実害は無いが、stats_view を次に触る
+        ときに viewer_id を渡すようにすれば、その経路も厳密に閉じられる。
         """
         entry = self.cache.get(user_id)
         name = self.display_name(user_id)
+        opted_out = bool(entry) and self._entry_opted_out(entry)
+        # 他人が停止中のユーザーを指定した場合は、データの有無にかかわらず
+        # 「まだありません」と同一の文言を返す（専用の文言を出すと停止が露見する）。
+        if opted_out and viewer_id is not None and viewer_id != user_id:
+            return (f"{name} さんの会話データはまだありません。", [])
         if not entry or int(entry.get("total_count", 0)) == 0:
             return (f"{name} さんの会話データはまだありません。", [])
 
@@ -342,6 +424,9 @@ topics は重要度の高い順に最大 {STATS_TOPIC_COUNT} 件まで。
             f"📈 **会話統計 — {name} さん**",
             f"・累計発言回数: {int(entry.get('total_count', 0))} 回",
         ]
+        if opted_out:
+            # 本人向けの注記。停止後も残っているデータを見ていることが分かるようにする。
+            lines.insert(1, "🔕 現在、統計収集を停止しています。（表示中のデータは停止前の記録です）")
 
         want_time = item in ("all", "time")
         want_topic = item in ("all", "topic")

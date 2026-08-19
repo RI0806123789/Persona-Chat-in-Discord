@@ -20,7 +20,7 @@ from ng_word_service import NgWordFilter
 from paths import load_prompt_template, resolve_prompt_path
 from prompting import build_summary_prompt
 from usage_graph import UsageTracker
-from view_parts import BackButton, HubFactory
+from view_parts import BackButton, HubFactory, PanelView
 
 # Markdown の見出し記号（行頭の # 〜 ######）を除去する正規表現。
 # Discord は h4 以降（####）を描画せず「#### 見出し」がそのまま表示され見づらいため、
@@ -131,8 +131,7 @@ class SummaryPeriodSelect(ui.Select):
         view: "SummaryView" = self.view  # type: ignore[assignment]
         selected = int(self.values[0])
         view.temp_period = next(c for c in SUMMARY_PERIOD_CHOICES if c.value == selected)
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -147,8 +146,7 @@ class PrivateToggleButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "SummaryView" = self.view  # type: ignore[assignment]
         view.temp_private = not view.temp_private
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -204,7 +202,7 @@ class RunSummaryButton(ui.Button):
             await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
 
 
-class SummaryView(ui.View):
+class SummaryView(PanelView):
     """会話要約の設定パネル全体を表す View。
 
     期間セレクト・表示範囲トグル・要約実行/閉じるボタンを保持する。
@@ -220,9 +218,13 @@ class SummaryView(ui.View):
         usage: UsageTracker,
         *,
         make_hub: HubFactory | None = None,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ 要約パネルは時間切れになりました。"
+                "再度 /functions を実行してください。"
+            )
+        )
         self.guild_settings = guild_settings
         self.gemini = gemini
         self.moderator = moderator
@@ -230,8 +232,6 @@ class SummaryView(ui.View):
         self.usage = usage
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
-        # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
-        self.message: discord.Message | None = None
 
         # 一時選択値
         self.temp_period = _DEFAULT_PERIOD
@@ -254,15 +254,3 @@ class SummaryView(ui.View):
             f"・**期間**: {self.temp_period.name}\n"
             f"・**表示範囲**: {visibility}"
         )
-
-    async def on_timeout(self) -> None:
-        """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ 要約パネルは時間切れになりました。再度 /summarize を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"要約パネルのタイムアウト処理エラー: {error}")

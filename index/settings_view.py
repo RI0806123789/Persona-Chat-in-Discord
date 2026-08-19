@@ -11,7 +11,7 @@ from choices import (
     RESPOND_MODE_DISPLAY_NAMES,
 )
 from paths import resolve_prompt_path
-from view_parts import BackButton, HubFactory
+from view_parts import BackButton, HubFactory, PanelView
 
 
 def _build_status_text(
@@ -64,8 +64,7 @@ class PersonaSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
         view.temp_persona = self.values[0]
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -90,8 +89,7 @@ class ModelSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
         view.temp_model = self.values[0]
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -116,8 +114,7 @@ class RespondModeSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
         view.temp_respond_mode = self.values[0]
-        view.clear_items()
-        view._add_all_items()
+        view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
 
 
@@ -197,7 +194,7 @@ class ResetButton(ui.Button):
         view.stop()
 
 
-class SettingsView(ui.View):
+class SettingsView(PanelView):
     """キャラ設定パネル全体を表す View。
 
     3つのセレクトメニューと確定/戻るボタンを保持し、一時選択値を管理する。
@@ -211,16 +208,18 @@ class SettingsView(ui.View):
         blacklist_status: str,
         *,
         make_hub: HubFactory | None = None,
-        timeout: float = 120.0,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(
+            timeout_notice=(
+                "⏱️ キャラ設定パネルは時間切れになりました。設定は変更されていません。"
+                "再度 /functions を実行してください。"
+            )
+        )
         self.guild_settings = guild_settings
         self.ng_count = ng_count
         self.blacklist_status = blacklist_status
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
-        # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）
-        self.message: discord.Message | None = None
 
         # 一時選択値（現在の設定を初期値として保存）
         self.temp_persona: str = guild_settings.current_prompt_file
@@ -251,15 +250,3 @@ class SettingsView(ui.View):
             self.ng_count,
             self.blacklist_status,
         )
-
-    async def on_timeout(self) -> None:
-        """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(
-                content="⏱️ キャラ設定パネルは時間切れになりました。設定は変更されていません。再度 /functions を実行してください。",
-                view=None,
-            )
-        except discord.HTTPException as error:
-            print(f"キャラ設定パネルのタイムアウト処理エラー: {error}")
