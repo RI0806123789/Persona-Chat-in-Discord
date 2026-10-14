@@ -1,0 +1,1385 @@
+<mxfile host="65bd71144e">
+    <diagram id="pageA1" name="A-1 システム全体構成と起動フロー">
+        <mxGraphModel dx="1075" dy="843" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1820" pageHeight="1600" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="a1_grp_core" value="中核オブジェクト" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="260" width="340" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_grp_services" value="サービス層（bot.py が生成し相互注入する 12 個）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="260" width="740" height="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_grp_loops" value="バックグラウンド（background.make_guarded_loop / spawn）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="1220" y="260" width="540" height="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_grp_ext" value="外部サービスと入出力モジュール" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="760" width="740" height="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_grp_store" value="永続化層" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="760" width="920" height="560" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ttl" value="A-1 システム全体構成と起動フロー ― Persona Chat in Discord" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#1A1A1A;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="30" width="1000" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_start" value="&lt;b&gt;起動&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;python bot.py&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ src/ の中から実行&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_settings" value="&lt;b&gt;① 設定の読み込み&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(settings_loader.load_settings)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ルート直下の .env → APIキー / トークン&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_genai" value="&lt;b&gt;② Gemini と Discord の初期化&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(genai.configure / discord.Client)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;intents: Intents.default() ＋ message_content / voice_states&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※guilds / reactions は default に含まれる&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="480" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_db" value="&lt;b&gt;③ Database の初期化&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(database.Database.initialize)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;スキーマ移行 v9 / 旧JSON取り込み&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="690" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_restore" value="&lt;b&gt;④ サーバー設定の復元&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(BotState.restore_from_database)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ペルソナ/モデル/モード/Google検索/&lt;br&gt;自発会話(ON・しきい値)/自律行動(ON)&lt;br&gt;＋ 記念日の投稿記録&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="900" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_services" value="&lt;b&gt;⑤ サービスを1つずつ生成し&lt;br&gt;手作業で相互注入&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※DIフレームワークは使わない&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_register" value="&lt;b&gt;⑥ スラッシュコマンド登録&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(commands.register_commands)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;/functions /join /leave&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※/functions ハブから 8 パネルへ分岐&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1320" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ready" value="&lt;b&gt;⑦ client.run() → on_ready&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;tree.sync() / 各ループ start()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※再接続で再発火するため *_background_started /&lt;br&gt;document_worker_started / commands_synced で二重起動を防ぐ&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1530" y="110" width="170" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_core_bot" value="&lt;b&gt;bot.py（コンポジションルート）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;on_message / on_ready / on_guild_join&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;on_raw_reaction_add / _remove&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="305" width="280" height="85" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_core_state" value="&lt;b&gt;BotState / GuildSettings&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(app_state.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※設定はサーバー単位。DM は全DM共有スロット&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="400" width="280" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_core_db" value="&lt;b&gt;Database&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(database.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※SQL文を集約し各サービスへ注入&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="490" width="280" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_core_usage" value="&lt;b&gt;UsageTracker&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(usage_graph.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※トークン使用量 500件のリングバッファ&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="570" width="280" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_core_bg" value="&lt;b&gt;background.py&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;spawn() / make_guarded_loop()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="650" width="280" height="65" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_gemini" value="&lt;b&gt;GeminiService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(gemini_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;SDK / RESTグラウンディング&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※既定モデル: gemini-3.1-flash-lite&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="470" y="320" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_memory" value="&lt;b&gt;MemoryService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(memory_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;長期記憶・圧縮（ユーザー別）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="710" y="320" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_affinity" value="&lt;b&gt;AffinityService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(affinity_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;親密度・感情(V/A)&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="320" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_mod" value="&lt;b&gt;ContentModerator&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(content_moderator.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;統合判定・フェイルオープン&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="470" y="410" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_ng" value="&lt;b&gt;NgWordFilter&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(ng_word_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ng/NG_WORD*.txt&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="710" y="410" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_black" value="&lt;b&gt;BlacklistService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(blacklist_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;三審制（3回で登録）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="410" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_doc" value="&lt;b&gt;DocumentService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(document_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;添付の非同期処理キュー&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="470" y="500" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_stats" value="&lt;b&gt;StatsService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(stats_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;会話統計・matplotlib&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="710" y="500" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_autotopic" value="&lt;b&gt;AutoTopicService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(auto_topic_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;自発会話＋記念日お祝い&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="500" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_autonomous" value="&lt;b&gt;AutonomousService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(autonomous_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ボイス/ステージでの配信&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="470" y="590" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_reminder" value="&lt;b&gt;ReminderService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(reminder_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;繰り返し対応&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="710" y="590" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_svc_feedback" value="&lt;b&gt;FeedbackService&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(feedback_service.py)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;👍👎 の収集&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※set_default_service() で UI へ既定登録&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="590" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_memory" value="&lt;b&gt;memory_maintenance_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;10分ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;memory.flush_if_needed()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1250" y="320" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_autotopic" value="&lt;b&gt;auto_topic_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;10分ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.run_pending_checks()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1505" y="320" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_anniv" value="&lt;b&gt;anniversary_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;60分ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.run_anniversary_checks()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1250" y="415" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_autonomous" value="&lt;b&gt;autonomous_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;1分ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.run_pending_checks()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1505" y="415" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_reminder" value="&lt;b&gt;reminder_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;60秒ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;reminders.run_due_checks()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1250" y="510" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_loop_feedback" value="&lt;b&gt;feedback_prune_loop&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;60分ごと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;feedback.prune_stored()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1505" y="510" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_worker_doc" value="&lt;b&gt;文書処理ワーカー（常駐コルーチン）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;spawn(documents.run_worker())&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※参照を保持しないと GC で止まる&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1250" y="605" width="225" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ext_discord" value="&lt;b&gt;Discord API&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;Gateway（イベント）＋ REST（送信）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;＋ ボイス接続（DAVE / Opus）&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="820" width="320" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ext_gemini" value="&lt;b&gt;Gemini API&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;google.generativeai SDK&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;＋ REST（google_search グラウンディング）&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="820" width="320" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ext_edge" value="&lt;b&gt;edge-tts（主エンジン）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;Microsoft Edge のニューラル音声&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ペルソナごとに話者/高さ/速さを変える&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="960" width="320" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_ext_gtts" value="&lt;b&gt;gTTS（退避エンジン）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;edge-tts が壊れたときの保険&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※この経路を消さないこと&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="960" width="320" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_mod_voice" value="&lt;b&gt;voice.py / voice_dsp.py&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ギルド別 読み上げキュー → miniaudio でメモリ上デコード → numpy バイクアッド EQ → 48kHz/2ch/16bit PCM（FFmpeg 不使用）&lt;/span&gt;" style="shape=process;size=0.06;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="1100" width="680" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_db_sqlite" value="&lt;b&gt;memory/bot.db&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;SQLite（WAL モード）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;単一プロセス前提&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;threading.Lock で直列化&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;書き込みはトランザクション&lt;/span&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="870" y="820" width="250" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_db_tables" value="&lt;b&gt;9 テーブル（SCHEMA_VERSION=9）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;① affinity 親密度・感情&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;② user_stats 会話統計&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;③ queue_tasks 文書処理キュー&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;④ pending_log 圧縮前ログ&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;⑤ profile プロフィール記憶&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;⑥ guild_settings サーバー設定&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;⑦ anniversary_posts 記念日&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;⑧ reminders リマインダー&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;⑨ feedback 👍👎 の評価&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=left;verticalAlign=middle;spacingLeft=12;" parent="1" vertex="1">
+                    <mxGeometry x="1150" y="820" width="290" height="340" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_json_projects" value="&lt;b&gt;memory/projects.json&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;LLM が構造を決める長期記憶&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;users[user_id] でユーザー別&lt;/span&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1470" y="820" width="260" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_json_profile" value="&lt;b&gt;memory/profile.json&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;手書き追加の受け皿&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;起動時に DB へ吸収し {} へ戻す&lt;/span&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1470" y="940" width="260" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_json_blacklist" value="&lt;b&gt;ng/blacklist.json&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ブロック中ユーザー&lt;/span&gt;" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=15;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1470" y="1060" width="260" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_files_static" value="&lt;b&gt;静的ファイル（読み取り）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;prompts/*.txt（ペルソナ）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ng/NG_WORD.txt&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ng/NG_WORD_private.txt（gitignore）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;.env（APIキー・トークン）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="870" y="1030" width="250" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_mem_only" value="&lt;b&gt;再起動で失われる状態（インメモリのみ）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;利用トークン履歴(500件) / channel_reset_points / 自発会話の監視状態 / 自律行動の配信状態と話したいゲージ / 自律行動の開始失敗の待ち時間(start_failures / start_retry_at) / フィードバックの評価対象レジストリと付与クールダウン記録 / ギルド別 TTS 読み上げキュー(voice._speech_queues) / welcomed_guild_ids&lt;/span&gt;" style="shape=note;size=16;whiteSpace=wrap;html=1;fillColor=#FFF9E6;strokeColor=#D6B656;fontColor=#7F6000;fontSize=11;fontFamily=Meiryo UI;align=left;spacingLeft=8;" parent="1" vertex="1">
+                    <mxGeometry x="870" y="1190" width="860" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e01" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_start" target="a1_settings" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e02" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_settings" target="a1_genai" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e03" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_genai" target="a1_db" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e04" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_db" target="a1_restore" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e05" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_restore" target="a1_services" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e06" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_services" target="a1_register" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e07" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_register" target="a1_ready" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e08" value="12 サービスを生成し相互注入" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="a1_services" target="a1_grp_services" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1195" y="230"/>
+                            <mxPoint x="810" y="230"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a1_e09" value="6本のループを start()&lt;br&gt;文書ワーカーを spawn()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="a1_ready" target="a1_grp_loops" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1615" y="230"/>
+                            <mxPoint x="1490" y="230"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a1_e10" value="チャット主経路は GuildSettings を引数で渡す&lt;br&gt;見回り系4サービス（Memory / Document / AutoTopic / Autonomous）は&lt;br&gt;全ギルド横断のため BotState 自体を受け取る" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.57;entryDx=0;entryDy=0;" parent="1" source="a1_core_state" target="a1_grp_services" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e11" value="定期的にサービスを起動" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a1_grp_loops" target="a1_grp_services" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e12" value="asyncio.to_thread → database.py&lt;br&gt;projects.json は asyncio.Lock で保護&lt;br&gt;blacklist.json はロック無しの同期書き込み" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;" parent="1" source="a1_grp_services" target="a1_grp_store" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1120" y="730"/>
+                            <mxPoint x="1300" y="730"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a1_e13" value="Discord / Gemini / TTS を呼ぶ" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;" parent="1" source="a1_grp_services" target="a1_grp_ext" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="600" y="730"/>
+                            <mxPoint x="430" y="730"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a1_e14" value="イベント配送&lt;br&gt;on_message / on_ready / on_guild_join / on_raw_reaction_*" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;dashed=1;dashPattern=8 4;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="a1_ext_discord" target="a1_core_bot" edge="1">
+                    <mxGeometry x="-0.4" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="250" y="780"/>
+                            <mxPoint x="230" y="780"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a1_e15" value="主エンジンで mp3 合成" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="a1_mod_voice" target="a1_ext_edge" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e16" value="edge-tts 失敗時のみ退避" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;dashed=1;dashPattern=8 4;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="a1_mod_voice" target="a1_ext_gtts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_e17" value="内包" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="a1_db_sqlite" target="a1_db_tables" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_grp" value="凡例" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1380" width="1700" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_01" value="開始／終了" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="1430" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_02" value="通常の処理" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="1430" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_03" value="判断・関門" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="1430" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_04" value="Gemini API 呼び出し" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="1430" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_05" value="DB／永続化への読み書き" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="1430" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_06" value="外部システム" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="1490" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_07" value="エラー・違反・停止経路" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="1490" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_08" value="非同期（spawn／常駐ワーカー）" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="1490" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_09" value="───▶ 実線＝同期（await して待つ）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#333333;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="1490" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a1_lg_10" value="- - -▶ 破線＝非同期／fire-and-forget" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#333333;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="1490" width="290" height="50" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="pageA2" name="A-2 メッセージ受信〜応答のワークフロー">
+        <mxGraphModel dx="1075" dy="843" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2300" pageHeight="2240" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="a2_lane_user" value="ユーザー" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="2220" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_discord" value="Discord API" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="260" width="2220" height="190" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_bot" value="bot.py（on_message パイプライン）" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="450" width="2220" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_service" value="同期サービス層" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="800" width="2220" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_gemini" value="Gemini API" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1120" width="2220" height="190" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_async" value="非同期タスク（background.spawn / 常駐ワーカー）" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1310" width="2220" height="330" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lane_db" value="永続化層（SQLite / JSON）" style="swimlane;horizontal=0;startSize=180;html=1;whiteSpace=wrap;fillColor=#FFFFFF;swimlaneFillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;collapsible=0;container=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1640" width="2220" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_ttl" value="A-2 メッセージ受信〜応答のワークフロー（1回のメンション発言）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#1A1A1A;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1200" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_u_send" value="&lt;b&gt;① @ボット でメンション発言&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;（画像 / pdf・txt・csv・md の添付も可）&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="260" y="150" width="210" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_u_recv" value="&lt;b&gt;⑬ 返信を受け取る&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ボイス参加中なら読み上げも聞こえる&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;必要なら 👍👎 を押す&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="150" width="210" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_d_event" value="&lt;b&gt;Gateway: MESSAGE_CREATE&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(discord.py)&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="260" y="310" width="210" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_d_history" value="&lt;b&gt;REST: チャンネル履歴を取得&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(fetch_channel_history_text)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;HISTORY_LIMIT=100 件&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="310" width="210" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_d_reply" value="&lt;b&gt;REST: 返信を送信&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;(send_long_reply)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;2000字超は分割・戻り値は1通目&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="310" width="210" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_d_voice" value="&lt;b&gt;ボイス送出 &amp;amp; リアクション付与&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;discord.PCMAudio / add_reaction ×2&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="310" width="210" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_mark" value="&lt;b&gt;活動を観測（ゲートより前）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="260" y="495" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_gate" value="&lt;b&gt;関門① 応答モードのゲート&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;DM / 全発言モード / メンション&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;or 配信中のコメント欄&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="510" y="495" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_mod" value="&lt;b&gt;関門④ 統合判定を await&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;moderator.check_and_route()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="495" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_route" value="&lt;b&gt;関門⑤⑥ リマインダー・配信中かの取り直し&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ルーティング分岐（文書/コメント/通常）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※統計記録は関門ではなく spawn される付随処理&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1010" y="495" width="210" height="125" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_handle" value="&lt;b&gt;handle_chat_message()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;channel.typing() 開始&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;load_image_attachments()&lt;br&gt;本文が空なら定型の質問文へ差し替え&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="495" width="210" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_tts" value="&lt;b&gt;play_tts_response()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボイス未接続なら no-op&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="495" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_guard" value="&lt;b&gt;関門②③ ブラックリスト / NGワード&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;ng_filter.contains_ng_word()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※②と③の間に 空判定・チャンネル種別判定&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="510" y="655" width="210" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_prompt" value="&lt;b&gt;1本のフラットなプロンプトを組み立て&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;build_full_prompt()（prompting.py）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ペルソナ＋親密度＋記憶＋履歴＋質問&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="655" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_b_screen" value="&lt;b&gt;感情タグ [V:x, A:y] を抽出・除去&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;extract_affinity_changes()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;→ screen_bot_response()（NGマスク＋AI判定）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※参考リンクは送信用テキストにだけ追記&lt;br&gt;（TTS・記憶・戻り値には含めない）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="655" width="210" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_s_memory" value="&lt;b&gt;MemoryService.build_context()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;build_document_memory_context()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※そのユーザーのスライスだけ読む&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="845" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_s_gemini" value="&lt;b&gt;GeminiService.generate()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;グラウンディングON＋画像なし → REST&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;それ以外 → SDK generate_content_async&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※REST 失敗時は GROUNDING_MODEL_NAME で1回リトライ →&lt;br&gt;選択モデルのまま SDK へフォールバック（呼び出しは増えうる）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1510" y="845" width="210" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_s_feedback" value="&lt;b&gt;FeedbackService.track_reply()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※登録は同期・付与だけ spawn&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;60秒クールダウンで付与を間引く&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="845" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_s_affinity" value="&lt;b&gt;AffinityService.build_dynamic_prompt()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;親密度・感情ブロックを生成&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="1005" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_s_usage" value="&lt;b&gt;UsageTracker.log_snapshot()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※インメモリ500件のリングバッファ&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontColor=#7A4A00;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1005" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_g_mod" value="&lt;b&gt;【1回目】統合判定&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;モデレーション＋記憶ルーティング&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;＋リマインダー抽出（3判定を1回に統合）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※本文が空（画像のみ）なら呼ばれない＝Gemini は2回&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="1170" width="210" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_g_main" value="&lt;b&gt;【2回目】本文生成&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;→ (text, usage_metadata, grounding_sources)&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1510" y="1170" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_g_screen" value="&lt;b&gt;【3回目】Bot応答モデレーション&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;direction=&quot;Bot応答&quot;（NGワードは渡さない）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1170" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_stats" value="&lt;b&gt;spawn: stats.record()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;会話統計の記録（opt-out 判定はサービス内部）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1010" y="1355" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_affinity" value="&lt;b&gt;spawn: affinity.save_background()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;親密度・感情の保存（asyncio.Lock で直列化）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1355" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_react" value="&lt;b&gt;spawn: 👍👎 リアクション付与&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;feedback._add_reactions()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="1355" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_doc" value="&lt;b&gt;文書添付 → キューへ登録（await）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;enqueue_from_message() ＋「受付が完了しました」と返信&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;その後は常駐ワーカー documents.run_worker() が非同期に回答&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1010" y="1520" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_flush" value="&lt;b&gt;spawn: memory.flush_if_needed()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;記憶圧縮（チャット便乗）・ユーザーごとに個別処理&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1520" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_a_tts" value="&lt;b&gt;spawn: _run_speech_worker()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;edge-tts →(失敗時 gTTS)→ miniaudio → PCM&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ギルド別キューで順番に再生&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="1520" width="210" height="105" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_stats" value="&lt;b&gt;user_stats テーブル更新&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※stats_save_all は DELETE→全行 INSERT&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1010" y="1685" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_affinity" value="&lt;b&gt;affinity テーブル更新&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;valence / arousal / 親密度&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1685" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_pending" value="&lt;b&gt;pending_log へ Q/A 追記&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;memory.append_pending_log()（user_id 付き）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="1685" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_queue" value="&lt;b&gt;queue_tasks テーブルへ登録&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;claim は SELECT+UPDATE を同一トランザクションで&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1010" y="1845" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_profile" value="&lt;b&gt;profile テーブル / projects.json へ圧縮統合&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;_compact_memory()（ユーザー別に個別呼び出し）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1760" y="1845" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_p_feedback" value="&lt;b&gt;feedback テーブルへ 👍👎 を記録&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;(message_id, user_id) 主キーで押し替えは上書き&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="2010" y="1845" width="210" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e01" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_u_send" target="a2_d_event" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e02" value="MESSAGE_CREATE" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_d_event" target="a2_b_mark" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e03" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_b_mark" target="a2_b_gate" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e04" value="通過" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_gate" target="a2_b_guard" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e05" value="安全" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.2381;entryY=1.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_guard" target="a2_b_mod" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="810" y="705"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e06" value="Gemini 1回目" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#9673A6;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_mod" target="a2_g_mod" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e07" value="(is_safe, reason,&lt;br&gt;category, reminder)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#9673A6;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="a2_g_mod" target="a2_b_route" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="990" y="1220"/>
+                            <mxPoint x="990" y="520"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e08" value="spawn（fire-and-forget）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_route" target="a2_a_stats" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e09" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=0.0;exitY=0.5238;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_a_stats" target="a2_p_stats" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="980" y="1410"/>
+                            <mxPoint x="980" y="1730"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e10" value="文書添付があるとき&lt;br&gt;（await でキュー登録＋受付返信 → チャット処理は行わない）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;exitX=1.0;exitY=0.75;exitDx=0;exitDy=0;entryX=1.0;entryY=0.2857;entryDx=0;entryDy=0;" parent="1" source="a2_b_route" target="a2_a_doc" edge="1">
+                    <mxGeometry x="0.16" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1250" y="570"/>
+                            <mxPoint x="1250" y="1550"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=0.0;exitY=0.6667;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_a_doc" target="a2_p_queue" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1000" y="1590"/>
+                            <mxPoint x="1000" y="1890"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e12" value="通常のチャット" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_b_route" target="a2_b_handle" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e13" value="履歴を取得" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.5;exitY=0.0;exitDx=0;exitDy=0;entryX=0.5;entryY=1.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_handle" target="a2_d_history" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.3;entryDx=0;entryDy=0;" parent="1" source="a2_d_history" target="a2_b_prompt" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1240" y="355"/>
+                            <mxPoint x="1240" y="685"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e15" value="記憶カテゴリ（統合判定の結果）を渡す" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.3;entryDx=0;entryDy=0;" parent="1" source="a2_b_handle" target="a2_s_memory" edge="1">
+                    <mxGeometry x="0.32" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1500" y="545"/>
+                            <mxPoint x="1500" y="875"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e16" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=0.5;exitY=0.0;exitDx=0;exitDy=0;entryX=0.5;entryY=1.0;entryDx=0;entryDy=0;" parent="1" source="a2_s_memory" target="a2_b_prompt" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e17" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.7;entryDx=0;entryDy=0;" parent="1" source="a2_s_affinity" target="a2_b_prompt" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1230" y="1055"/>
+                            <mxPoint x="1230" y="725"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e18" value="build_full_prompt() の結果" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_b_prompt" target="a2_s_gemini" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1480" y="705"/>
+                            <mxPoint x="1480" y="895"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e19" value="Gemini 2回目" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#9673A6;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_s_gemini" target="a2_g_main" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e20" value="(text, usage, sources)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#9673A6;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.65;entryDx=0;entryDy=0;" parent="1" source="a2_g_main" target="a2_b_screen" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1750" y="1220"/>
+                            <mxPoint x="1750" y="720"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e21" value="Gemini 3回目&lt;br&gt;（不適切なら謝罪文へ差し替え）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#9673A6;exitX=0.0;exitY=0.25;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_g_screen" edge="1">
+                    <mxGeometry x="-0.44" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1730" y="680"/>
+                            <mxPoint x="1730" y="1220"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e22" value="トークン使用量を記録&lt;br&gt;（※generate() の直後に実行）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_s_usage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e23" value="spawn" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=0.0;exitY=0.85;exitDx=0;exitDy=0;entryX=0.0;entryY=0.3333;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_a_affinity" edge="1">
+                    <mxGeometry x="0.16" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1740" y="740"/>
+                            <mxPoint x="1740" y="1390"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e24" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=0.0;exitY=0.7143;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_a_affinity" target="a2_p_affinity" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1730" y="1430"/>
+                            <mxPoint x="1730" y="1730"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e25" value="send_long_reply()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=0.5;exitY=0.0;exitDx=0;exitDy=0;entryX=0.5;entryY=1.0;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_d_reply" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=1.0;exitY=0.2222;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_d_reply" target="a2_u_recv" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1990" y="330"/>
+                            <mxPoint x="1990" y="190"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e27" value="1通目を track_reply()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.7778;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_d_reply" target="a2_s_feedback" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1990" y="380"/>
+                            <mxPoint x="1990" y="890"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e28" value="spawn（クールダウン通過時のみ）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="a2_s_feedback" target="a2_a_react" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_e29" value="add_reaction ×2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=1.0;exitY=0.5238;exitDx=0;exitDy=0;entryX=1.0;entryY=0.4444;entryDx=0;entryDy=0;" parent="1" source="a2_a_react" target="a2_d_voice" edge="1">
+                    <mxGeometry x="0.12" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="2230" y="1410"/>
+                            <mxPoint x="2230" y="350"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e30" value="return response_text" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#4D4D4D;exitX=1.0;exitY=0.35;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_b_tts" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1980" y="690"/>
+                            <mxPoint x="1980" y="545"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e31" value="spawn(_run_speech_worker)&lt;br&gt;※そのギルドのキューが無いときだけ" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=1.0;exitY=0.75;exitDx=0;exitDy=0;entryX=1.0;entryY=0.4762;entryDx=0;entryDy=0;" parent="1" source="a2_b_tts" target="a2_a_tts" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="2250" y="570"/>
+                            <mxPoint x="2250" y="1570"/>
+                        </Array>
+                        <mxPoint x="-100" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e32" value="48kHz/2ch/16bit PCM を送出" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#999999;exitX=1.0;exitY=0.6667;exitDx=0;exitDy=0;entryX=1.0;entryY=0.6667;entryDx=0;entryDy=0;" parent="1" source="a2_a_tts" target="a2_d_voice" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="2260" y="1590"/>
+                            <mxPoint x="2260" y="370"/>
+                        </Array>
+                        <mxPoint x="-100" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e33" value="spawn（チャット便乗の記憶圧縮）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#82B366;dashed=1;dashPattern=8 4;exitX=1.0;exitY=0.65;exitDx=0;exitDy=0;entryX=1.0;entryY=0.4762;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_a_flush" edge="1">
+                    <mxGeometry x="-0.04" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="2000" y="720"/>
+                            <mxPoint x="2000" y="1570"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e34" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=0.0;exitY=0.6667;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_a_flush" target="a2_p_profile" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1750" y="1590"/>
+                            <mxPoint x="1750" y="1890"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e35" value="append_pending_log()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;exitX=1.0;exitY=0.85;exitDx=0;exitDy=0;entryX=0.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_b_screen" target="a2_p_pending" edge="1">
+                    <mxGeometry x="0.08" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1980" y="740"/>
+                            <mxPoint x="1980" y="1730"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_e36" value="👍👎 を押す&lt;br&gt;→ on_raw_reaction_add&lt;br&gt;（レジストリにあれば記録）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;strokeColor=#6C8EBF;dashed=1;dashPattern=8 4;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.45;entryDx=0;entryDy=0;" parent="1" source="a2_u_recv" target="a2_p_feedback" edge="1">
+                    <mxGeometry x="0.2" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="2240" y="190"/>
+                            <mxPoint x="2240" y="1890"/>
+                        </Array>
+                        <mxPoint x="-100" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="a2_lg_grp" value="凡例" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="2020" width="2220" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_01" value="開始／終了" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="2070" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_02" value="通常の処理" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="510" y="2070" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_03" value="判断・関門" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="2070" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_04" value="Gemini API 呼び出し" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1390" y="2070" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_05" value="DB／永続化への読み書き" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1830" y="2070" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_06" value="外部システム" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="2130" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_07" value="エラー・違反・停止経路" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="510" y="2130" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_08" value="非同期（spawn／常駐ワーカー）" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="2130" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_09" value="───▶ 実線＝同期（await して待つ）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#333333;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1390" y="2130" width="400" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="a2_lg_10" value="- - -▶ 破線＝非同期／fire-and-forget" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#333333;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1830" y="2130" width="400" height="50" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="pageB1" name="B-1 on_message パイプライン">
+        <mxGraphModel dx="1075" dy="843" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="2700" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="b1_ttl" value="B-1 on_message パイプライン（6段階の関門）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#1A1A1A;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="10" width="1200" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_start" value="&lt;b&gt;on_message 受信&lt;/b&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="60" width="380" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_bot" value="&lt;b&gt;client.user が未確定（ログイン前）&lt;br&gt;または送信者がボットか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="180" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_resolve" value="&lt;b&gt;サーバー設定を解決&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;guild_id = message.guild.id if message.guild else None&lt;br&gt;state.get_guild(guild_id)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※DM は全DM共有スロット&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="340" width="380" height="115" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_mark" value="&lt;b&gt;会話の活動を観測（ゲートより前に呼ぶ）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボット宛てでない発言も記録する&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="500" width="380" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_gate" value="&lt;b&gt;関門① 応答モードのゲート&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;accepts_normally?&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;DM / mention以外のモード / メンションあり&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="670" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_comment" value="&lt;b&gt;【例外】配信中のコメント欄か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.is_comment_channel()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※メンション不要で拾う&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="860" width="380" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_black" value="&lt;b&gt;関門② ブラックリスト&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1040" width="380" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_empty" value="&lt;b&gt;本文をクリーニングした結果&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;clean_message_content()&lt;/span&gt;&lt;br&gt;&lt;b&gt;本文も添付も空か?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1210" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_channel" value="&lt;b&gt;返信・履歴取得ができる種別か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;is_supported_message_channel()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※Gemini を無駄打ちしないため関門③の前に置く&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1400" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_ng" value="&lt;b&gt;関門③ NGワードフィルタ&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;ng_filter.contains_ng_word()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※本文があるときだけ判定する&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1590" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_mod" value="&lt;b&gt;関門④ 3つの判定を Gemini 1回で&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;content_moderator.check_and_route()&lt;/span&gt;&lt;br&gt;モデレーション＋記憶ルーティング＋リマインダー抽出&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※本文があるときだけ呼ぶ / 例外・タイムアウト・JSONパース失敗は safe 扱い&lt;br&gt;※プロンプトブロック（安全フィルタ）とテキスト取得失敗は unsafe 扱い&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1780" width="380" height="165" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_safe" value="&lt;b&gt;is_safe ?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1980" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_conn_a" value="&lt;b&gt;①&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="2140" width="380" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_ignore_bot" value="&lt;b&gt;return（未ログイン / ボットの発言は処理しない）&lt;/b&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="180" width="300" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_ignore" value="&lt;b&gt;黙って破棄（return）&lt;/b&gt;&lt;br&gt;・ゲート不成立かつ配信中でない&lt;br&gt;・ブラックリスト登録済み&lt;br&gt;・本文も添付も空&lt;br&gt;・返信できないチャンネル種別" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1100" width="300" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_violation" value="&lt;b&gt;notify_violation()&lt;/b&gt;&lt;br&gt;違反を1回記録し警告を返信&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.record_violation()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1780" width="300" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_violation" value="&lt;b&gt;違反が3回目か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;BLACKLIST_MAX_VIOLATIONS = 3&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#B85450;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1950" width="300" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_blocked" value="&lt;b&gt;ブラックリストに登録&lt;/b&gt;&lt;br&gt;「以降のメッセージは無視されます」&lt;br&gt;と返信して終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="2120" width="300" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_warn" value="&lt;b&gt;「あと◯回で応答を停止します」&lt;/b&gt;&lt;br&gt;と警告して終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="2290" width="300" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_conn_b" value="&lt;b&gt;①&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="60" width="380" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_touch" value="&lt;b&gt;最終活動時刻を更新 / 監視対象に登録&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;state.touch()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.watch_channel()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※DM と配信中のコメント欄は登録しない&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="190" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_attach" value="&lt;b&gt;添付ファイルの種別は?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（多分岐）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="350" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_stats" value="&lt;b&gt;spawn(stats.record(...))&lt;/b&gt;&lt;br&gt;会話統計を fire-and-forget で記録&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※opt-out 判定は StatsService の内部で行う&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="540" width="380" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_reminder" value="&lt;b&gt;関門⑤ リマインダー依頼が&lt;br&gt;抽出されていたか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（関門④ の戻り値 reminder）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="710" width="380" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_reminder" value="&lt;b&gt;reminders.create_from_request()&lt;/b&gt;&lt;br&gt;日時の解釈・過去/上限の検証&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;REMINDER_MAX_PENDING_PER_USER = 20&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="880" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_reminder_ok" value="&lt;b&gt;確認文（戻り値）が返ったか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1040" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_recheck" value="&lt;b&gt;関門⑥ 配信中かを取り直す&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.is_comment_channel()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※モデレーション中に配信が終わりうるため&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;入口の判定を再利用しない&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B85450;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1200" width="380" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_comment2" value="&lt;b&gt;いま配信中か?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1390" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_normal" value="&lt;b&gt;accepts_normally ?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（DM / 全発言モード / メンションあり）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1550" width="380" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_handle_chat" value="&lt;b&gt;handle_chat_message()&lt;/b&gt;&lt;br&gt;通常のチャット応答&lt;br&gt;記憶・親密度・👍👎 あり" style="shape=process;size=0.06;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1730" width="380" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_dec_resp" value="&lt;b&gt;response_text あり?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="1910" width="380" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_tts" value="&lt;b&gt;play_tts_response()&lt;/b&gt;&lt;br&gt;ボイス接続中のみ読み上げ&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※未接続なら no-op（チャットは成功）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="2070" width="380" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_end" value="&lt;b&gt;終了&lt;/b&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1020" y="2250" width="380" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_unsupported" value="&lt;b&gt;「未対応の添付ファイルが含まれています」と返信&lt;/b&gt;&lt;br&gt;pdf / txt / csv / md のみ対応&lt;br&gt;→ 終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="350" width="340" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_oversize" value="&lt;b&gt;「ファイルサイズが上限を超えています」&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;MAX_DOCUMENT_SIZE_BYTES = 5MB&lt;/span&gt;&lt;br&gt;→ 終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="520" width="340" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_doc" value="&lt;b&gt;文書ワーカーへキュー登録&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;documents.enqueue_from_message()&lt;/span&gt;&lt;br&gt;「受付が完了しました」と返信&lt;br&gt;→ 常駐ワーカーが後で回答（非同期）" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="700" width="340" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_reminder_ok" value="&lt;b&gt;確認文だけを返信して終了&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※同じ発言にチャット返信も返すと&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;二重投稿になるため&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="1040" width="340" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_handle_comment" value="&lt;b&gt;autonomous.handle_comment()&lt;/b&gt;&lt;br&gt;配信者としての応答&lt;br&gt;長期記憶・親密度・👍👎 は使わない&lt;br&gt;10秒のコメント流量制限あり" style="shape=process;size=0.06;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="1390" width="340" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_drop" value="&lt;b&gt;配信の終了と入れ違いに届いた発言&lt;/b&gt;&lt;br&gt;ログのみ出して何もしない&lt;br&gt;→ 終了" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1520" y="1600" width="340" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e01" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_start" target="b1_dec_bot" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e02" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_bot" target="b1_ignore_bot" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e03" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_bot" target="b1_resolve" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e04" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_resolve" target="b1_mark" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e05" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_mark" target="b1_dec_gate" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e06" value="Yes（通常受付）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_gate" target="b1_dec_black" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="880" y="735"/>
+                            <mxPoint x="880" y="1095"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e07" value="No（メンション無し）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_gate" target="b1_dec_comment" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e08" value="Yes（コメントとして拾う）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment" target="b1_dec_black" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e09" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment" target="b1_ignore" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e10" value="Yes（ブロック中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="b1_dec_black" target="b1_ignore" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e11" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_black" target="b1_dec_empty" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e12" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_empty" target="b1_ignore" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="420" y="1275"/>
+                            <mxPoint x="420" y="1200"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e13" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_empty" target="b1_dec_channel" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e14" value="No（非対応の種別）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" parent="1" source="b1_dec_channel" target="b1_ignore" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="400" y="1465"/>
+                            <mxPoint x="400" y="1250"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e15" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_channel" target="b1_dec_ng" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e16" value="検出あり" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_ng" target="b1_violation" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e17" value="検出なし / 本文が空" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_ng" target="b1_mod" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e18" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#9673A6;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_mod" target="b1_dec_safe" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e19" value="No（不適切）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_safe" target="b1_violation" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="400" y="2030"/>
+                            <mxPoint x="400" y="1835"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e20" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_safe" target="b1_conn_a" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e21" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_violation" target="b1_dec_violation" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e22" value="Yes（3回目）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_violation" target="b1_blocked" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e23" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_violation" target="b1_warn" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="20" y="2005"/>
+                            <mxPoint x="20" y="2340"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e24" value="①へ続く" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_conn_a" target="b1_conn_b" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="900" y="2175"/>
+                            <mxPoint x="900" y="20"/>
+                            <mxPoint x="1210" y="20"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e25" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_conn_b" target="b1_touch" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_touch" target="b1_dec_attach" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e27" value="非対応の拡張子" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_attach" target="b1_unsupported" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e28" value="文書あり・5MB 超" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_attach" target="b1_oversize" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1460" y="415"/>
+                            <mxPoint x="1460" y="580"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e29" value="文書あり・5MB 以内" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82B366;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_attach" target="b1_doc" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1460" y="415"/>
+                            <mxPoint x="1460" y="775"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e30" value="画像のみ / 添付なし" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_attach" target="b1_stats" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e31" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_stats" target="b1_dec_reminder" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e32" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_reminder" target="b1_reminder" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e33" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_reminder" target="b1_recheck" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="980" y="765"/>
+                            <mxPoint x="980" y="1265"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e34" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_reminder" target="b1_dec_reminder_ok" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e35" value="Yes（確認文・上限超過の案内・登録失敗のお詫びを返信して終了）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_reminder_ok" target="b1_reminder_ok" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e36" value="No＝None（日時が過去/解釈不能/本文なし → 通常会話へ）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_reminder_ok" target="b1_recheck" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e37" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_recheck" target="b1_dec_comment2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e38" value="Yes（配信中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment2" target="b1_handle_comment" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e39" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment2" target="b1_dec_normal" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e40" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_normal" target="b1_handle_chat" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e41" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_normal" target="b1_drop" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e42" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_handle_chat" target="b1_dec_resp" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e43" value="送信した本文を返す" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_handle_comment" target="b1_dec_resp" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1890" y="1465"/>
+                            <mxPoint x="1890" y="1960"/>
+                            <mxPoint x="1400" y="1960"/>
+                        </Array>
+                        <mxPoint x="-40" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e44" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_resp" target="b1_tts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e45" value="No（ペルソナ未検出 / generate 失敗 / タグ除去後に空。エラー文は返信済み）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_resp" target="b1_end" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="980" y="1960"/>
+                            <mxPoint x="980" y="2285"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_e46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_tts" target="b1_end" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_e47" value="※返信は後から非同期に届く" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82B366;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_doc" target="b1_end" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1900" y="775"/>
+                            <mxPoint x="1900" y="2285"/>
+                        </Array>
+                        <mxPoint x="-70" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b1_lg_grp" value="凡例" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="2470" width="1700" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_01" value="開始／終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="2520" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_02" value="通常の処理" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="2520" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_03" value="判断・関門" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="2520" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_04" value="Gemini API 呼び出し" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="2520" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_05" value="DB／永続化への読み書き" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="2520" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_06" value="外部システム" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="2580" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_07" value="エラー・違反・停止経路" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=11;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="2580" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_08" value="非同期（spawn／常駐ワーカー）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=11;fontFamily=Meiryo UI;dashed=1;dashPattern=8 4;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="2580" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_09" value="───▶ 実線＝同期（await して待つ）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontFamily=Meiryo UI;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="2580" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b1_lg_10" value="- - -▶ 破線＝非同期／fire-and-forget" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontFamily=Meiryo UI;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="2580" width="290" height="50" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="pageB2" name="B-2 自律行動（ボイス/ステージ配信）">
+        <mxGraphModel dx="3015" dy="843" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1940" pageHeight="3620" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="b2_ttl" value="B-2 自律行動（ボイス/ステージでの配信）― autonomous_service.py" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#1A1A1A;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="30" width="1300" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_start" value="&lt;b&gt;autonomous_loop（1分ごと）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;run_pending_checks()&lt;/span&gt;&lt;br&gt;全サーバーを走査（DM は対象外）&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;1サーバーの失敗で他を止めない&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="80" width="400" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_guild" value="&lt;b&gt;client.get_guild() で&lt;/b&gt;&lt;br&gt;&lt;b&gt;サーバーを引けるか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="250" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_session" value="&lt;b&gt;いま配信中か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;guild_settings.autonomous_session&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※enabled の判定より先に置く&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="430" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_enabled" value="&lt;b&gt;autonomous_enabled ?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（既定は無効・DB に永続化）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="610" width="400" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_quiet" value="&lt;b&gt;深夜の時間帯制限に入っているか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;_is_quiet_hours()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;既定 00:00〜05:59（Asia/Tokyo）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="770" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_vc" value="&lt;b&gt;guild.voice_client が既にあるか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※/join で人が呼んだ接続は横取りしない&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="950" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_retry" value="&lt;b&gt;開始失敗のクールダウン中か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous_start_retry_at &gt; now&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="1130" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_gauge" value="&lt;b&gt;話したいゲージを計算（0〜100）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;compute_talk_desire()&lt;/span&gt;&lt;br&gt;基礎＝無会話分 ÷ しきい値時間 ×100&lt;br&gt;＋直近180分の発言数×2（上限30）&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※未観測のサーバーは 0 を返す&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※材料は on_message の mark_activity() が記録&lt;br&gt;（メンション判定より前に呼ばれる）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="1310" width="400" height="185" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_gauge" value="&lt;b&gt;ゲージ ≧ 100 ?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;AUTONOMOUS_GAUGE_THRESHOLD&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="1520" width="400" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_pick" value="&lt;b&gt;行き先を選ぶ&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;_pick_channel()&lt;/span&gt;&lt;br&gt;ステージ優先 → 無ければボイス&lt;br&gt;候補が複数なら random.choice&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;permissions_for(guild.me) でチャンネル単位に確認&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="1690" width="400" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_pick" value="&lt;b&gt;行き先があるか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="1900" width="400" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_connect" value="&lt;b&gt;channel.connect(timeout=30秒)&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2060" width="400" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_connect" value="&lt;b&gt;接続に成功したか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2220" width="400" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_stage" value="&lt;b&gt;ステージチャンネルか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2380" width="400" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_prepare" value="&lt;b&gt;_prepare_stage()&lt;/b&gt;&lt;br&gt;枠が無ければ create_instance()&lt;br&gt;topic=&quot;会話相手募集中…&quot;&lt;br&gt;send_start_notification=False（通知爆撃を防ぐ）&lt;br&gt;→ member.edit(suppress=False)&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボイス状態が見えるまで 5回×0.5秒 待つ&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2550" width="400" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_prepare" value="&lt;b&gt;発言者になれたか?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2780" width="400" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_session" value="&lt;b&gt;AutonomousSession を作成（busy=True）&lt;/b&gt;&lt;br&gt;開始失敗の記録をクリア&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;start_failures=0 / start_retry_at=None&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="2950" width="400" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_opening" value="&lt;b&gt;spawn(_speak_opening())&lt;/b&gt;&lt;br&gt;第一声を生成 → 看板＋生成文をチャット投稿&lt;br&gt;（speak_text で読み上げるのは生成文だけ）&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※生成に失敗しても AUTONOMOUS_OPENING_NOTICE&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（会話相手募集中の看板）だけは必ず投稿する&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;finally で busy=False / last_spoke_at を必ず更新&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※投稿の直前に _is_current_session() で配信の継続を確認&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="3140" width="400" height="215" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_cleanup_lost" value="&lt;b&gt;セッション記録を片付ける&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;_clear_session()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※残すと is_comment_channel が真のままになり&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;自発会話の競合抑止も効き続けて&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;そのサーバーの話題提供が二度と動かなくなる&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="250" width="320" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_skip" value="&lt;b&gt;このサーバーは今回何もしない&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（次の見回り＝1分後に再判定）&lt;/span&gt;&lt;br&gt;・無効 ・深夜 ・/join の接続あり&lt;br&gt;・クールダウン中 ・ゲージ不足" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="950" width="320" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_skip_nofail" value="&lt;b&gt;行き先が無いので何もしない&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※API を1回も叩いていないので&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;失敗としては記録しない&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（チャンネルが作られたらすぐ出られる）&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1900" width="320" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_fail" value="&lt;b&gt;_record_start_failure()&lt;/b&gt;&lt;br&gt;連続失敗回数 ×30分 待つ（最長4時間）&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ゲージはリセットしない&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※パネルで確定すると即座に解除される&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="2220" width="320" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_fail_stage" value="&lt;b&gt;ステージ準備の失敗&lt;/b&gt;&lt;br&gt;自分で開いた枠を delete →&lt;br&gt;_disconnect() で接続を切る&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（喋れないまま居座らない）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="2780" width="320" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_tend" value="&lt;b&gt;_tend_session()&lt;/b&gt;&lt;br&gt;配信中のサーバーの面倒を見る" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="430" width="400" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_conn_alive" value="&lt;b&gt;【停止条件⑥】&lt;/b&gt;&lt;br&gt;&lt;b&gt;ボイス接続が生きているか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;guild.voice_client.is_connected()&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#B85450;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="610" width="400" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_moved" value="&lt;b&gt;【停止条件⑤】&lt;/b&gt;&lt;br&gt;&lt;b&gt;別のチャンネルへ移されたか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;voice_client.channel.id ≠ session.channel_id&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※追従せず畳む（開いた枠を閉じられなくなるため）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#B85450;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="800" width="400" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_stopcond" value="&lt;b&gt;【停止条件①〜④】いずれかに該当するか?&lt;/b&gt;&lt;br&gt;④ パネルで無効化された&lt;br&gt;② 深夜の時間帯に入った&lt;br&gt;③ 最長 180 分を超えた&lt;br&gt;① コメントが 30 分途絶えた" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#B85450;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="1000" width="400" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_busy" value="&lt;b&gt;session.busy ?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（生成・発話中なら重ねない）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="1240" width="400" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_interval" value="&lt;b&gt;前回の発話から 3 分経過したか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;AUTONOMOUS_TALK_INTERVAL_MINUTES&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="1410" width="400" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_monologue" value="&lt;b&gt;busy=True → spawn(_speak_monologue())&lt;/b&gt;&lt;br&gt;チャンネル履歴だけを材料に独り言を生成&lt;br&gt;→ チャット投稿 ＋ speak_text で読み上げ&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※AI モデレーションは掛けない&lt;br&gt;（_screen_speech で感情タグ除去＋NGマスクのみ）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※turn_count を進めてプロンプトへ渡す（何回目の独り言か）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※投稿の直前に _is_current_session() で配信の継続を確認&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;finally で busy=False / last_spoke_at を必ず更新&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="1600" width="400" height="250" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_clear" value="&lt;b&gt;_clear_session()&lt;/b&gt;&lt;br&gt;記録の片付けのみ（締めの投稿はしない）&lt;br&gt;ゲージも空に戻す&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※戻さないと直後の見回りで再開してしまう&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1500" y="610" width="380" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_stop" value="&lt;b&gt;stop_session(reason, notice)&lt;/b&gt;&lt;br&gt;① 先に _clear_session（二重停止を防ぐ）&lt;br&gt;② 締めの一言を投稿（理由別に5種）&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;&amp;nbsp;&amp;nbsp;コメント途絶「反応が無くなったので…」&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;&amp;nbsp;&amp;nbsp;最長時間「長くなってきたので…」&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;&amp;nbsp;&amp;nbsp;深夜「夜も遅いので…おやすみなさい」&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;&amp;nbsp;&amp;nbsp;無効化「設定が変わったので…」&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;&amp;nbsp;&amp;nbsp;移動「別のチャンネルへ移動になったので…」&lt;/span&gt;&lt;br&gt;③ 自分で開いたステージ枠だけ delete&lt;br&gt;④ ボイス切断&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※/join・/leave からも呼ばれる（notice 無し＝締めの投稿はしない）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※例外を外へ出さない（切断まで必ず進める）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1500" y="830" width="380" height="355" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_wait" value="&lt;b&gt;今回は独り言を投下しない&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（次の見回り＝1分後に再判定）&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1500" y="1240" width="380" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_comment_entry" value="&lt;b&gt;【別入口】on_message から&lt;/b&gt;&lt;br&gt;is_comment_channel() == True の発言&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※配信中のそのチャンネルだけ&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;メンション不要で拾う&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="1900" width="400" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_slot" value="&lt;b&gt;_claim_comment_slot()&lt;/b&gt;&lt;br&gt;&lt;b&gt;前回の応答から 10 秒経過したか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;AUTONOMOUS_COMMENT_COOLDOWN_SECONDS&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※判定と時刻の記録を1メソッドに（間に await を挟まない）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※基準は last_spoke_at ではなく last_comment_reply_at&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="2090" width="400" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_comment_gen" value="&lt;b&gt;handle_comment()&lt;/b&gt;&lt;br&gt;ペルソナ＋履歴＋コメントでプロンプト組み立て&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;build_autonomous_reply_prompt()&lt;/span&gt;&lt;br&gt;→ Gemini 生成（画像は別引数で同時に渡す）&lt;br&gt;（グラウンディングはサーバー設定に従う）&lt;br&gt;→ 感情タグ除去 → screen_bot_response()&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※長期記憶・親密度・👍👎 は使わない&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※本文なしで画像だけなら AUTONOMOUS_IMAGE_ONLY_COMMENT&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="2310" width="400" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_dec_alive" value="&lt;b&gt;_is_current_session()&lt;/b&gt;&lt;br&gt;&lt;b&gt;まだ同じ配信が続いているか?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;（生成中に /leave されうる）&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#B85450;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="2590" width="400" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_comment_send" value="&lt;b&gt;send_long_reply() で返信&lt;/b&gt;&lt;br&gt;session.last_spoke_at を更新&lt;br&gt;→ bot.py が play_tts_response で読み上げへ回す" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="2780" width="400" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_comment_skip" value="&lt;b&gt;この1件は応答しない&lt;/b&gt;&lt;br&gt;・クールダウン中（前回応答から10秒未満）&lt;br&gt;・生成中に配信が終了した&lt;br&gt;・ペルソナ未読込 / 本文も画像も無い&lt;br&gt;・生成失敗 / 感情タグ除去後に本文が空&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※無応答タイマー(last_human_at)は&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;mark_activity が既に更新済みなので&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;配信が早く終わることはない&lt;/span&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="1500" y="2310" width="380" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e01" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_start" target="b2_dec_guild" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e02" value="No（追い出された/キャッシュ未取得）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.4;entryDx=0;entryDy=0;" parent="1" source="b2_dec_guild" target="b2_cleanup_lost" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e03" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_guild" target="b2_dec_session" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e04" value="Yes（配信中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_session" target="b2_tend" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e05" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_session" target="b2_dec_enabled" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e06" value="No（無効）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_enabled" target="b2_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="420" y="660"/>
+                            <mxPoint x="420" y="1050"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e07" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_enabled" target="b2_dec_quiet" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e08" value="Yes（深夜）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_quiet" target="b2_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="420" y="830"/>
+                            <mxPoint x="420" y="1050"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e09" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_quiet" target="b2_dec_vc" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e10" value="Yes（/join の接続がある）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_vc" target="b2_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e11" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_vc" target="b2_dec_retry" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e12" value="Yes（クールダウン中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_retry" target="b2_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="420" y="1190"/>
+                            <mxPoint x="420" y="1050"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e13" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_retry" target="b2_gauge" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_gauge" target="b2_dec_gauge" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e15" value="No（100 未満）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_gauge" target="b2_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="420" y="1575"/>
+                            <mxPoint x="420" y="1050"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e16" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_gauge" target="b2_pick" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e17" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_pick" target="b2_dec_pick" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e18" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.385;entryDx=0;entryDy=0;" parent="1" source="b2_dec_pick" target="b2_skip_nofail" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e19" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_pick" target="b2_connect" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_connect" target="b2_dec_connect" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e21" value="No（Forbidden / Timeout / その他）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.294;entryDx=0;entryDy=0;" parent="1" source="b2_dec_connect" target="b2_fail" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e22" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_connect" target="b2_dec_stage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e23" value="Yes（ステージ）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_stage" target="b2_prepare" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e24" value="No（ボイス）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_stage" target="b2_session" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="920" y="2435"/>
+                            <mxPoint x="920" y="3015"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e25" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_prepare" target="b2_dec_prepare" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e26" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.344;entryDx=0;entryDy=0;" parent="1" source="b2_dec_prepare" target="b2_fail_stage" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e27" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_prepare" target="b2_session" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e28" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_session" target="b2_opening" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e29" value="→ _record_start_failure()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_fail_stage" target="b2_fail" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="20" y="2860"/>
+                            <mxPoint x="20" y="2305"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e30" value="以降は毎分の見回りが面倒を見る" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_opening" target="b2_tend" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="940" y="3230"/>
+                            <mxPoint x="940" y="490"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e31" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_tend" target="b2_dec_conn_alive" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e32" value="No（接続が失われた）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.433;entryDx=0;entryDy=0;" parent="1" source="b2_dec_conn_alive" target="b2_clear" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e33" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_conn_alive" target="b2_dec_moved" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e34" value="Yes → 締め文＝「移動」" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.121;entryDx=0;entryDy=0;" parent="1" source="b2_dec_moved" target="b2_stop" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e35" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_moved" target="b2_dec_stopcond" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e36" value="Yes（該当あり）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.788;entryDx=0;entryDy=0;" parent="1" source="b2_dec_stopcond" target="b2_stop" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e37" value="No（続行）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_stopcond" target="b2_dec_busy" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e38" value="Yes（生成・発話中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.344;entryDx=0;entryDy=0;" parent="1" source="b2_dec_busy" target="b2_wait" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e39" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_busy" target="b2_dec_interval" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e40" value="No（3分未満）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_interval" target="b2_wait" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1440" y="1475"/>
+                            <mxPoint x="1440" y="1320"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e41" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_interval" target="b2_monologue" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e42" value="次の見回りへ" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=8 4;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_monologue" target="b2_tend" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="960" y="1700"/>
+                            <mxPoint x="960" y="490"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e43" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_comment_entry" target="b2_dec_slot" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e44" value="No（10秒未満）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_slot" target="b2_comment_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e45" value="Yes&lt;br&gt;（last_comment_reply_at と last_spoke_at を同時に更新）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_slot" target="b2_comment_gen" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#9673A6;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_comment_gen" target="b2_dec_alive" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_e47" value="No（配信が終了した）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#666666;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b2_dec_alive" target="b2_comment_skip" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1440" y="2655"/>
+                            <mxPoint x="1440" y="2410"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="b2_e48" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;" parent="1" source="b2_dec_alive" target="b2_comment_send" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_grp" value="凡例" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B3B3B3;fontColor=#333333;fontSize=15;fontStyle=1;fontFamily=Meiryo UI;verticalAlign=top;align=left;spacingLeft=14;spacingTop=6;dashed=0;container=1;collapsible=0;movable=1;resizable=0;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="3400" width="1700" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_01" value="開始／終了" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="3450" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_02" value="通常の処理" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="3450" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_03" value="判断・関門" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="3450" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_04" value="Gemini API 呼び出し" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#E1D5E7;strokeColor=#9673A6;fontColor=#3F2A55;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="3450" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_05" value="DB／永続化への読み書き" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontColor=#1F3A63;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="3450" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_06" value="外部システム" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="90" y="3510" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_07" value="エラー・違反・停止経路" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;" parent="1" vertex="1">
+                    <mxGeometry x="425" y="3510" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_08" value="非同期（spawn／常駐ワーカー）" style="rounded=0;whiteSpace=wrap;html=1;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;dashed=1;dashPattern=8 4;fillColor=#D5E8D4;strokeColor=#82B366;fontColor=#2D5016;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="3510" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_09" value="───▶ 実線＝同期（await して待つ）" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontFamily=Meiryo UI;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1095" y="3510" width="290" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="b2_lg_10" value="- - -▶ 破線＝非同期／fire-and-forget" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontFamily=Meiryo UI;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1430" y="3510" width="290" height="50" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

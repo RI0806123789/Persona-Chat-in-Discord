@@ -26,6 +26,9 @@ from pathlib import Path
 # このスクリプトは deploy/ に置かれているため、親がプロジェクトルートになる。
 # カレントディレクトリではなく __file__ を基準にすることで、どこから実行しても動く。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 旧ファイルの置き場所。ソースのフォルダは ver0.1.7 で index/ から src/ へ改名したが、
+# config_private.py は Git 管理外のため git pull では移動せず、旧フォルダ index/ に残る。
+# **ここを src/ に変えないこと**（移行元のファイルが見つからなくなる）。
 INDEX_DIR = PROJECT_ROOT / "index"
 ENV_PATH = PROJECT_ROOT / ".env"
 
@@ -41,7 +44,7 @@ REQUIRED_KEYS = ("API_KEY_GEMINI", "TOKEN_DISCORD")
 
 # config.py（コミット済みのテンプレート）に入っているプレースホルダ。
 # これを .env へ書き写すと「設定したつもりで動かない」状態になるため未設定として扱う。
-# index/settings_loader.py の _PLACEHOLDER_VALUES と同じ値を持つこと。
+# src/settings_loader.py の _PLACEHOLDER_VALUES と同じ値を持つこと。
 PLACEHOLDER_VALUES = {
     "YOUR_GEMINI_API_KEY",
     "YOUR_DISCORD_BOT_TOKEN",
@@ -224,7 +227,7 @@ def main() -> int:
     print(f".env を作成しました: {ENV_PATH}")
     print("")
     print("次の手順:")
-    print("  1. cd index && python3 -c \"from settings_loader import load_settings; load_settings()\"")
+    print("  1. cd src && python3 -c \"from settings_loader import load_settings; load_settings()\"")
     print("     → 何も表示されなければ読み込み成功（キー未設定なら 'キー未設定' と出ます）")
     print("  2. 動作確認できたら index/config_private.py は削除して構いません")
     print("  3. systemd 運用中なら sudo systemctl restart bot")

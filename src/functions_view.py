@@ -152,7 +152,12 @@ class StatsButton(ui.Button):
 
 
 class AutoTopicButton(ui.Button):
-    """自発会話パネル（AutoTopicView）を開くボタン。"""
+    """自発会話パネル（AutoTopicView）を開くボタン。
+
+    「ボットが自分から話し出す」系の設定はすべてこのパネルにまとめている
+    （テキストへの話題提供＝自発的な会話、ボイス/ステージでの配信＝自律行動）。
+    入口を分けると、どちらを切ったのか分からなくなるため統一している。
+    """
 
     def __init__(self) -> None:
         super().__init__(label="自発会話", style=discord.ButtonStyle.primary, emoji="💬", row=1)
@@ -405,6 +410,8 @@ class FunctionsView(PanelView):
         lines = [
             "🛠️ **機能パネル** — 使いたい機能を選んでください。",
             "・⚙️ キャラ設定 / 📋 会話要約 / 📈 会話統計 / 💬 自発会話 / ⏰ リマインダー … パネルを開く",
+            "　└ 💬 自発会話 … テキストへの話題提供と、🎙️ 自律行動"
+            "（ボットが自分からボイス/ステージへ出て配信する）の ON/OFF",
             "・📊 グラフ / 🔄 NGワード再読込 … その場で実行",
             f"・🔍 Google検索: {grounding_display} … ボタンでその場で切替",
             "・❓ 使い方 … 会話のしかたと各機能の説明を表示",

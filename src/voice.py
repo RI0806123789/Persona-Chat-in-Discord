@@ -307,18 +307,34 @@ async def play_tts_response(
 ) -> None:
     """AI の返信をボイスチャンネルで読み上げる。
 
-    ボットが `/join` でボイスチャンネルに接続しているときだけ動作し、
-    それ以外は何もせずに戻る（テキストチャットは読み上げの成否に影響されない）。
+    ボットがボイスチャンネルに接続しているときだけ動作し、それ以外は
+    何もせずに戻る（テキストチャットは読み上げの成否に影響されない）。
 
     `prompt_file` はそのサーバーで選ばれているペルソナ（`GuildSettings` の
     `current_prompt_file`）。話者・声の高さ・話す速さ・音色をキャラクターに
     合わせるために使う。省略・未登録のペルソナの場合は既定の声で読み上げる。
+
+    DM にはギルドが無く、ボットが参加できるボイスチャンネルも存在しないため、
+    `message.guild` が None のときは `speak_text` 側で no-op になる。
+    """
+    await speak_text(message.guild, response_text, prompt_file)
+
+
+async def speak_text(
+    guild: discord.Guild | None,
+    response_text: str | None,
+    prompt_file: str | None = None,
+) -> None:
+    """テキストを、そのサーバーのボイスチャンネルで読み上げる。
+
+    `play_tts_response` から「元メッセージ」への依存を外した版。自律行動の
+    独り言のように、どの発言への返信でもないテキストを読み上げるために使う。
+    接続していない・本文が空・整形後に読み上げる中身が残らない場合は
+    黙って何もしない（no-op）。
     """
     if not response_text or response_text.isspace():
         return
 
-    # DM にはギルドが無く、ボットが参加できるボイスチャンネルも存在しない。
-    guild = message.guild
     if guild is None:
         return
 

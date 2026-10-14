@@ -199,10 +199,17 @@ async def _send_chunks(
     chunks: Sequence[str],
     *,
     suppress_embeds: bool,
+    allowed_mentions: discord.AllowedMentions | None = None,
 ) -> None:
-    """分割済みチャンクを順にチャンネルへ送信する（送信系ヘルパーの共通部分）。"""
+    """分割済みチャンクを順にチャンネルへ送信する（送信系ヘルパーの共通部分）。
+
+    `allowed_mentions` は None のままなら Discord クライアントの既定に従う
+    （＝これまでどおりの挙動）。`AllowedMentions.none()` を渡すと通知を一切
+    飛ばさずに投稿できる。ボットが自分から投稿する文面（自律行動の独り言など）は
+    誰かへの返信ではないため、通知を伴わせない用途で使う。
+    """
     for chunk in chunks:
-        await channel.send(chunk, suppress_embeds=suppress_embeds)
+        await channel.send(chunk, suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
 
 
 async def send_long_reply(
@@ -234,17 +241,23 @@ async def send_long_message(
     text: str,
     *,
     suppress_embeds: bool = False,
+    allowed_mentions: discord.AllowedMentions | None = None,
 ) -> None:
     """2000 文字を超えるテキストを分割してチャンネルへ送信する（reply しない版）。
 
-    自発的な会話・記念日のお祝い・リマインダー通知・会話要約のように
-    「特定のメッセージへの返信ではない投稿」で使う。
+    自発的な会話・記念日のお祝い・リマインダー通知・会話要約・自律行動の
+    独り言のように「特定のメッセージへの返信ではない投稿」で使う。
     以前は `for chunk in split_message(...): await channel.send(chunk)` が
     4か所へ手書きコピーされており、send_long_reply が持つ suppress_embeds の
     考慮がそちらには無かった。リンク抑制などを足すときに触る場所を
     1か所に保つため集約している。
     """
-    await _send_chunks(channel, split_message(text), suppress_embeds=suppress_embeds)
+    await _send_chunks(
+        channel,
+        split_message(text),
+        suppress_embeds=suppress_embeds,
+        allowed_mentions=allowed_mentions,
+    )
 
 
 def pick_announcement_channel(guild: discord.Guild) -> Any:

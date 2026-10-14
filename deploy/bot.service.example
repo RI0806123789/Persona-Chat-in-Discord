@@ -44,12 +44,12 @@ Type=simple
 User=<USER>
 Group=<USER>
 
-# 【最重要】必ず index/ の中から起動する。
+# 【最重要】必ず src/ の中から起動する。
 # このプロジェクトのモジュールはパッケージ化されておらず（__init__.py が無い）、
 # 互いをベア名で import し合う（from app_state import BotState）。加えて
-# プロンプトや memory/ のパスも index/ を基準に解決されるため、
+# プロンプトや memory/ のパスも src/ を基準に解決されるため、
 # 別のディレクトリから起動すると ModuleNotFoundError やパス解決の失敗になる。
-WorkingDirectory=<PROJECT_DIR>/index
+WorkingDirectory=<PROJECT_DIR>/src
 
 # systemd はシェルを介さずプロセスを起動するため、source .venv/bin/activate は効かない。
 # 仮想環境の python を絶対パスで直接指定するのが正しい呼び出し方

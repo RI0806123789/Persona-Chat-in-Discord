@@ -42,7 +42,7 @@ from typing import Any, Callable
 from constants import STATS_OPT_OUT_DEFAULT
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -150,6 +150,15 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   既存行はすべて 0 になるため、これまでの利用者の挙動は変わらない。
     8: [
         "ALTER TABLE user_stats ADD COLUMN stats_opt_out INTEGER NOT NULL DEFAULT 0",
+    ],
+    # バージョン9: 自律行動（ボットが自分からボイス/ステージへ出て配信する）の有効/無効。
+    #   0 = 無効（既定）/ 1 = 有効。既存行はすべて 0 になるため挙動は後方互換。
+    #   「話したいゲージ」が満タンになるまでの時間は auto_topic_interval_hours を
+    #   共用するため、この機能で増える列はこの1つだけ。
+    #   配信中かどうか・ゲージの現在値は実行時状態なので永続化しない
+    #   （ボイス接続自体が再起動をまたげないため、復元しても意味がない）。
+    9: [
+        "ALTER TABLE guild_settings ADD COLUMN autonomous_enabled INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
@@ -549,6 +558,7 @@ class Database:
                 "grounding_enabled": bool(row["grounding_enabled"]),
                 "auto_topic_enabled": bool(row["auto_topic_enabled"]),
                 "auto_topic_interval_hours": row["auto_topic_interval_hours"],
+                "autonomous_enabled": bool(row["autonomous_enabled"]),
             }
             for row in rows
         }
@@ -563,18 +573,24 @@ class Database:
         grounding_enabled: bool,
         auto_topic_enabled: bool,
         auto_topic_interval_hours: int,
+        autonomous_enabled: bool,
     ) -> None:
         """1サーバー分の設定を丸ごと保存する（既存行があれば置き換える）。
 
         設定は数個の値しかないため、差分更新はせず常に全列を書き込む（呼び出し側が
         どの項目を変えたかを気にしなくて済む）。DM は guild_id=0 で保存する。
+
+        **INSERT OR REPLACE は行の総入れ替え。** 列を足したときに INSERT 側へ
+        書き漏らすと、設定を保存するたびにその項目だけ既定値へ黙って戻る。
+        列を追加するときは guild_settings_load_all / GuildSettings.apply_persisted /
+        GuildSettings.persist の4か所を必ず揃えて直すこと。
         """
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO guild_settings"
                 " (guild_id, prompt_file, model_name, respond_mode, grounding_enabled,"
-                "  auto_topic_enabled, auto_topic_interval_hours)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "  auto_topic_enabled, auto_topic_interval_hours, autonomous_enabled)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     int(guild_id),
                     str(prompt_file),
@@ -583,6 +599,7 @@ class Database:
                     int(bool(grounding_enabled)),
                     int(bool(auto_topic_enabled)),
                     int(auto_topic_interval_hours),
+                    int(bool(autonomous_enabled)),
                 ),
             )
 
