@@ -115,6 +115,8 @@ Persona Chat in Discord/
 │   ├── bot.service.example                     # systemd ユニットの見本（Git 管理対象）
 │   ├── bot.service                             # 実パス・ユーザー名入り（Git 管理対象外）
 │   └── migrate_config_to_env.py                # 旧 config_private.py から .env を生成する移行用
+├── docs/                                       # 設計資料
+│   └── フロー図.drawio                         # 構成・メッセージ処理・on_message・自律行動のフロー図（draw.io）
 ├── .env                                        # 実際のAPIキー（Git 管理対象外）
 ├── .env.example                                # APIキーの見本（Git 管理対象。コピーして .env を作る）
 ├── .gitignore
@@ -682,6 +684,10 @@ sudo systemctl restart bot     # daemon-reload だけでは稼働中プロセス
 - **手動で起動している場合**: `cd src` してから `python bot.py` を実行する
 - 旧フォルダ `index/` には、Git 管理外のファイル（`__pycache__/` や、ver0.1.5 以前の `config_private.py`）が残ります。`.env` への移行が済んでいれば、フォルダごと削除して構いません
 - 保存済みのペルソナ設定（`../prompts/...`）は、フォルダの階層が変わらないためそのまま使えます
+
+#### 設計資料（`docs/`）を追加
+
+- `docs/フロー図.drawio`: 「システム全体構成と起動フロー」「メッセージ受信〜応答のワークフロー」「`on_message` パイプライン」「自律行動（ボイス/ステージ配信）」の 4 ページ。[draw.io（diagrams.net）](https://app.diagrams.net/) や VS Code の Draw.io Integration 拡張で開けます
 
 ---
 
