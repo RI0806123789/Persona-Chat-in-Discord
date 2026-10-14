@@ -61,13 +61,13 @@ python -m pip check
 全Pythonソースの構文を、モジュールを起動せずに確認します。このコマンドは `.env`、実際のDB、Discord、Geminiを使わず、コンパイル結果もファイルへ保存しません。
 
 ```bash
-python -B -c "from pathlib import Path; paths = sorted(Path('index').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 ```
 
 ローカル処理の例として、Discord向けのメッセージ分割を確認できます。
 
 ```bash
-python -B -c "import sys; sys.path.insert(0, 'index'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
+python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
 現時点では、常設の自動テストスイートやリンター設定はありません。自動テストとCIの整備は [Issue #10](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/10) で扱います。PRには、変更に応じた確認内容と結果を記載してください。外部サービスの呼び出しはモックに置き換え、DBの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため、完全ローカルの確認では避けてください。
@@ -76,20 +76,20 @@ python -B -c "import sys; sys.path.insert(0, 'index'); from discord_helpers impo
 
 接続や応答の実動作が必要な変更は、[READMEのセットアップ手順](README.md) に従い、自分の検証用DiscordサーバーとAPIキーを使います。Geminiの呼び出しは利用量として計上されます。
 
-`.env.example` をリポジトリルートの `.env` へコピーし、キーを設定してから、`index/` 内で `python bot.py` を実行します。ボイス機能を確認する場合は、LinuxのOpusライブラリなどREADMEに記載された準備も行ってください。
+`.env.example` をリポジトリルートの `.env` へコピーし、キーを設定してから、`src/` 内で `python bot.py` を実行します。ボイス機能を確認する場合は、LinuxのOpusライブラリなどREADMEに記載された準備も行ってください。
 
 ## コーディング規約
 
 - 変数・関数・クラス名は英語を使い、既存コードの命名とインデントに合わせる。
 - コメント、ドキュメント、ユーザー向け文言、ログは日本語で書く。
-- モデル名、タイムアウト、上限などの調整値は `index/constants.py` に集約する。
-- Geminiの呼び出しはサービス層、SQLは `index/database.py`、プロンプトの組み立ては `index/prompting.py` に置く。
+- モデル名、タイムアウト、上限などの調整値は `src/constants.py` に集約する。
+- Geminiの呼び出しはサービス層、SQLは `src/database.py`、プロンプトの組み立ては `src/prompting.py` に置く。
 - サーバーごとの設定は `GuildSettings` で扱い、ユーザーごとの記憶を混ぜない。
 - バックグラウンド処理の起動には `background.spawn` を使う。
 - DBの変更は既存スキーマを直接書き換えず、マイグレーションと保存・復元処理を揃える。
 - 依存ライブラリの追加はメンテナーと合意してから行う。
 
-詳しい構成と注意点は [CLAUDE.md](CLAUDE.md) にあります。ボットの起動時は `index/` を作業ディレクトリとし、ペルソナや記憶のパスの扱いを維持してください。
+詳しい構成と注意点は [CLAUDE.md](CLAUDE.md) にあります。ボットの起動時は `src/` を作業ディレクトリとし、ペルソナや記憶のパスの扱いを維持してください。
 
 ## Pull Requestを出す
 

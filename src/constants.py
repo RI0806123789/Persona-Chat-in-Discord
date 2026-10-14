@@ -13,7 +13,7 @@ DEFAULT_RESPOND_MODE = "mention"
 DM_SETTINGS_GUILD_KEY = 0
 
 # APIキー（Gemini / Discord）を書いた .env ファイル。プロジェクトルート直下に置く。
-# ボットは index/ の中から起動するため、カレントディレクトリ基準の相対探索では
+# ボットは src/ の中から起動するため、カレントディレクトリ基準の相対探索では
 # 見つけられない。settings_loader.py はこの絶対パスを load_dotenv() へ明示的に渡す。
 # .gitignore で除外済み（見本は Git 管理された .env.example）。
 ENV_FILE_PATH = PROJECT_ROOT / ".env"

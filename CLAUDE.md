@@ -4,7 +4,7 @@
 
 ## 概要
 
-Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（`/join` 中のみ・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ソースはすべて `index/` にある。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
+Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（`/join` 中のみ・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ソースはすべて `src/` にある。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
 
 ## 作業の進め方
 
@@ -59,7 +59,7 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 # 1. 依存関係のインストール (Python 3.10+)
 pip install -r requirements.txt
 
-# 2. シークレットの用意: プロジェクトルート直下（index/ の中ではない）に .env を作る。
+# 2. シークレットの用意: プロジェクトルート直下（src/ の中ではない）に .env を作る。
 #    cp .env.example .env してから API_KEY_GEMINI= と TOKEN_DISCORD= の右辺を実キーに書き換える。
 #    .env は gitignore 済み。未設定のまま起動すると "キー未設定" を出して例外で停止する。
 
@@ -71,18 +71,18 @@ pip install -r requirements.txt
 #    davey（DAVE = Discord が 2026-03-02 に必須化した音声E2E暗号化）が入らず、
 #    /join が RuntimeError('davey library needed in order to use voice') で失敗する。
 
-# 4. index/ ディレクトリの中から実行する:
-cd index
+# 4. src/ ディレクトリの中から実行する:
+cd src
 python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 ```
 
-**必ず `index/` の中から実行すること。** モジュール群はパッケージ化されていないフラットな構成（`__init__.py` なし）で、互いをベア名でインポートし合う（`from app_state import BotState`）。プロンプトのパスも `index/` を基準に解決される（「パス解決」の項を参照）。
+**必ず `src/` の中から実行すること。** モジュール群はパッケージ化されていないフラットな構成（`__init__.py` なし）で、互いをベア名でインポートし合う（`from app_state import BotState`）。プロンプトのパスも `src/` を基準に解決される（「パス解決」の項を参照）。
 
 ## サーバー運用 (`deploy/`)
 
 本番は Oracle Cloud 上の Ubuntu（ユーザー `ubuntu`、`/home/ubuntu/Persona-Chat-in-Discord`）で **systemd のサービス名 `bot`** として常駐する。ユニットは `deploy/bot.service.example`（プレースホルダ入り・Git 管理対象）と `deploy/bot.service`（実値入り・gitignore 済み）の**2本立て**で、実パスやユーザー名を公開側に残さない。導入・運用コマンドは README の「7. 常時稼働の設定」にある。
 
-- **`WorkingDirectory` は `index/`、`ExecStart` は `.venv/bin/python` の絶対パス**。systemd はシェルを介さないため `activate` は効かない。
+- **`WorkingDirectory` は `src/`、`ExecStart` は `.venv/bin/python` の絶対パス**。systemd はシェルを介さないため `activate` は効かない。
 - **`StartLimitIntervalSec=0`（再起動のレート制限を無効化）を戻さないこと**: 既定の「10秒で5回失敗したら諦める」だと一時的な回線障害でボットが二度と復帰せず、systemd を入れた目的（手動回復をなくす）が失われる。副作用として設定ミスでは永久に再起動ループになるため、`systemctl status bot` が `activating (auto-restart)` のままなら設定ミスを疑う運用が前提。なお **systemd 229 以降この指定は `[Unit]` に置く** — `[Service]` に書くと黙って無視される。
 - **`ProtectSystem=strict` / `ProtectHome=yes` を足さないこと**: 実行中に `memory/`（SQLite DB・JSON）と `ng/` へ書き込むため、read-only エラーで記憶とモデレーションが黙って壊れる。入れるなら `ReadWritePaths=` で個別に開ける必要がある。
 - **`WatchdogSec` は未導入**（依頼どおり、ハング型のフリーズが実際に観測されてから検討する）。`Restart=always` が拾えるのはプロセスが落ちるケースだけで、「生きているのに応答しない」状態は拾えない。導入にはアプリ側の `sd_notify(WATCHDOG=1)` 定期送信が必須で、送信が滞ると健全なプロセスまで殺す。
@@ -314,8 +314,8 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ## 規約と落とし穴
 
-- **パス解決**（`constants.py`, `paths.py`）: `BASE_DIR = index/`、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`index/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。
-- **設定（APIキー）**: `settings_loader.load_settings()` はプロジェクトルート直下の `.env`（パスは `constants.ENV_FILE_PATH`。**絶対パスで解決すること** — ボットは `index/` から起動するため、カレントディレクトリ基準の相対探索では見つけられない）を `python-dotenv` で読み込み、`.API_KEY_GEMINI` / `.TOKEN_DISCORD` を持つ `Settings` データクラスを返す。旧 `config.py` / `config_private.py` は ver0.1.6 で削除済み。
+- **パス解決**（`constants.py`, `paths.py`）: `BASE_DIR = src/`、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。
+- **設定（APIキー）**: `settings_loader.load_settings()` はプロジェクトルート直下の `.env`（パスは `constants.ENV_FILE_PATH`。**絶対パスで解決すること** — ボットは `src/` から起動するため、カレントディレクトリ基準の相対探索では見つけられない）を `python-dotenv` で読み込み、`.API_KEY_GEMINI` / `.TOKEN_DISCORD` を持つ `Settings` データクラスを返す。旧 `config.py` / `config_private.py` は ver0.1.6 で削除済み。
   - **`load_dotenv(override=False)` を変えないこと**: OS の環境変数が `.env` より優先される。systemd の `EnvironmentFile=` や Docker の `--env-file` へ移行できるようにするための挙動で、逆にするとサーバーに残った古い `.env` が黙って優先され「直したはずのキーが反映されない」事故になる。
   - **未設定なら起動を止める**: ファイル無し・変数無し・空文字・`.env.example` のプレースホルダのまま、のいずれでも `キー未設定` を出力して `SettingsError` を送出する。`load_settings()` は `bot.py` のトップレベルで呼ばれるためボットは起動しない。キーが無いまま起動すると「Discord へは接続できるが Gemini の呼び出しだけ全滅する」という切り分けの難しい状態になるため、あえて失敗させている。
   - **`python-dotenv` が未インストールでも例外にしないこと**: 警告を出して `os.environ` だけで続行する（環境変数でキーを渡す運用ならこのパッケージは不要なため）。

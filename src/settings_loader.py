@@ -143,7 +143,7 @@ def _report_missing(missing: list, env_status: str, env_path: Path) -> None:
         print("  ※ = の前後に空白を入れないこと。")
 
     print("")
-    print("設定後、index/ の中から `python bot.py` で起動し直してください。")
+    print("設定後、src/ の中から `python bot.py` で起動し直してください。")
 
 
 def load_settings() -> Settings:
