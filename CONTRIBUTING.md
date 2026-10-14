@@ -1,0 +1,107 @@
+# 貢献ガイド
+
+不具合の報告、機能提案、ドキュメントの改善、コードの修正を歓迎します。参加する際は [行動規範](CODE_OF_CONDUCT.md) に従ってください。
+
+## Issueで相談する
+
+最初に [既存のIssue](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues) を検索し、同じ内容があればそのIssueへ情報を追加してください。新しい報告には、[バグ報告・機能提案フォーム](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/new/choose) を使います。
+
+- バグ報告には、OS、Python・ライブラリのバージョン、再現手順、期待する結果と実際の結果を記載する。
+- 機能提案には、困っていること、使う場面、希望する動作、代替案を記載する。
+- Issue・PR・レビューは日本語を基本とし、確認した事実と推測を分けて説明する。
+- 大きな変更や依存ライブラリの追加は、実装前にIssueで対応範囲と理由を相談する。
+
+APIキー、Discordのトークン、個人情報、実際の会話ログを公開しないでください。再現例には架空のユーザー・内容を使い、ログに含まれる情報を確認してください。脆弱性は公開Issueへ投稿せず、[SECURITY.md](SECURITY.md) の窓口へ報告します。
+
+## Forkと作業ブランチ
+
+GitHubでこのリポジトリをForkし、次のコマンドで取得します。`YOUR_GITHUB_ACCOUNT` を自分のアカウント名に置き換えてください。
+
+```bash
+git clone https://github.com/YOUR_GITHUB_ACCOUNT/Persona-Chat-in-Discord.git
+cd Persona-Chat-in-Discord
+git remote add upstream https://github.com/RI0806123789/Persona-Chat-in-Discord.git
+git switch -c feat/short-description
+```
+
+機能追加には `feat/...`、不具合修正には `fix/...` のブランチを使い、`main` へ直接コミットしません。既存の作業ツリーを使う場合は `git status --short` と `git diff` で変更を確認し、他の作業を上書きしないようにしてください。
+
+## 開発環境
+
+Python 3.10以上とGitが必要です。以下はリポジトリルートで実行します。
+
+**Windows / PowerShell**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+**Linux**
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+以降の `python` は、この仮想環境のPythonを指します。Windowsでは `.venv\Scripts\python.exe`、Linuxでは `.venv/bin/python` に置き換えて実行するか、仮想環境を有効化してください。
+
+仮想環境を有効化する場合は、Windowsで `.venv\Scripts\Activate.ps1`、Linuxで `source .venv/bin/activate` を実行します。PowerShellで有効化が制限されている場合も、上記のPython実行ファイルを直接使えます。
+
+依存関係の準備にはパッケージのダウンロードが必要です。準備後の次の確認には、ネットワーク接続やAPIキーは不要です。
+
+## 完全ローカルで確認する
+
+リポジトリルートから、まず依存関係の整合性を確認します。
+
+```bash
+python -m pip check
+```
+
+全Pythonソースの構文を、モジュールを起動せずに確認します。このコマンドは `.env`、実際のDB、Discord、Geminiを使わず、コンパイル結果もファイルへ保存しません。
+
+```bash
+python -B -c "from pathlib import Path; paths = sorted(Path('index').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+```
+
+ローカル処理の例として、Discord向けのメッセージ分割を確認できます。
+
+```bash
+python -B -c "import sys; sys.path.insert(0, 'index'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
+```
+
+現時点では、常設の自動テストスイートやリンター設定はありません。自動テストとCIの整備は [Issue #10](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/10) で扱います。PRには、変更に応じた確認内容と結果を記載してください。外部サービスの呼び出しはモックに置き換え、DBの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため、完全ローカルの確認では避けてください。
+
+## Discord・Geminiを使う確認
+
+接続や応答の実動作が必要な変更は、[READMEのセットアップ手順](README.md) に従い、自分の検証用DiscordサーバーとAPIキーを使います。Geminiの呼び出しは利用量として計上されます。
+
+`.env.example` をリポジトリルートの `.env` へコピーし、キーを設定してから、`index/` 内で `python bot.py` を実行します。ボイス機能を確認する場合は、LinuxのOpusライブラリなどREADMEに記載された準備も行ってください。
+
+## コーディング規約
+
+- 変数・関数・クラス名は英語を使い、既存コードの命名とインデントに合わせる。
+- コメント、ドキュメント、ユーザー向け文言、ログは日本語で書く。
+- モデル名、タイムアウト、上限などの調整値は `index/constants.py` に集約する。
+- Geminiの呼び出しはサービス層、SQLは `index/database.py`、プロンプトの組み立ては `index/prompting.py` に置く。
+- サーバーごとの設定は `GuildSettings` で扱い、ユーザーごとの記憶を混ぜない。
+- バックグラウンド処理の起動には `background.spawn` を使う。
+- DBの変更は既存スキーマを直接書き換えず、マイグレーションと保存・復元処理を揃える。
+- 依存ライブラリの追加はメンテナーと合意してから行う。
+
+詳しい構成と注意点は [CLAUDE.md](CLAUDE.md) にあります。ボットの起動時は `index/` を作業ディレクトリとし、ペルソナや記憶のパスの扱いを維持してください。
+
+## Pull Requestを出す
+
+1. 変更に応じたローカル確認を実行する。
+2. `git diff --check` と差分を確認し、シークレット、個人情報、ローカルの絶対パス、無関係な変更が含まれていないことを確認する。
+3. 対象ファイルを明示してコミットする。例：`git add -- CONTRIBUTING.md`。
+4. コミットの件名は `feat:` / `fix:` に続けて日本語で要約し、本文に変更理由と「★ 壊れやすい点」を記載する。
+5. Forkへ作業ブランチをpushし、元リポジトリの `main` 向けにPRを作成する。
+6. PRテンプレートに、変更後の動作、関連Issue、確認結果、未確認の範囲を記載する。
+
+```bash
+git push -u origin feat/short-description
+```
+
+Issueを解決するPRでは本文末尾に `Closes #番号` を記載します。関連するだけのIssueには `Refs #番号` を使い、まだ完了していない作業はDraft PRで共有してください。レビューでは指摘した箇所と理由を具体的に伝え、修正後に確認結果を更新します。

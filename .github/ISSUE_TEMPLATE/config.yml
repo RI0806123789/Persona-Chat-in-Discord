@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: セキュリティ上の問題を報告する
+    url: https://github.com/RI0806123789/Persona-Chat-in-Discord/blob/main/SECURITY.md
+    about: 脆弱性を公開Issueへ記載せず、セキュリティポリシーの非公開窓口へ報告してください。
+  - name: 貢献ガイドを読む
+    url: https://github.com/RI0806123789/Persona-Chat-in-Discord/blob/main/CONTRIBUTING.md
+    about: 開発環境、ローカル確認、Issue・PRの手順はこちらです。

@@ -1,0 +1,74 @@
+name: バグ報告
+description: 不具合の再現条件と実行環境を報告します。
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        既存のIssueを確認してから報告してください。
+        脆弱性は公開せず、[セキュリティポリシー](https://github.com/RI0806123789/Persona-Chat-in-Discord/blob/main/SECURITY.md) の窓口へ連絡してください。
+        APIキー・Discordトークン・個人情報・実際の会話ログは記載せず、架空の内容で再現してください。
+  - type: input
+    id: version
+    attributes:
+      label: バージョン・コミット
+      description: READMEのバージョン、または git rev-parse --short HEAD の結果を記載してください。
+      placeholder: "例: ver0.1.6 / 9d6b28c"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 実行環境
+      description: OS、Python、関係するライブラリのバージョンと起動方法を記載してください。
+      placeholder: |
+        OS: Windows / Ubuntu など（バージョンも記載）
+        Python: python --version の結果
+        ライブラリ: discord.py、google-generativeai など
+        起動方法: ターミナル / systemd など
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: ペルソナ・モデル・応答モードなど、再現に必要な設定と操作を記載してください。
+      placeholder: |
+        1. 設定を ... にする
+        2. ... を実行する
+        3. ... が発生する
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する動作
+      description: 本来どのような結果になるべきかを記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作
+      description: 発生した結果、頻度、影響する機能を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: ログ・補足
+      description: 関係するエラーや補足情報を記載してください。キー、URLのクエリ、ユーザーID、名前、ローカルパスなどを確認して伏せてください。
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 投稿前の確認
+      options:
+        - label: 同じ内容の既存Issueを確認しました。
+          required: true
+        - label: シークレット・個人情報を除き、脆弱性の報告は専用窓口へ送ります。
+          required: true
+        - label: "[行動規範](https://github.com/RI0806123789/Persona-Chat-in-Discord/blob/main/CODE_OF_CONDUCT.md) に従います。"
+          required: true
