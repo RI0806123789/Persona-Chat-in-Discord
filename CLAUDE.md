@@ -304,3 +304,9 @@ git diff --name-only origin/main...HEAD                 # .env / deploy/bot.serv
 - `.env.example` のプレースホルダ文字列は変えないこと（変えるなら `settings_loader._PLACEHOLDER_VALUES` と `deploy/migrate_config_to_env.py` も対で直す。「規約と落とし穴」の設定の項を参照）。
 - **既に push 済みのコミットに個人情報が見つかった場合**は、force-push で履歴を書き換えず、作業を止めて利用者に報告する（履歴の書き換えやキーの再発行など、利用者の判断が要るため）。
 - Issue・PR へのコメントなど、リポジトリへ公開で書き込む文章にも同じチェックを適用する。
+
+## バージョンとリリースの運用
+
+機能追加のブランチ運用、README への `ver0.x.x(BETA)` の記録、Releases の登録と BETA の解除の方針は、Codex など他のエージェントと共有するため `AGENTS.md` に書いてある（次の行で読み込まれる）。方針を変えるときは `AGENTS.md` だけを直し、ここへ同じ内容を書き写さないこと。
+
+@AGENTS.md
