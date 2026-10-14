@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 
 from app_state import BotState
+from autonomous_service import AutonomousService
 from blacklist_service import BlacklistService
 from content_moderator import ContentModerator
 from functions_view import FunctionsView
@@ -24,6 +25,7 @@ def register_commands(
     moderator: ContentModerator,
     stats: StatsService,
     reminders: ReminderService,
+    autonomous: AutonomousService,
 ) -> None:
 
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
@@ -68,8 +70,16 @@ def register_commands(
                 return
 
         await interaction.response.defer()
-        if guild is not None and guild.voice_client is not None:
-            await guild.voice_client.disconnect(force=True)
+        # 自律行動でボットが自分から通話に入っている最中かもしれない。人が呼んだ
+        # 接続を優先するため、ステージ枠の後始末まで含めて先に配信を終了させる
+        # （ここを素の disconnect だけで済ませると、ボットが開いたステージ枠が
+        # 「配信中」の看板を出したまま残ってしまう）。
+        if guild is not None:
+            await autonomous.stop_session(
+                guild.id, reason=f"/join による上書き（{interaction.user}）"
+            )
+            if guild.voice_client is not None:
+                await guild.voice_client.disconnect(force=True)
 
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。
@@ -100,15 +110,33 @@ def register_commands(
         else:
             await interaction.followup.send(f"{voice_channel.name} に接続しました。")
 
-    @tree.command(name="leave", description="ボットがボイスチャンネルから退出します")
+    @tree.command(
+        name="leave",
+        description="ボットがボイスチャンネルから退出します（自律行動の配信もここで止められます）",
+    )
     async def leave(interaction: discord.Interaction) -> None:
-        if interaction.guild is None or interaction.guild.voice_client is None:
+        guild = interaction.guild
+        if guild is None or guild.voice_client is None:
             await interaction.response.send_message("ボットはボイスチャンネルに参加していません。")
             return
 
         await interaction.response.defer()
+
+        # 自律行動で自分から入っている場合は、締めの投稿・ステージ枠の後片付け・
+        # セッション記録の破棄・切断までをサービス側がまとめて行う
+        # （idea.md の「既存の /leave コマンドで強制的に退出できるようにする」）。
+        # 配信していなければ False が返るので、従来どおりの切断へ進む。
+        stopped = await autonomous.stop_session(guild.id, reason=f"/leave（{interaction.user}）")
+        if stopped:
+            await interaction.followup.send("退出しました。（自律行動の配信を停止しました）")
+            return
+
         try:
-            await interaction.guild.voice_client.disconnect(force=True)
+            # stop_session を経ていない経路のみここへ来る。切断済みの可能性は無いが、
+            # 念のため取り直してから切る。
+            voice_client = guild.voice_client
+            if voice_client is not None:
+                await voice_client.disconnect(force=True)
             await interaction.followup.send("退出しました。")
         except Exception as error:
             print(f"切断エラー: {error}")

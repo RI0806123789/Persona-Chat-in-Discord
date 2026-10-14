@@ -20,12 +20,14 @@ for _stream in (sys.stdout, sys.stderr):
 from app_state import BotState
 from affinity_service import AffinityService, extract_affinity_changes
 from auto_topic_service import AutoTopicService
+from autonomous_service import AutonomousService
 from background import make_guarded_loop, spawn
 from blacklist_service import BlacklistService
 from commands import register_commands
 from constants import (
     ANNIVERSARY_CHECK_MINUTES,
     AUTO_TOPIC_CHECK_MINUTES,
+    AUTONOMOUS_CHECK_MINUTES,
     BLACKLIST_MAX_VIOLATIONS,
     DATABASE_PATH,
     FEEDBACK_PRUNE_MINUTES,
@@ -97,13 +99,14 @@ blacklist = BlacklistService()
 documents = DocumentService(client, state, memory, gemini, usage, database, ng_filter, moderator)
 stats = StatsService(database, gemini)
 auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
+autonomous = AutonomousService(client, state, gemini, moderator, ng_filter, usage)
 reminders = ReminderService(client, database, ng_filter)
 feedback = FeedbackService(client, database)
 # 集計パネル（会話統計 → 👍 フィードバック）は機能ハブ経由で生成されるため、
 # UI 層がこのインスタンスを引けるよう既定として登録しておく。
 set_default_service(feedback)
 
-register_commands(tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders)
+register_commands(tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, autonomous)
 
 
 # --- 定期実行の見回りループ ---
@@ -129,6 +132,16 @@ anniversary_loop = make_guarded_loop(
     label="記念日チェックエラー",
     client=client,
     minutes=ANNIVERSARY_CHECK_MINUTES,
+)
+
+# 自律行動（ボイス/ステージでの配信）の見回り。配信の開始判定だけでなく、
+# 独り言の投下・無応答での退出まで面倒を見るため、他の見回りより短い間隔で回す
+# （生成そのものは裏のタスクへ逃がすので、このループ自体はすぐ返る）。
+autonomous_loop = make_guarded_loop(
+    autonomous.run_pending_checks,
+    label="自律行動の見回りエラー",
+    client=client,
+    minutes=AUTONOMOUS_CHECK_MINUTES,
 )
 
 # リマインダーは分単位の指定に応えるため、記念日（時間単位）よりずっと短い間隔で見回る。
@@ -172,6 +185,10 @@ async def on_ready() -> None:
     if not state.anniversary_background_started:
         anniversary_loop.start()
         state.anniversary_background_started = True
+
+    if not state.autonomous_background_started:
+        autonomous_loop.start()
+        state.autonomous_background_started = True
 
     if not state.reminder_background_started:
         reminder_loop.start()
@@ -231,7 +248,24 @@ async def on_message(message: discord.Message) -> None:
     guild_id = message.guild.id if message.guild is not None else None
     guild_settings = state.get_guild(guild_id)
     auto_topic.mark_activity(message.channel.id, guild_id)
-    if guild_settings.current_respond_mode == "mention" and not is_dm and client.user not in message.mentions:
+    # 自律行動の「話したいゲージ」も、ボット宛てでない発言を含めて観測する
+    # （このサーバーで会話が行われているかどうかがゲージの材料のため）。
+    # 引数の順番は auto_topic 側と同じ (channel_id, guild_id) に揃えてある。
+    autonomous.mark_activity(message.channel.id, guild_id)
+
+    # 通常のチャット経路が受け付ける条件（応答モードのゲート）。
+    # ルーティングでも同じ条件を使うため、判定を1か所にまとめて持ち回す。
+    accepts_normally = (
+        is_dm
+        or guild_settings.current_respond_mode != "mention"
+        or client.user in message.mentions
+    )
+    # 配信中のボイス/ステージチャンネル付属のチャットへの書き込みは「コメント」として
+    # 扱い、メンションが無くても拾う（傍観者は配信のチャットに気軽に書き込むもので、
+    # いちいちメンションを求めるのは配信の体裁に合わないため）。他のテキストチャンネル
+    # からの発言はコメントとして認めない（idea.md）ので、判定はチャンネル一致で行う。
+    is_autonomous_comment = autonomous.is_comment_channel(message.channel.id, guild_id)
+    if not accepts_normally and not is_autonomous_comment:
         return
 
     if blacklist.is_blocked(message.author.id):
@@ -266,7 +300,10 @@ async def on_message(message: discord.Message) -> None:
     state.touch()
 
     # （DM は「テキストチャンネルへの話題提供」の対象外とする）。
-    if not is_dm:
+    # 配信中のコメント欄も対象外にする。ここで登録してしまうと、配信が終わった後も
+    # そのボイスチャンネルのチャットが自発的な話題提供の監視対象として残り続け、
+    # 「配信のコメント欄」だった場所へ延々とテキストの話題が投稿される。
+    if not is_dm and not is_autonomous_comment:
         auto_topic.watch_channel(message.channel.id, guild_id)
 
     document_attachments = [
@@ -317,7 +354,24 @@ async def on_message(message: discord.Message) -> None:
             await message.reply(confirmation)
             return
 
-    response_text = await handle_chat_message(message, question, memory_category)
+    # 配信中のコメントは、通常のチャットではなく配信者としての応答へ回す。
+    # 長期記憶・親密度・👍👎 の登録を行わない点が handle_chat_message と違う
+    # （理由は autonomous_service のモジュール冒頭の説明を参照）。
+    #
+    # **ここで配信中かどうかを取り直すこと。** 入口で調べてからモデレーション
+    # （Gemini 呼び出し）を挟んでいる間に配信が終わっていることがある。古い判定の
+    # まま handle_comment を呼ぶと、セッションが無いので None が返り、通常経路にも
+    # 回らないまま発言が黙って捨てられる（メンション付きの発言まで無視されてしまう）。
+    if autonomous.is_comment_channel(message.channel.id, guild_id):
+        response_text = await autonomous.handle_comment(message, question, guild_settings)
+    elif accepts_normally:
+        # 配信が終わっていても、通常のチャットとして受け付けられる発言なら普通に答える。
+        response_text = await handle_chat_message(message, question, memory_category)
+    else:
+        # 配信の終了と入れ違いに届いた、メンションの無い発言。配信が続いていれば
+        # コメントとして拾えたが、終わった今は通常経路の条件も満たさないので何もしない。
+        print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
+        return
     if response_text:
         # ボットが /join でボイスチャンネルに接続中のときだけ読み上げる（それ以外は no-op）。
         # 声の高さ・速さ・音色をキャラクターに合わせるため、そのサーバーで選ばれている

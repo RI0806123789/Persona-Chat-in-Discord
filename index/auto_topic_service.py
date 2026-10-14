@@ -98,6 +98,16 @@ class AutoTopicService:
             await self._run_pending_checks_for_guild(guild_settings)
 
     async def _run_pending_checks_for_guild(self, guild_settings: GuildSettings) -> None:
+        # 自律行動（autonomous_service）で配信中のサーバーには話題提供しない。
+        # 両方が有効なサーバーでは、しきい値（auto_topic_interval_hours）を共用する
+        # 都合で「無会話が続いた瞬間」に両方が同時に発火しうる。ボットが同じ時刻に
+        # ボイスで独り言を始めつつテキストにも話しかけると、どちらに応えればよいのか
+        # 分からない上に、うるさいだけになる。既に自分から喋っている間は、
+        # 話題提供の側を黙らせる（/functions のパネルで2つのトグルを1枚にまとめて
+        # いるのと同じ「競合させない」という方針）。
+        if guild_settings.autonomous_session is not None:
+            return
+
         now = datetime.now(timezone.utc)
         interval = timedelta(hours=guild_settings.auto_topic_interval_hours)
 
