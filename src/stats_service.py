@@ -1,5 +1,6 @@
 import asyncio
 import io
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -62,6 +63,8 @@ class StatsService:
             print(f"会話統計の読み込みに失敗: {error}")
             self.cache = {}
         self._save_lock = asyncio.Lock()
+        # 削除・収集設定の変更より前に開始した解析結果を書き戻さないための世代。
+        self._analysis_versions: dict[str, int] = {}
         self._tz = resolve_timezone(STATS_TIMEZONE, purpose="会話統計の時間帯集計")
 
     # ---- 記録 -------------------------------------------------------------
@@ -93,61 +96,54 @@ class StatsService:
             when = when.replace(tzinfo=timezone.utc)
         return when.astimezone(self._tz).hour
 
-    async def record(self, user_id: str, user_name: str, text: str, when: datetime) -> None:
-        """1件の発言を集計に反映する。失敗してもチャット本体は止めない（フェイルオープン）。"""
+    async def record(self, user_id: str, user_name: str, text: str, when: datetime) -> bool:
+        """1件を集計・保存し、成否を返す。失敗してもチャット本体は止めない。"""
         try:
-            # 収集停止中なら何も記録しない（発言回数・時間帯・サンプルすべて）。
-            # エントリ生成より前に判定すること — 後ろに置くと、停止中でも空の
-            # エントリが作られて has_data() や表示名の解決に影響する。
-            if self.is_opted_out(user_id):
-                return
-
-            entry = self.cache.get(user_id)
-            if entry is None:
-                entry = self._new_entry(user_name)
-                self.cache[user_id] = entry
-
-            entry["user_name"] = user_name  # 表示名は最新に更新
-            entry["total_count"] = int(entry.get("total_count", 0)) + 1
-
-            hourly = entry.get("hourly")
-            if not isinstance(hourly, list) or len(hourly) != 24:
-                hourly = [0] * 24
-                entry["hourly"] = hourly
-            hourly[self._to_local_hour(when)] += 1
-
-            entry["last_seen"] = datetime.now(timezone.utc).isoformat()
-
-            text = (text or "").strip()
-            if text:
-                samples = entry.get("recent_samples")
-                if not isinstance(samples, list):
-                    samples = []
-                    entry["recent_samples"] = samples
-                samples.append(text)
-                # 上限を超えたぶんは古い発言から捨てる
-                if len(samples) > STATS_RECENT_SAMPLES_MAX:
-                    del samples[: len(samples) - STATS_RECENT_SAMPLES_MAX]
-
-            await self.save_background()
+            # 更新から保存までを直列化し、古いスナップショットによる上書きを防ぐ。
+            async with self._save_lock:
+                if self.is_opted_out(user_id):
+                    return True
+                entry = self.cache.get(user_id)
+                if entry is None:
+                    entry = self._new_entry(user_name)
+                    self.cache[user_id] = entry
+                entry["user_name"] = user_name
+                entry["total_count"] = int(entry.get("total_count", 0)) + 1
+                hourly = entry.get("hourly")
+                if not isinstance(hourly, list) or len(hourly) != 24:
+                    hourly = [0] * 24
+                    entry["hourly"] = hourly
+                hourly[self._to_local_hour(when)] += 1
+                entry["last_seen"] = datetime.now(timezone.utc).isoformat()
+                text = (text or "").strip()
+                if text:
+                    samples = entry.get("recent_samples")
+                    if not isinstance(samples, list):
+                        samples = []
+                        entry["recent_samples"] = samples
+                    samples.append(text)
+                    if len(samples) > STATS_RECENT_SAMPLES_MAX:
+                        del samples[: len(samples) - STATS_RECENT_SAMPLES_MAX]
+                return await self._save_user_locked(user_id)
         except Exception as error:
             print(f"会話統計の記録に失敗: {error}")
+            return False
 
-    async def save_background(self) -> bool:
-        """キャッシュ全体を DB へ書き出す。保存できたかを返す。
-
-        戻り値はプライバシー操作（収集停止の切り替え・データ削除）が
-        「保存できませんでした」とユーザーへ伝えるために使う。集計の記録など
-        従来の呼び出しは戻り値を無視してよい（失敗してもチャットは止めない）。
-        """
-        # 同一テーブルへの並行書き込みを避けるため、保存はロックで直列化する。
+    async def save_background(self, user_id: str) -> bool:
+        """対象ユーザーの現在値だけを保存し、成否を返す。"""
         async with self._save_lock:
-            cache_copy = {user_id: data.copy() for user_id, data in self.cache.items()}
-            try:
-                await asyncio.to_thread(self._db.stats_save_all, cache_copy)
-            except Exception as error:
-                print(f"会話統計の保存に失敗: {error}")
-                return False
+            return await self._save_user_locked(user_id)
+
+    async def _save_user_locked(self, user_id: str) -> bool:
+        """_save_lock 保持中に使う。入れ子の可変値も保存用にコピーする。"""
+        entry = self.cache.get(user_id)
+        if entry is None:
+            return True
+        try:
+            await asyncio.to_thread(self._db.stats_save_user, user_id, deepcopy(entry))
+        except Exception as error:
+            print(f"会話統計の保存に失敗: {error}")
+            return False
         return True
 
     # ---- 収集停止（opt-out） ----------------------------------------------
@@ -170,14 +166,16 @@ class StatsService:
         一度も発言していないユーザーはエントリが無いため、その場で作ってから
         フラグを立てる（「発言してからでないと停止できない」を避けるため）。
         """
-        entry = self.cache.get(user_id)
-        if entry is None:
-            entry = self._new_entry(user_name)
-            self.cache[user_id] = entry
-        elif user_name:
-            entry["user_name"] = user_name
-        entry["opt_out"] = bool(opted_out)
-        return await self.save_background()
+        async with self._save_lock:
+            entry = self.cache.get(user_id)
+            if entry is None:
+                entry = self._new_entry(user_name)
+                self.cache[user_id] = entry
+            elif user_name:
+                entry["user_name"] = user_name
+            entry["opt_out"] = bool(opted_out)
+            self._analysis_versions[user_id] = self._analysis_versions.get(user_id, 0) + 1
+            return await self._save_user_locked(user_id)
 
     async def clear_user_data(self, user_id: str) -> bool:
         """そのユーザーの蓄積データ（集計値・発言サンプル・解析キャッシュ）を消す。
@@ -186,19 +184,19 @@ class StatsService:
         一緒に消えてしまうため、フィールドだけをリセットして opt_out は残す。
         保存できたかを返す（プライバシー操作の失敗は隠さずユーザーへ伝える）。
         """
-        entry = self.cache.get(user_id)
-        if entry is None:
-            # 記録が無い＝消すものが無い。成功として扱う（行は作らない）。
-            return True
-        now_iso = datetime.now(timezone.utc).isoformat()
-        entry["total_count"] = 0
-        entry["hourly"] = [0] * 24
-        entry["recent_samples"] = []
-        entry["analysis"] = None
-        # 「いつから記録されていたか」も消えた状態にする（過去の痕跡を残さない）。
-        entry["first_seen"] = now_iso
-        entry["last_seen"] = now_iso
-        return await self.save_background()
+        async with self._save_lock:
+            entry = self.cache.get(user_id)
+            if entry is None:
+                return True
+            now_iso = datetime.now(timezone.utc).isoformat()
+            entry["total_count"] = 0
+            entry["hourly"] = [0] * 24
+            entry["recent_samples"] = []
+            entry["analysis"] = None
+            entry["first_seen"] = now_iso
+            entry["last_seen"] = now_iso
+            self._analysis_versions[user_id] = self._analysis_versions.get(user_id, 0) + 1
+            return await self._save_user_locked(user_id)
 
     # ---- 参照ヘルパー -----------------------------------------------------
 
@@ -246,24 +244,24 @@ class StatsService:
 
         LLM 呼び出しやパースに失敗した場合は、既存のキャッシュ（あれば）にフォールバックする。
         """
-        entry = self.cache.get(user_id)
-        if not entry:
-            return None
-        # 収集停止中は再計算しない（発言サンプルを LLM へ送らない）。record を
-        # 止めるだけでは、既に溜まっているサンプルで解析が走りうるためここでも見る。
-        # 既存のキャッシュは本人が自分の分を見返せるようそのまま返す。
-        if self._entry_opted_out(entry):
-            return entry.get("analysis")
-        samples = entry.get("recent_samples") or []
-        cached = entry.get("analysis")
-        if not samples:
-            return cached
-        if not force and cached and self._is_fresh(cached.get("computed_at")):
-            return cached
+        async with self._save_lock:
+            entry = self.cache.get(user_id)
+            if not entry:
+                return None
+            cached = deepcopy(entry.get("analysis"))
+            if self._entry_opted_out(entry):
+                return cached
+            samples = list(entry.get("recent_samples") or [])
+            if not samples:
+                return cached
+            if not force and cached and self._is_fresh(cached.get("computed_at")):
+                return cached
+            version = self._analysis_versions.get(user_id, 0)
 
         # プロンプト文面は prompting.py に集約している（STATS_TOPIC_COUNT のような
         # 定数は prompting が constants を import しない規約のため引数で渡す）。
         prompt = build_stats_analysis_prompt(samples, STATS_TOPIC_COUNT)
+        parsed = None
         try:
             # 話題・性格推定はユーザーが選択中のペルソナ/モデルとは無関係な内部解析
             # タスクのため、記憶ルーティング等と同じ固定モデル（ROUTER_MODEL_NAME）を使う。
@@ -274,23 +272,31 @@ class StatsService:
                 timeout=STATS_ANALYSIS_TIMEOUT_SECONDS,
                 grounding=False,
             )
+            parsed = extract_json_object(text or "")
+            if not parsed:
+                print("会話統計の解析結果を JSON として解釈できませんでした。")
         except Exception as error:
             print(f"会話統計の解析呼び出しに失敗: {error}")
-            return cached
-
-        parsed = extract_json_object(text or "")
-        if not parsed:
-            print("会話統計の解析結果を JSON として解釈できませんでした。")
-            return cached
 
         analysis = {
             "topics": parsed.get("topics") or [],
             "big_five": parsed.get("big_five") or {},
             "personality": parsed.get("personality") or "",
             "computed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        entry["analysis"] = analysis
-        await self.save_background()
+        } if parsed else None
+        async with self._save_lock:
+            entry = self.cache.get(user_id)
+            if entry is None:
+                return None
+            # LLM待機中の削除・停止・再開をまたいだ結果は反映しない。
+            if (analysis is None or version != self._analysis_versions.get(user_id, 0)
+                    or self._entry_opted_out(entry)):
+                return deepcopy(entry.get("analysis"))
+            previous = entry.get("analysis")
+            entry["analysis"] = analysis
+            if not await self._save_user_locked(user_id):
+                entry["analysis"] = previous
+                return previous
         return analysis
 
     # ---- グラフ生成 -------------------------------------------------------

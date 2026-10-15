@@ -245,11 +245,25 @@ class AutonomousService:
         session = self._state.get_guild(guild_id).autonomous_session
         return session is not None and session.channel_id == channel_id
 
+    def claim_comment_slot(self, channel_id: int, guild_id: int | None) -> AutonomousSession | None:
+        """入力モデレーション前に枠を確保し、その配信を予約の証明として返す。
+
+        判定と時刻更新を待機なしで済ませ、後段では同じ配信の枠を再確保しない。
+        """
+        if guild_id is None:
+            return None
+        session = self._state.get_guild(guild_id).autonomous_session
+        if session is None or session.channel_id != channel_id:
+            return None
+        return session if self._claim_comment_slot(session) else None
+
     async def handle_comment(
         self,
         message: discord.Message,
         question: str,
         guild_settings: GuildSettings,
+        *,
+        claimed_session: AutonomousSession | None = None,
     ) -> str | None:
         """配信中のチャンネルに届いたコメントへ、配信者のように応答する。
 
@@ -264,7 +278,12 @@ class AutonomousService:
         session = guild_settings.autonomous_session
         if session is None:
             return None
-        if not self._claim_comment_slot(session):
+        if claimed_session is not None:
+            # 入力判定を待っている間に、別の配信へ差し替わった予約は使わない。
+            if session is not claimed_session:
+                return None
+        elif not self._claim_comment_slot(session):
+            # この関数を直接呼ぶ経路でも、従来どおり流量制限を適用する。
             return None
 
         channel = message.channel
