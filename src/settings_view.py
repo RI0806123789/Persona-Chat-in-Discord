@@ -183,9 +183,9 @@ class ResetButton(ui.Button):
             view.stop()
             return
 
-        # リセットポイントをこのメッセージのIDに設定
-        if interaction.message is not None:
-            view.guild_settings.channel_reset_points[int(channel_id)] = interaction.message.id
+        # パネル作成時ではなく、ボタン押下時点を境界にする。
+        # Interaction ID もメッセージと同じ Snowflake なので履歴の after に使える。
+        view.guild_settings.channel_reset_points[int(channel_id)] = interaction.id
 
         await interaction.response.edit_message(
             content="🔄 会話履歴をリセットしました。ここから新しい会話を始めます。",
