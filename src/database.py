@@ -39,7 +39,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from constants import STATS_OPT_OUT_DEFAULT
+from constants import REMINDER_MAX_PENDING_PER_USER, STATS_OPT_OUT_DEFAULT
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
 SCHEMA_VERSION = 9
@@ -645,8 +645,12 @@ class Database:
         created_at: str,
         recurrence: str = "none",
         recurrence_anchor: str = "",
-    ) -> int:
-        """リマインダーを1件登録し、その reminder_id を返す。
+        max_pending: int = REMINDER_MAX_PENDING_PER_USER,
+    ) -> int | None:
+        """上限内ならリマインダーを登録して ID を返し、上限到達なら None を返す。
+
+        pending の件数確認と INSERT は1つのSQL文にし、同じロック・
+        トランザクションで実行する。ユーザーの枠はサーバー横断で数える。
 
         remind_at / created_at は UTC の ISO 8601 文字列。同じ形式で揃えることで、
         期限判定を文字列比較のまま行える（時刻順と辞書順が一致する）。
@@ -662,7 +666,9 @@ class Database:
                 "INSERT INTO reminders"
                 " (user_id, user_name, guild_id, channel_id, message, remind_at, created_at, status,"
                 "  recurrence, recurrence_anchor)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                " SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?"
+                " WHERE (SELECT COUNT(*) FROM reminders"
+                " WHERE user_id = ? AND status = 'pending') < ?",
                 (
                     str(user_id),
                     str(user_name),
@@ -673,9 +679,11 @@ class Database:
                     str(created_at),
                     str(recurrence),
                     str(recurrence_anchor),
+                    str(user_id),
+                    int(max_pending),
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid) if cursor.rowcount else None
 
     def reminder_claim_due(
         self, now_iso: str, next_at: Callable[[dict[str, Any]], str | None]
@@ -763,7 +771,7 @@ class Database:
         return [dict(row) for row in rows]
 
     def reminder_count_pending(self, user_id: str) -> int:
-        """指定ユーザーの未通知リマインダーの件数を返す（登録上限の判定に使う）。"""
+        """指定ユーザーの未通知リマインダーの件数を、サーバー横断で返す。"""
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) AS count FROM reminders WHERE user_id = ? AND status = 'pending'",

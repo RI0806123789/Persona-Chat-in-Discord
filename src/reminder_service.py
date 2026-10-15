@@ -258,24 +258,12 @@ class ReminderService:
             body = body[:REMINDER_MAX_MESSAGE_LENGTH] + "…"
 
         user_id = str(message.author.id)
-        try:
-            pending_count = await asyncio.to_thread(self._db.reminder_count_pending, user_id)
-        except Exception as error:
-            print(f"リマインダー: 登録件数の確認に失敗しました: {error}")
-            return None
-
-        if pending_count >= REMINDER_MAX_PENDING_PER_USER:
-            return (
-                f"⏰ リマインダーは1人あたり {REMINDER_MAX_PENDING_PER_USER} 件までです。"
-                "`/functions` → ⏰ リマインダー から不要なものを取り消してください。"
-            )
-
         # 抽出できない・未知の繰り返し種別は none（単発）に倒す。
         recurrence = normalize_recurrence(request.get("repeat"))
 
         guild_id = message.guild.id if message.guild is not None else 0
         try:
-            await asyncio.to_thread(
+            reminder_id = await asyncio.to_thread(
                 self._db.reminder_add,
                 user_id=user_id,
                 user_name=message.author.display_name,
@@ -288,10 +276,17 @@ class ReminderService:
                 # アンカーは初回時刻で固定する（毎月の日付を元へ戻すための基準）。
                 # 単発は使わないので空文字にしておく。
                 recurrence_anchor=remind_at.isoformat() if recurrence != "none" else "",
+                max_pending=REMINDER_MAX_PENDING_PER_USER,
             )
         except Exception as error:
             print(f"リマインダー: 登録に失敗しました: {error}")
             return "⏰ リマインダーの登録に失敗しました。もう一度お試しください。"
+
+        if reminder_id is None:
+            return (
+                f"⏰ リマインダーは1人あたり {REMINDER_MAX_PENDING_PER_USER} 件までです。"
+                "`/functions` → ⏰ リマインダー から不要なものを取り消してください。"
+            )
 
         when = _format_local(remind_at.isoformat(), self._tz)
         label = recurrence_label(recurrence)
