@@ -9,7 +9,10 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from constants import MEMORY_ROUTE_CATEGORIES, REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE
+from constants import (
+    MEMORY_ROUTE_CATEGORIES, MODERATION_NG_WORD_SAMPLE_LIMIT,
+    REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE,
+)
 from ng_word_service import NgWordFilter
 from storage import extract_json_object, get_prompt_block_reason, safe_response_text
 from timeutil import format_weekday, resolve_timezone, timezone_label
@@ -114,12 +117,12 @@ def _build_prompt(
     """モデレーション用のプロンプトを組み立てる。"""
     ng_section = ""
     if ng_words:
-        # プロンプトが長くなりすぎないよう先頭100語まで
-        sample = ng_words[:100]
+        # プロンプトが長くなりすぎないようサンプル数を制限する。
+        sample = ng_words[:MODERATION_NG_WORD_SAMPLE_LIMIT]
         ng_section = (
             "\n## 参考: NGワードリスト\n"
             + ", ".join(sample)
-            + ("\n（他にもあります）" if len(ng_words) > 100 else "")
+            + ("\n（他にもあります）" if len(ng_words) > MODERATION_NG_WORD_SAMPLE_LIMIT else "")
             + "\n"
         )
 
@@ -334,10 +337,8 @@ async def screen_bot_response(
     NG ワードは ● でマスクし、モデレーションで不適切と判定された場合は
     定型の謝罪文に差し替える。チャット応答と文書応答で共通の後処理。
     """
-    if ng_filter is not None and ng_filter.contains_ng_word(response_text):
-        detected = ng_filter.find_ng_words(response_text)
-        print(f"NGワード検出 ({log_label}): {detected}")
-        response_text = ng_filter.mask_ng_words(response_text)
+    if ng_filter is not None:
+        response_text = ng_filter.mask_with_log(response_text, label=log_label)
 
     if moderator is not None:
         is_safe, reason = await moderator.check(response_text, direction="Bot応答")

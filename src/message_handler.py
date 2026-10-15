@@ -65,7 +65,7 @@ class MessageHandler:
         count, just_blocked = await self.blacklist.record_violation(message.author.id, str(message.author))
         if just_blocked:
             await message.reply(
-                "🚫 違反が3回に達したため、ブラックリストに登録されました。"
+                f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
                 "以降のメッセージは無視されます。"
             )
         else:
@@ -288,7 +288,7 @@ class MessageHandler:
             if emotion_changes is not None:
                 v_change, a_change = emotion_changes
                 self.affinity.update_emotion(str(message.author.id), v_change, a_change)
-                spawn(self.affinity.save_background(), label="親密度の保存")
+                spawn(self.affinity.save_background(user_id), label="親密度の保存")
 
             # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
             # （モデルが感情タグだけを返したケース）。

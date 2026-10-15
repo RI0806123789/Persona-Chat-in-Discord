@@ -14,9 +14,11 @@ from constants import (
     ROUTER_MODEL_NAME,
     STATS_ANALYSIS_TIMEOUT_SECONDS,
     STATS_ANALYSIS_TTL_HOURS,
+    STATS_HOURLY_BUCKETS,
     STATS_MAX_USERS_IN_SELECT,
     STATS_OPT_OUT_DEFAULT,
     STATS_PERSONALITY_MIN_SAMPLES,
+    STATS_RANKING_TOP_N,
     STATS_RECENT_SAMPLES_MAX,
     STATS_TIMEZONE,
     STATS_TOPIC_COUNT,
@@ -74,7 +76,7 @@ class StatsService:
         return {
             "user_name": user_name,
             "total_count": 0,
-            "hourly": [0] * 24,
+            "hourly": [0] * STATS_HOURLY_BUCKETS,
             "first_seen": now_iso,
             "last_seen": now_iso,
             "recent_samples": [],
@@ -109,8 +111,8 @@ class StatsService:
                 entry["user_name"] = user_name
                 entry["total_count"] = int(entry.get("total_count", 0)) + 1
                 hourly = entry.get("hourly")
-                if not isinstance(hourly, list) or len(hourly) != 24:
-                    hourly = [0] * 24
+                if not isinstance(hourly, list) or len(hourly) != STATS_HOURLY_BUCKETS:
+                    hourly = [0] * STATS_HOURLY_BUCKETS
                     entry["hourly"] = hourly
                 hourly[self._to_local_hour(when)] += 1
                 entry["last_seen"] = datetime.now(timezone.utc).isoformat()
@@ -189,7 +191,7 @@ class StatsService:
                 return True
             now_iso = datetime.now(timezone.utc).isoformat()
             entry["total_count"] = 0
-            entry["hourly"] = [0] * 24
+            entry["hourly"] = [0] * STATS_HOURLY_BUCKETS
             entry["recent_samples"] = []
             entry["analysis"] = None
             entry["first_seen"] = now_iso
@@ -316,10 +318,10 @@ class StatsService:
     @serialized_plot
     def build_hourly_graph(self, entry: dict) -> io.BytesIO:
         """時間帯別の発言回数ヒストグラム（24時間）。"""
-        hourly = entry.get("hourly") or [0] * 24
+        hourly = entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS
         with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, 5))
-            x = np.arange(24)
+            x = np.arange(STATS_HOURLY_BUCKETS)
             axis.bar(x, hourly, color="tab:blue")
             axis.set_xticks(x)
             # 集計に実際に使った tz を表示する（定数のままだと、tzdata が無く
@@ -376,7 +378,7 @@ class StatsService:
             axis.set_title("性格推定（ビッグファイブ）", pad=20)
             return self._save_figure(figure)
 
-    async def build_ranking_graph(self, top_n: int = 15) -> io.BytesIO | None:
+    async def build_ranking_graph(self, top_n: int = STATS_RANKING_TOP_N) -> io.BytesIO | None:
         """発言回数のユーザー別ランキング横棒グラフ（管理者用の全体比較）。
 
         収集停止中のユーザーは、データが残っていてもランキングに出さない

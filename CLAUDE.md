@@ -186,6 +186,8 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ユーザーごとの2次元感情（valence/arousal、30分の半減期で 50 へ減衰）に加えて、緩やかに変動する親密度。DB の `affinity` テーブルに永続化される。モデルには返信の末尾に `[V:X, A:Y]` タグを付けるよう指示しており、`handle_chat_message` がそのタグを抽出・除去してから送信し、その後に親密度を更新する。保存は `asyncio.Lock` で直列化される。
 
+通常の保存は `AffinityService.save_background(user_id)` → `Database.affinity_upsert(user_id, entry)` で対象1行だけを更新する。`affinity_save_all` は明示的な全件置換用で、返信ごとの保存には使わない。ロック内で対象の現在値だけをコピーし、キャンセル時も `run_in_thread` の完了までロックを保持する。親密度・機嫌・テンション・`last_interaction` の4項目を保存・復元し、半減期・中立値・上下限・親密度の増減しきい値は `AFFINITY_*` から参照する。
+
 **感情タグを扱うコードはこのモジュールに集約すること。** タグの正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置き、外からは次の2つの関数を使う — `extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
@@ -211,11 +213,11 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 - **`pitch` / `rate` は edge-tts のネイティブ形式の文字列**（`"+10Hz"` / `"+5%"`。正規表現 `^[+-]\d+Hz$` / `^[+-]\d+%$` に一致しないと `Communicate` が `ValueError` を投げる）。**半音単位 `st` は使えない。**
 - **「半音 → Hz」を計算で求めないこと**: 効き方が話者ごとに違い、Nanami は理論式の約1.5倍効き、Keita は約0.55倍しか効かないうえ **+6半音付近で飽和し、下方向はほとんど効かない**。`constants.py` に実測の較正表をコメントで置いてあるので、それを目安に Hz を直書きする。
 - **`voice_dsp.py` に WSOLA・リサンプリングを戻さないこと**: 設計初期に gTTS の単一音声から高さと速さを作るため自前で持っていたが、edge-tts はピッチを変えても長さが変わらない（＝リサンプリングではなくフォルマントを保つ）ため不要になった。戻すと音質を落とすだけで得るものがない。
-- **バイクアッドはブロック処理**: IIR は1つ前の**出力**を使う再帰式のため numpy でベクトル化できず Python のループになる。`_BIQUAD_BLOCK_SIZE` ごとに区切ってフィルタの状態を持ち越す（一気に `tolist()` すると 30 秒の音声で数十 MB の一時オブジェクトができる）。
+- **バイクアッドはブロック処理**: IIR は1つ前の**出力**を使う再帰式のため numpy でベクトル化できず Python のループになる。`TTS_BIQUAD_BLOCK_SIZE` ごとに区切ってフィルタの状態を持ち越す（一気に `tolist()` すると 30 秒の音声で数十 MB の一時オブジェクトができる）。
 - **音色を変えないペルソナは numpy を通さない**: `needs_equalizer` が偽なら miniaudio に 48kHz ステレオまで変換させる。この分岐を消さないこと（`flat` のペルソナの経路が無駄に重くなる）。EQ を掛ける場合はモノラル1ch分だけ処理し、`np.repeat(clipped, TTS_CHANNELS)` でのステレオ化は最後に回す（計算量が半分で済む）。
 - **int16 のクリップは必須**: EQ のブーストでレンジを超えるため、`np.clip` してから `astype(np.int16)` する（超えたまま変換すると音が割れる）。
 - **プロファイルは起動時に点検する**: `voice.py` の `_validate_profiles()` が import 時に `pitch` / `rate` の形式を確認して警告を出す。形式ミスは `Communicate` の `ValueError` 経由で**黙って gTTS 退避に落ち続ける**（音は出るのでキャラ差が消えたことに気づきにくい）ため、この点検を外さないこと。
-- **フェイルセーフ**: EQ 名が未知・`eq` キー自体が無い・値が数値でない場合も音を壊さず加工なしへフォールバックする。
+- **フェイルセーフ**: EQ 名が未知・`eq` キー自体が無い場合は `DEFAULT_VOICE_EQ_NAME` の音色へフォールバックする（既定は加工なしの `flat`）。数値でない周波数・ゲイン・Qも `TTS_EQ_*` の既定値で処理する。
 
 ### スラッシュコマンド (`commands.py`)
 
@@ -310,6 +312,12 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
   - **他人からは見えない**: opt-out 中のユーザーは管理者のユーザー選択（`get_user_options`）と発言回数ランキング（`build_ranking_graph`）から除外される。他人が opt-out 中のユーザーを指定した場合は、既存の「◯◯ さんの会話データはまだありません。」と**同一の文言**を返す（専用の文言を出すと停止していること自体が露見する）。明示的な注記 `🔕 現在、統計収集を停止しています。` は**本人が自分のダッシュボードを見たときだけ**。`build_dashboard(user_id, item, viewer_id=None)` の `viewer_id` は「誰が見ているか」で、**省略時は本人扱い**。呼び出し元の `stats_view.RunStatsButton` は `viewer_id=view.viewer_id` を渡している（省略すると、管理者が他人の統計を開いたときに相手の opt-out の注記まで見えてしまう）。
   - **対象は統計だけ**: 長期記憶（`profile` / `projects` / `pending_log`）は opt-out の対象外。パネルの説明文でその旨を明示している（誤解させると透明性の目的を損なうため、文言を削らないこと）。
   - **フェイルオープンの例外**: 設定の保存・データ削除に失敗したときは、UI に「保存できませんでした」「削除できませんでした」と伝える（`save_background(user_id)`・`set_opt_out`・`clear_user_data` が成否を `bool` で返す）。プライバシー操作の失敗は黙って成功に見せない。解析の LLM 待機中はロックを離すが、削除・収集設定変更の世代を確認して古い結果を書き戻さない。解析失敗時も現在のキャッシュを参照し、待機中に消した解析を返さない。
+
+### Discordの共通処理
+
+自発会話・記念日・リマインダー・公開要約の長文投稿は `discord_helpers.send_long_message` に送信オプションごと渡す。`send_long_reply` の「元発言へ最初の返信を返す」契約は別に維持する。管理者の判定は `discord_helpers.is_administrator` を使う。
+
+利用トークンとランキングの画像送信は `view_parts.send_graph_ephemeral` に集約する。defer後は `followup=True` を渡し、本人限定で送る。画像バッファの所有権も渡し、成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じる。Bot応答・自発会話・自律配信・リマインダーの出力マスクは `NgWordFilter.mask_with_log` を使い、文脈別のログと後続のモデレーションを維持する。
 
 ### グラフ描画と同期I/Oの待機
 

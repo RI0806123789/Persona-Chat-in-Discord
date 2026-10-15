@@ -5,6 +5,8 @@ from app_state import GuildSettings
 from auto_topic_view import AutoTopicView
 from blacklist_service import BlacklistService
 from content_moderator import ContentModerator
+from constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS
+from discord_helpers import is_administrator
 from gemini_service import GeminiService
 from help_view import HelpView, resolve_bot_name
 from ng_word_service import NgWordFilter
@@ -16,7 +18,7 @@ from stats_service import StatsService
 from stats_view import StatsView
 from summary_view import SummaryView
 from usage_graph import UsageTracker
-from view_parts import BackButton, HubFactory, PanelView, swap_panel
+from view_parts import BackButton, HubFactory, PanelView, send_graph_ephemeral, swap_panel
 
 
 class OpenSettingsButton(ui.Button):
@@ -82,22 +84,12 @@ class GraphButton(ui.Button):
             print(f"グラフ生成中にエラー: {error}")
             await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
             return
-        picture = None
-        try:
-            picture = discord.File(buffer, filename="usage_graph.png")
-            # ハブは残したまま、グラフを新しいエフェメラルメッセージとして送る
-            await interaction.followup.send(
-                "📊 これまでの利用結果のグラフです。", file=picture, ephemeral=True
-            )
-        except Exception as error:
-            print(f"グラフ送信中に予期せぬエラー: {error}")
-            await interaction.followup.send(
-                "エラー: グラフの送信に失敗しました。", ephemeral=True
-            )
-        finally:
-            if picture is not None:
-                picture.close()
-            buffer.close()
+        # ハブは残したまま、グラフを新しいエフェメラルメッセージとして送る。
+        await send_graph_ephemeral(
+            interaction, buffer, "usage_graph.png", "📊 これまでの利用結果のグラフです。",
+            followup=True, error_log="グラフ送信中に予期せぬエラー",
+            error_notice="エラー: グラフの送信に失敗しました。",
+        )
 
 
 class GroundingToggleButton(ui.Button):
@@ -154,7 +146,7 @@ class StatsButton(ui.Button):
             return
 
         member = interaction.user
-        is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
+        is_admin = is_administrator(member)
         stats_view = StatsView(hub.stats, viewer_id=str(member.id), is_admin=is_admin, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージを統計パネルに差し替える
         await swap_panel(interaction, hub, stats_view, stats_view.build_preview())
@@ -254,9 +246,7 @@ class UnblockButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
-        member = interaction.user
-        is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
-        if not is_admin:
+        if not is_administrator(interaction.user):
             await interaction.response.send_message(
                 "この機能はサーバー管理者のみ利用できます。", ephemeral=True
             )
@@ -282,13 +272,13 @@ class UnblockSelect(ui.Select):
     def __init__(self, blocked_users: list) -> None:
         options = []
         # Discord のセレクトは最大25件まで
-        for record in blocked_users[:25]:
+        for record in blocked_users[:DISCORD_SELECT_MAX_OPTIONS]:
             user_id = record["user_id"]
             name = record.get("user_name") or str(user_id)
             count = record.get("count", "?")
             options.append(
                 discord.SelectOption(
-                    label=name[:100],
+                    label=name[:DISCORD_SELECT_LABEL_MAX_LENGTH],
                     value=str(user_id),
                     description=f"違反 {count} 回",
                 )

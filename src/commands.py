@@ -7,6 +7,7 @@ from app_state import BotState
 from autonomous_service import AutonomousService
 from blacklist_service import BlacklistService
 from content_moderator import ContentModerator
+from discord_helpers import is_administrator
 from functions_view import FunctionsView
 from gemini_service import GeminiService
 from ng_word_service import NgWordFilter
@@ -31,8 +32,7 @@ def register_commands(
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
     async def functions(interaction: discord.Interaction) -> None:
         # ブロック解除ボタンの表示可否を決めるため、実行者が管理者かどうかを判定する
-        member = interaction.user
-        is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
+        is_admin = is_administrator(interaction.user)
         # ペルソナ・モデル等はサーバー（ギルド）ごとに独立している。DM では guild_id が
         # 無いため、全DM共有の設定スロット（state.dm_settings）が使われる。
         guild_settings = state.get_guild(interaction.guild_id)

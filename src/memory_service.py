@@ -8,6 +8,7 @@ from app_state import BotState
 from background import run_in_thread
 from constants import (
     ANNIVERSARY_PROFILE_KEY,
+    DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_SUMMARY_LIMIT,
     LEGACY_MEMORY_OWNER_ID,
     MEMORY_COMPACT_MAX_FAILURES,
@@ -115,7 +116,9 @@ class MemoryService:
 
     # ---- プロンプトへ差し込む記憶コンテキスト --------------------------------
 
-    async def build_contexts(self, category: str, user_id: str, limit: int = 3) -> tuple[str, str]:
+    async def build_contexts(
+        self, category: str, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+    ) -> tuple[str, str]:
         """同じスナップショットから通常記憶と文書記憶を作り、JSONを1回だけ読む。"""
         async with self.io_lock:
             return await run_in_thread(self._build_contexts, category, str(user_id), limit)
@@ -131,7 +134,7 @@ class MemoryService:
             context = json.dumps(projects, ensure_ascii=False, indent=2)
         summaries = projects.get("document_summaries", [])
         lines = []
-        if isinstance(summaries, list):
+        if isinstance(summaries, list) and limit > 0:
             for summary in summaries[-limit:]:
                 if not isinstance(summary, dict):
                     continue
@@ -145,7 +148,9 @@ class MemoryService:
         context, _ = await self.build_contexts(category, user_id)
         return context
 
-    async def build_document_memory_context(self, user_id: str, limit: int = 3) -> str:
+    async def build_document_memory_context(
+        self, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+    ) -> str:
         _, documents = await self.build_contexts("none", user_id, limit)
         return documents
 

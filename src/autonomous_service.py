@@ -875,11 +875,7 @@ class AutonomousService:
         cleaned = strip_affinity_tag(text)
         if not cleaned.strip():
             return ""
-        if self._ng_filter.contains_ng_word(cleaned):
-            detected = self._ng_filter.find_ng_words(cleaned)
-            print(f"NGワード検出 ({label}): {detected}")
-            cleaned = self._ng_filter.mask_ng_words(cleaned)
-        return cleaned
+        return self._ng_filter.mask_with_log(cleaned, label=label)
 
     async def _generate(
         self,

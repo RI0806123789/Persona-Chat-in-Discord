@@ -35,6 +35,8 @@ from gtts import gTTS
 from background import spawn
 from constants import (
     EDGE_TTS_VOICE_FEMALE,
+    PCM_INT16_MAX,
+    PCM_INT16_MIN,
     TTS_CHANNELS,
     TTS_LANG,
     TTS_MAX_CHARS,
@@ -65,10 +67,6 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 # 起動時にプロファイルを点検するために持つ。
 _EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
 _EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
-
-# int16 で表せる範囲。加工でこれを超えたまま変換すると音が割れるため必ず丸める。
-_INT16_MIN = -32768.0
-_INT16_MAX = 32767.0
 
 # edge-tts が失敗し続けている間、返信のたびに同じログを出さないための状態。
 # 「失敗し始めたとき」と「復旧したとき」の2回だけ記録する。
@@ -195,7 +193,7 @@ def _decode_to_pcm(mp3_bytes: bytes, profile: Mapping[str, Any]) -> bytes:
     shaped = apply_equalizer(mono, profile, sample_rate=TTS_SAMPLE_RATE)
 
     # EQ のブーストで int16 の範囲を超えることがあるので、必ずクリップしてから丸める。
-    clipped = np.clip(shaped, _INT16_MIN, _INT16_MAX).astype(np.int16)
+    clipped = np.clip(shaped, PCM_INT16_MIN, PCM_INT16_MAX).astype(np.int16)
     # モノラル1ch分を L/R へ複製してインターリーブする（Discord はステレオしか受け取らない）。
     return np.repeat(clipped, TTS_CHANNELS).tobytes()
 

@@ -34,7 +34,7 @@ from constants import (
     REMINDER_TIMEZONE,
 )
 from database import Database
-from discord_helpers import split_message
+from discord_helpers import send_long_message
 from ng_word_service import NgWordFilter
 from timeutil import format_weekday, resolve_timezone
 
@@ -444,10 +444,7 @@ class ReminderService:
         text = str(record.get("message", ""))
         # 本文はユーザーの発言そのものなので、投稿前に NG ワードをマスクする
         # （登録時に AI モデレーションは通過済みのため、ここでは再判定しない）。
-        if self._ng_filter.contains_ng_word(text):
-            detected = self._ng_filter.find_ng_words(text)
-            print(f"NGワード検出 (リマインダー): {detected}")
-            text = self._ng_filter.mask_ng_words(text)
+        text = self._ng_filter.mask_with_log(text, label="リマインダー")
 
         body = f"⏰ <@{record['user_id']}> リマインダーです: **{text}**"
         # 繰り返しはクレーム時に次回時刻まで進んでいるので、その予定を添えて
@@ -455,5 +452,4 @@ class ReminderService:
         next_at = record.get("next_remind_at")
         if next_at:
             body += f"\n🔁 次回は {_format_local(str(next_at), self._tz)} にお知らせします。"
-        for chunk in split_message(body):
-            await channel.send(chunk)
+        await send_long_message(channel, body)

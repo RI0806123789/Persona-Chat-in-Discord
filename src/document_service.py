@@ -17,6 +17,7 @@ from constants import (
     HISTORY_LIMIT,
     MAX_DOCUMENT_SIZE_BYTES,
     QUEUE_MAX_FINISHED_TASKS,
+    TEXT_VALIDATION_PREVIEW_BYTES,
 )
 from content_moderator import ContentModerator, screen_bot_response
 from database import Database
@@ -316,11 +317,11 @@ def validate_pdf_file(temp_path: Path) -> None:
 
 def validate_text_file(temp_path: Path) -> None:
     with open(temp_path, "rb") as file:
-        preview_bytes = file.read(4096)
-    # 4096バイト目がマルチバイト文字（日本語は3バイト）の途中になり得るため、
+        preview_bytes = file.read(TEXT_VALIDATION_PREVIEW_BYTES)
+    # プレビューの末尾がマルチバイト文字（日本語は3バイト）の途中になり得るため、
     # 途中で切れた場合は末尾の不完全な文字を許容してデコード検証する。
     # 単純な decode() だと正常な日本語ファイルが境界位置次第で拒否される。
-    truncated = len(preview_bytes) >= 4096
+    truncated = len(preview_bytes) >= TEXT_VALIDATION_PREVIEW_BYTES
     decoder = codecs.getincrementaldecoder("utf-8-sig")()
     decoder.decode(preview_bytes, final=not truncated)
 

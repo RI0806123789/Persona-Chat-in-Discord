@@ -18,7 +18,7 @@ from constants import (
 )
 from content_moderator import ContentModerator
 from database import Database
-from discord_helpers import fetch_channel_history_text, split_message
+from discord_helpers import fetch_channel_history_text, send_long_message
 from gemini_service import GeminiService
 from memory_service import MemoryService
 from ng_word_service import NgWordFilter
@@ -192,8 +192,7 @@ class AutoTopicService:
             "自発的な会話", f"{channel_label} への話題提供", "自動実行", full_prompt, response_text, usage_info
         )
 
-        for chunk in split_message(response_text):
-            await channel.send(chunk)
+        await send_long_message(channel, response_text)
         return True
 
     # ==========================================================================
@@ -219,10 +218,7 @@ class AutoTopicService:
             return None, False
 
         # NG ワードは既存パイプラインと同様に ● でマスクする
-        if self._ng_filter.contains_ng_word(text):
-            detected = self._ng_filter.find_ng_words(text)
-            print(f"NGワード検出 ({label}): {detected}")
-            text = self._ng_filter.mask_ng_words(text)
+        text = self._ng_filter.mask_with_log(text, label=label)
 
         # 不適切な内容は、チャット応答と違い謝罪文へ差し替えて投稿する意味が無い
         # （誰も話していないのに唐突な謝罪になる）ため、投稿自体を見送る。
@@ -432,6 +428,5 @@ class AutoTopicService:
             usage_info,
         )
 
-        for chunk in split_message(f"{member.mention} {response_text}"):
-            await channel.send(chunk)
+        await send_long_message(channel, f"{member.mention} {response_text}")
         return True

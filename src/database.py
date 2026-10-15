@@ -39,7 +39,12 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from constants import REMINDER_MAX_PENDING_PER_USER, STATS_OPT_OUT_DEFAULT
+from constants import (
+    AFFINITY_NEUTRAL,
+    REMINDER_MAX_PENDING_PER_USER,
+    STATS_HOURLY_BUCKETS,
+    STATS_OPT_OUT_DEFAULT,
+)
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
 SCHEMA_VERSION = 9
@@ -356,9 +361,9 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", 50),
-                        entry.get("valence", 50),
-                        entry.get("arousal", 50),
+                        entry.get("affinity", AFFINITY_NEUTRAL),
+                        entry.get("valence", AFFINITY_NEUTRAL),
+                        entry.get("arousal", AFFINITY_NEUTRAL),
                         entry.get("last_interaction", 0.0),
                     ),
                 )
@@ -381,7 +386,7 @@ class Database:
                         str(user_id),
                         str(entry.get("user_name", "")),
                         int(entry.get("total_count", 0)),
-                        json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
+                        json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
                         str(entry.get("first_seen", "")),
                         str(entry.get("last_seen", "")),
                         json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
@@ -931,8 +936,27 @@ class Database:
             for row in rows
         }
 
+    def affinity_upsert(self, user_id: str, entry: dict[str, Any]) -> None:
+        """対象ユーザー1行だけを保存し、他ユーザーの行やrowidは変更しない。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO affinity"
+                " (user_id, affinity, valence, arousal, last_interaction)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(user_id) DO UPDATE SET"
+                " affinity=excluded.affinity, valence=excluded.valence,"
+                " arousal=excluded.arousal, last_interaction=excluded.last_interaction",
+                (
+                    str(user_id),
+                    entry.get("affinity", AFFINITY_NEUTRAL),
+                    entry.get("valence", AFFINITY_NEUTRAL),
+                    entry.get("arousal", AFFINITY_NEUTRAL),
+                    entry.get("last_interaction", 0.0),
+                ),
+            )
+
     def affinity_save_all(self, cache: dict[str, dict[str, Any]]) -> None:
-        """キャッシュ全体で置き換える（旧「ファイル全体を書き直す」動作と等価）。"""
+        """明示的な全件置換用。通常の感情更新には affinity_upsert を使う。"""
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM affinity")
             for user_id, entry in cache.items():
@@ -942,9 +966,9 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", 50),
-                        entry.get("valence", 50),
-                        entry.get("arousal", 50),
+                        entry.get("affinity", AFFINITY_NEUTRAL),
+                        entry.get("valence", AFFINITY_NEUTRAL),
+                        entry.get("arousal", AFFINITY_NEUTRAL),
                         entry.get("last_interaction", 0.0),
                     ),
                 )
@@ -960,7 +984,7 @@ class Database:
             result[row["user_id"]] = {
                 "user_name": row["user_name"],
                 "total_count": row["total_count"],
-                "hourly": _json_loads_or(row["hourly"], [0] * 24),
+                "hourly": _json_loads_or(row["hourly"], [0] * STATS_HOURLY_BUCKETS),
                 "first_seen": row["first_seen"],
                 "last_seen": row["last_seen"],
                 "recent_samples": _json_loads_or(row["recent_samples"], []),
@@ -999,7 +1023,7 @@ class Database:
                 str(user_id),
                 str(entry.get("user_name", "")),
                 int(entry.get("total_count", 0)),
-                json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
+                json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
                 str(entry.get("first_seen", "")),
                 str(entry.get("last_seen", "")),
                 json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),

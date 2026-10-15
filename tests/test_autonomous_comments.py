@@ -50,7 +50,9 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
             check=AsyncMock(return_value=(True, "")),
         )
         self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("配信への架空の応答", None, [])))
-        self.ng_filter = SimpleNamespace(contains_ng_word=Mock(return_value=False))
+        self.ng_filter = SimpleNamespace(
+            contains_ng_word=Mock(return_value=False), mask_with_log=Mock(side_effect=lambda text, **kwargs: text),
+        )
         self.service = AutonomousService(
             self.client, self.state, self.gemini, self.moderator, self.ng_filter,
             SimpleNamespace(log_snapshot=Mock()),

@@ -20,17 +20,18 @@ from typing import Any, Mapping
 import numpy as np
 
 from constants import (
+    DEFAULT_VOICE_EQ_NAME,
+    TTS_BIQUAD_BLOCK_SIZE,
+    TTS_EQ_DEFAULT_FREQUENCY_HZ,
+    TTS_EQ_DEFAULT_GAIN_DB,
+    TTS_EQ_DEFAULT_Q,
+    TTS_EQ_MIN_FREQUENCY_HZ,
+    TTS_EQ_MIN_Q,
+    TTS_EQ_NYQUIST_MARGIN,
     VOICE_EQ_PROFILES,
     VOICE_PROFILE_FALLBACK,
     VOICE_PROFILES,
 )
-
-# バイクアッドフィルタを一度に処理するサンプル数。
-# IIR フィルタは1つ前の出力を使う再帰計算のため numpy でベクトル化できず、
-# Python のループで回すしかない。全サンプルを一気に list 化すると 30 秒の音声で
-# 数十 MB の一時オブジェクトができてしまうため、メモリ 1GB の環境を想定して
-# 固定長のブロックに区切る（フィルタの状態は次のブロックへ持ち越すので結果は同じ）。
-_BIQUAD_BLOCK_SIZE = 65536
 
 # 0 除算を避けるための微小値。
 _EPSILON = 1e-9
@@ -77,9 +78,12 @@ def apply_equalizer(
         coefficients = _biquad_coefficients(
             str(kind),
             # 折り返し（エイリアシング）を避けるためナイキスト周波数の手前に抑える。
-            _clamp(_as_float(equalizer.get("frequency"), 1000.0), 10.0, sample_rate * 0.45),
-            _as_float(equalizer.get("gain_db"), 0.0),
-            max(_as_float(equalizer.get("q"), 0.707), 0.1),
+            _clamp(
+                _as_float(equalizer.get("frequency"), TTS_EQ_DEFAULT_FREQUENCY_HZ),
+                TTS_EQ_MIN_FREQUENCY_HZ, sample_rate * TTS_EQ_NYQUIST_MARGIN,
+            ),
+            _as_float(equalizer.get("gain_db"), TTS_EQ_DEFAULT_GAIN_DB),
+            max(_as_float(equalizer.get("q"), TTS_EQ_DEFAULT_Q), TTS_EQ_MIN_Q),
             sample_rate,
         )
         if coefficients is not None:
@@ -108,9 +112,9 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _resolve_equalizer(profile: Mapping[str, Any]) -> Mapping[str, Any]:
-    """プロファイルの `eq` 名から EQ の設定を引く（未知の名前は加工なし）。"""
-    name = profile.get("eq") or "flat"
-    return VOICE_EQ_PROFILES.get(str(name), VOICE_EQ_PROFILES["flat"])
+    """プロファイルの `eq` 名から設定を引く（未知の名前は既定の音色）。"""
+    name = profile.get("eq") or DEFAULT_VOICE_EQ_NAME
+    return VOICE_EQ_PROFILES.get(str(name), VOICE_EQ_PROFILES[DEFAULT_VOICE_EQ_NAME])
 
 
 def _biquad_coefficients(
@@ -182,9 +186,9 @@ def _apply_biquad(
     output = np.empty_like(samples)
     x1 = x2 = y1 = y2 = 0.0
 
-    for start in range(0, samples.size, _BIQUAD_BLOCK_SIZE):
+    for start in range(0, samples.size, TTS_BIQUAD_BLOCK_SIZE):
         # numpy スカラーのボックス化を避けるため list 化してから回す（数倍速い）。
-        block = samples[start:start + _BIQUAD_BLOCK_SIZE].tolist()
+        block = samples[start:start + TTS_BIQUAD_BLOCK_SIZE].tolist()
         filtered = [0.0] * len(block)
         for index, x0 in enumerate(block):
             y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
