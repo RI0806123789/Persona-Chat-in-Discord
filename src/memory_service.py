@@ -64,6 +64,9 @@ class MemoryService:
         # 記憶圧縮の連続失敗回数をユーザー別に数える（あるユーザーの失敗が
         # 他ユーザーの pending_log クリア判定に影響しないようにする）。
         self._compact_fail_count: dict[str, int] = {}
+        # 文書要約は末尾の上限件数しか保存しないため、件数では追加を検出できない。
+        # 単一プロセス内の更新世代をユーザー別に数え、io_lock の下で読み書きする。
+        self._document_summary_versions: dict[str, int] = {}
 
     def ensure_storage(self) -> None:
         # プロフィール記憶は DB の profile テーブルが本体（ユーザー別）。profile.json は
@@ -203,6 +206,9 @@ class MemoryService:
             summaries.append(summary_data)
             user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
             await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
+            self._document_summary_versions[str(user_id)] = (
+                self._document_summary_versions.get(str(user_id), 0) + 1
+            )
 
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
@@ -263,12 +269,12 @@ class MemoryService:
         async with self.io_lock:
             profile_snapshot = await asyncio.to_thread(self._db.profile_load, user_id)
             wrapper = self._load_projects_wrapper()
+            # スナップショットと同じロック区間で世代を記録する。
+            # 圧縮中に上限から押し出された要約があっても、追加件数を失わない。
+            document_summary_version = self._document_summary_versions.get(user_id, 0)
         projects_snapshot = self._user_projects(wrapper, user_id)
         profile_text = json.dumps(profile_snapshot, ensure_ascii=False, indent=2)
         projects_text = json.dumps(projects_snapshot, ensure_ascii=False, indent=2)
-        # 圧縮前の文書要約の件数。Gemini を待っている間に store_document_summary が
-        # 追記した分を、書き戻すときに拾い直すための目印にする。
-        document_summary_count = self._document_summary_count(projects_snapshot)
 
         try:
             profile_data, projects_data = await self._compact_memory(
@@ -305,7 +311,7 @@ class MemoryService:
             # 圧縮前のスナップショットではなく読み直すのは、待っている間に別経路
             # （文書要約の保存）が同じファイルを更新している可能性があるため。
             wrapper = self._load_projects_wrapper()
-            self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_count)
+            self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_version)
             wrapper["users"][user_id] = projects_data
             await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
             await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
@@ -326,18 +332,12 @@ class MemoryService:
                 continue
         return max(ids) if ids else 0
 
-    @staticmethod
-    def _document_summary_count(projects: dict[str, Any]) -> int:
-        """projects スライス内の文書要約の件数を返す（型が違えば 0 とみなす）。"""
-        summaries = projects.get("document_summaries")
-        return len(summaries) if isinstance(summaries, list) else 0
-
     def _merge_new_document_summaries(
         self,
         wrapper: dict[str, Any],
         user_id: str,
         projects_data: dict[str, Any],
-        previous_count: int,
+        previous_version: int,
     ) -> None:
         """圧縮中に追記された文書要約を、LLM の出力（projects_data）へ継ぎ足す。
 
@@ -345,17 +345,19 @@ class MemoryService:
 
         `_compact_memory` を待っている間に `store_document_summary` が
         document_summaries へ追記していると、LLM 出力での丸ごと差し替えでその分が
-        消えてしまう。圧縮前の件数を目印に「後から増えた分」だけを拾い直す。
+        消えてしまう。圧縮前からの更新世代の差で追加件数を求め、末尾から拾い直す。
+        世代は実行中の圧縮にだけ必要で、プロセス再起動後には引き継がない。
         型が期待どおりでなければ安全側に倒して何もしない。
         """
+        added_count = self._document_summary_versions.get(user_id, 0) - previous_version
         latest = self._user_projects(wrapper, user_id).get("document_summaries")
-        if not isinstance(latest, list) or len(latest) <= previous_count:
+        if not isinstance(latest, list) or added_count <= 0:
             return
 
         merged = projects_data.get("document_summaries")
         if not isinstance(merged, list):
             merged = []
-        merged.extend(latest[previous_count:])
+        merged.extend(latest[-added_count:])
         # 既存の store_document_summary と同じく、新しい方から上限件数だけ残す。
         projects_data["document_summaries"] = merged[-DOCUMENT_SUMMARY_LIMIT:]
 
