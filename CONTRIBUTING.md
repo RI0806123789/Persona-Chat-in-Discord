@@ -70,7 +70,7 @@ python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py'))
 python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
-文書処理・記憶圧縮の回帰テストは標準ライブラリの `unittest` で実行できます。
+文書処理・記憶圧縮・会話リセットの回帰テストは標準ライブラリの `unittest` で実行できます。
 
 ```bash
 python -m unittest discover -s tests -v

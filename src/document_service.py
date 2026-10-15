@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 import discord
 
+from affinity_service import strip_affinity_tag
 from app_state import BotState
 from background import spawn
 from constants import (
@@ -177,6 +178,12 @@ class DocumentService:
 
             if not response_text:
                 raise ValueError("Gemini APIの呼び出しに失敗しました。")
+
+            # 文書経路では親密度を更新せず、共通関数で感情タグだけを除去する。
+            # タグのみの応答は、空本文や参考リンクだけを送らず生成失敗として扱う。
+            response_text = strip_affinity_tag(response_text)
+            if not response_text:
+                raise ValueError("Gemini APIの応答に本文がありませんでした。")
 
             self._usage.log_snapshot(
                 "文書タスク",

@@ -1,4 +1,4 @@
-"""文書処理の異常系でも一時ファイルを残さないことを検証する。"""
+"""文書応答の感情タグ除去と、一時ファイルの回収を検証する。"""
 
 import asyncio
 from pathlib import Path
@@ -7,11 +7,12 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from background import spawn
+from app_state import BotState
 import document_service
 from document_service import DocumentService
 
@@ -152,6 +153,119 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(OSError, "アップロード先削除失敗"):
             await self.process()
         self.assert_no_files()
+
+
+class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.memory = SimpleNamespace(
+            route_category=AsyncMock(return_value="none"),
+            build_context=Mock(return_value=""),
+            build_document_memory_context=Mock(return_value=""),
+            append_pending_log=AsyncMock(),
+            flush_if_needed=AsyncMock(),
+        )
+        self.gemini = SimpleNamespace(generate=AsyncMock())
+        self.moderator = SimpleNamespace(check=AsyncMock(return_value=(True, "")))
+        self.usage = SimpleNamespace(log_snapshot=Mock())
+        self.service = DocumentService(
+            SimpleNamespace(user=SimpleNamespace(id=99)),
+            BotState(), self.memory, self.gemini, self.usage, None,
+            moderator=self.moderator,
+        )
+        self.message = SimpleNamespace(
+            content="文書を要約してください。",
+            guild=SimpleNamespace(id=10),
+            channel=SimpleNamespace(id=20),
+            attachments=[SimpleNamespace(filename="fictional.txt")],
+            reply=AsyncMock(),
+        )
+        self.service._fetch_message_from_task = AsyncMock(return_value=self.message)
+        self.service._process_attachment = AsyncMock()
+        self.service._update_task = AsyncMock()
+        self.sent = AsyncMock()
+        self.tasks = []
+
+        def start(coro, **kwargs):
+            task = spawn(coro, **kwargs)
+            self.tasks.append(task)
+            return task
+
+        for name, value in (
+            ("send_long_reply", self.sent),
+            ("fetch_channel_history_text", AsyncMock(return_value="架空の履歴")),
+            ("load_prompt_template", Mock(return_value="架空のペルソナ")),
+            ("spawn", start),
+        ):
+            replacement = patch.object(document_service, name, value)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    async def asyncTearDown(self) -> None:
+        await asyncio.gather(*self.tasks)
+
+    async def process_response(self, text: str, sources=None) -> None:
+        self.gemini.generate.return_value = (text, None, sources or [])
+        await self.service._process_task({"task_id": "fictional-task", "author_id": "test-user"})
+
+    def assert_clean_response(self, expected: str, *, sources: bool = False) -> None:
+        self.sent.assert_awaited_once()
+        self.assertEqual(self.sent.await_args.args[0], self.message)
+        reply = self.sent.await_args.args[1]
+        self.assertNotIn("[V:", reply)
+        self.assertEqual(self.sent.await_args.kwargs, {"suppress_embeds": sources})
+        if not sources:
+            self.assertEqual(reply, expected)
+        self.memory.append_pending_log.assert_awaited_once_with(
+            "test-user", "文書を要約してください。", expected
+        )
+        self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
+        self.message.reply.assert_not_awaited()
+
+    async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
+        await self.process_response("要約です。[V:1, A:2]")
+        self.assert_clean_response("要約です。")
+        self.moderator.check.assert_awaited_once_with("要約です。", direction="Bot応答")
+        self.assertEqual(self.usage.log_snapshot.call_args.args[4], "要約です。")
+
+    async def test_multiple_tags_with_spaces_are_removed(self) -> None:
+        await self.process_response("[V: +1, A: -2]要約です。[V: -3, A: +4]")
+        self.assert_clean_response("要約です。")
+
+    async def test_response_without_tags_is_preserved(self) -> None:
+        await self.process_response("**要点**\n- 架空の文書の内容です。")
+        self.assert_clean_response("**要点**\n- 架空の文書の内容です。")
+
+    async def test_reference_links_are_sent_but_not_saved_in_memory(self) -> None:
+        await self.process_response(
+            "要約です。[V:1, A:2]",
+            [{"title": "参考資料", "uri": "https://example.com/reference"}],
+        )
+        self.assert_clean_response("要約です。", sources=True)
+        self.assertEqual(
+            self.sent.await_args.args[1],
+            "要約です。\n\n🔍 **参考リンク:**\n・ [参考資料](<https://example.com/reference>)",
+        )
+
+    async def check_tag_only_response(self, sources=None) -> None:
+        await self.process_response(" [V:1, A:2] ", sources)
+        self.sent.assert_not_awaited()
+        self.memory.append_pending_log.assert_not_awaited()
+        self.moderator.check.assert_not_awaited()
+        self.assertEqual(self.service._update_task.await_args.kwargs["status"], "failed")
+        self.message.reply.assert_awaited_once()
+        self.assertTrue(self.message.reply.await_args.args[0].strip())
+        self.assertNotIn("[V:", self.message.reply.await_args.args[0])
+
+    async def test_tag_only_response_reports_failure_without_sending_empty_text(self) -> None:
+        await self.check_tag_only_response()
+
+    async def test_tag_only_response_does_not_send_links_without_body(self) -> None:
+        await self.check_tag_only_response([{"uri": "https://example.com/reference"}])
+
+    async def test_moderation_replacement_is_still_sent_and_saved(self) -> None:
+        self.moderator.check.return_value = (False, "架空の判定理由")
+        await self.process_response("架空の応答。[V:1, A:2]")
+        self.assert_clean_response("申し訳ありませんが、適切な応答を生成できませんでした。")
 
 
 if __name__ == "__main__":
