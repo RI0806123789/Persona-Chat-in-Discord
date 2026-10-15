@@ -2,14 +2,15 @@
 
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -21,6 +22,10 @@ from stats_service import StatsService
 
 class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        # OSのタイムゾーンDBやtzdataの有無に依存させず、日本時間の集計を検証する。
+        timezone_patch = patch("stats_service.resolve_timezone", return_value=timezone(timedelta(hours=9)))
+        timezone_patch.start()
+        self.addCleanup(timezone_patch.stop)
         directory = tempfile.TemporaryDirectory(prefix="stats-test-")
         self.addCleanup(directory.cleanup)
         self.db = Database(Path(directory.name) / "bot.db")
@@ -87,6 +92,17 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record["user_name"], "新しい架空の名前")
         self.assertFalse(record["opt_out"])
         self.assertEqual(record, StatsService(self.db, self.gemini).cache["user-0"])
+
+    async def test_missing_timezone_data_records_in_utc(self) -> None:
+        from timeutil import resolve_timezone
+
+        with patch("stats_service.resolve_timezone", side_effect=resolve_timezone):
+            with patch("timeutil.ZoneInfo", side_effect=ZoneInfoNotFoundError("架空の欠落")):
+                service = StatsService(self.db, self.gemini)
+        self.assertTrue(await service.record("fallback-user", "架空", "UTCで集計", self.when))
+        record = self.db.stats_load_all()["fallback-user"]
+        self.assertEqual(record["hourly"], [1] + [0] * 23)
+        self.assertEqual(service._tz, timezone.utc)
 
     async def test_analysis_setting_and_clear_each_save_only_the_target_user(self) -> None:
         other = deepcopy(self.db.stats_load_all()["user-1"])

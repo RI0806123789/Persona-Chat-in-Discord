@@ -34,7 +34,7 @@ Linuxではルートで `python3 -m venv .venv` を実行し、`src/` から `..
 
 ## 検証
 
-ビルド工程、常設テスト、lint設定、カバレッジ基準は未整備。仮想環境のPythonで、ルートから `python -m pip check` と `python -m compileall -q src deploy` を実行する。
+標準の `unittest` による回帰テストとWindows／LinuxのCIがある。ビルド工程、lint設定、カバレッジ基準は未整備。検証コマンドは[CLAUDE.md](CLAUDE.md)と[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照する。
 
 テストを追加する場合は `tests/test_*.py` とし、標準の `unittest`・`IsolatedAsyncioTestCase` を優先する。外部通信はモック、DBは一時ディレクトリを使う。`bot.py` のimportには設定読込・DB初期化の副作用がある。
 

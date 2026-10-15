@@ -21,7 +21,7 @@ from discord_helpers import (
     attachment_is_image, clean_message_content, is_supported_document_attachment,
     is_supported_message_channel,
 )
-from test_bot_reply_settings import load_message_handlers
+from message_handler_helpers import make_message_handler
 
 
 class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
@@ -90,8 +90,10 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
             "attachment_is_image": attachment_is_image,
             "MAX_DOCUMENT_SIZE_BYTES": MAX_DOCUMENT_SIZE_BYTES,
         }
-        self.on_message = load_message_handlers(namespace)
-        namespace["handle_chat_message"] = self.normal_reply
+        self.handler = make_message_handler(namespace, self)
+        self.handler.handle_chat_message = self.normal_reply
+        self.handler.notify_violation = self.notify
+        self.on_message = self.handler.on_message
 
     async def asyncTearDown(self) -> None:
         await asyncio.gather(*self.tasks)

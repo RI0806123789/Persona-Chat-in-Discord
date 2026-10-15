@@ -67,6 +67,7 @@ Persona Chat in Discord/
 │   ├── document_service.py                     # 文書添付キューと要約処理
 │   ├── gemini_service.py                       # Gemini API 呼び出し
 │   ├── memory_service.py                       # 長期記憶の読込・圧縮・永続化
+│   ├── message_handler.py                      # 起動処理から分離したメッセージ受信・応答処理
 │   ├── ng_word_service.py                      # NGワード判定・マスク処理
 │   ├── paths.py                                # パス解決とプロンプト読込
 │   ├── prompting.py                            # Gemini に渡すプロンプト構築
@@ -241,6 +242,20 @@ systemctl status bot                        # "active (running)" なら成功
 
 ---
 
+## 🧪 開発時のローカル検証
+
+仮想環境を有効化し、既存の依存関係をインストールした後、リポジトリルートで実行します。
+
+```bash
+python -B -m unittest discover -s tests -v
+```
+
+APIキーや `.env`、Discord接続、Gemini呼び出しは不要です。外部サービスはモック、一時DB・一時ファイルには架空のデータを使い、実際の `memory/`・`ng/` は変更しません。Windowsでは `.venv\Scripts\python.exe`、Linuxでは `.venv/bin/python` を直接指定しても実行できます。
+
+DBの初期化・設定保存と復元、文書処理の異常系、会話リセット、リマインダー登録・記憶更新の並行処理、生成中の設定変更、コメントの流量制限、JSON保存の中断、長いリマインダー一覧を検証します。`message_handler.py` は起動処理を実行せずimportでき、実際のメッセージ処理へモックを注入してテストします。
+
+[回帰テストCI](.github/workflows/tests.yml) はWindows／LinuxとPython 3.10／3.13で、依存関係・構文・回帰テストを自動確認します。詳しい手順は[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照してください。
+
 ## 💬 コマンド一覧
 
 > 各機能の説明は、ボット上の `/functions` → **❓ 使い方** が常に最新です（`src/help_view.py` が唯一の情報源）。ここでは要点と注意点だけを書いています。
@@ -355,6 +370,13 @@ systemctl status bot                        # "active (running)" なら成功
 ## 📋 更新履歴
 
 ### ver0.1.7(BETA)
+
+#### 回帰テスト・CIと保存・一覧表示の改善
+
+- メッセージ処理を起動処理から分離し、設定読込・実DB・外部通信なしでテストできる入口を追加。DB初期化とサーバー・DM設定の保存・復元も検証
+- Windows／Linux、Python 3.10／3.13で依存関係・構文・回帰テストを実行するCIを追加
+- `projects.json`・`blacklist.json` などのJSON保存を一時ファイル経由の原子的置換に変更。保存途中の失敗から既存ファイルを守り、破損JSONは日時付きバックアップへ退避してから既定値で再開。退避・読込に失敗した場合は処理を中止
+- リマインダーパネルの本文を1900文字以内に収め、省略件数を表示。本文に表示しきれない予定も選択メニューから取り消し可能
 
 #### 自律行動のコメント受付・会話統計の保存を改善
 
