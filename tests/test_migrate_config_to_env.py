@@ -25,6 +25,7 @@ class MigrationLoggingTests(unittest.TestCase):
         index = self.root / "index"
         index.mkdir()
         self.private_source = index / "config_private.py"
+        self.private_source.touch()
         self.fallback_source = index / "config.py"
         self.env_path = self.root / ".env"
         paths = patch.multiple(
@@ -33,17 +34,28 @@ class MigrationLoggingTests(unittest.TestCase):
         )
         paths.start()
         self.addCleanup(paths.stop)
+        original_read = Path.read_text
+
+        def read_source(path, *args, **kwargs):
+            # 旧設定の架空キーはメモリ上だけに置く。実際のAST解析はそのまま通す。
+            if path == self.private_source:
+                return self.config_source
+            return original_read(path, *args, **kwargs)
+
+        source_read = patch.object(Path, "read_text", read_source)
+        source_read.start()
+        self.addCleanup(source_read.stop)
         self.values = {
             "API_KEY_GEMINI": "FAKE-gemini-private-value-GEND",
             "TOKEN_DISCORD": "MOCK-discord-private-value-DEND",
         }
-        self.write_source(self.values)
+        self.set_source(self.values)
 
-    def write_source(self, values) -> None:
+    def set_source(self, values) -> None:
         lines = [f"{name} = {value!r}" for name, value in values.items()]
         # 移行元はimport・実行せず、ASTの代入だけを読むことも確認する。
         lines.append('raise AssertionError("旧設定を実行してはいけません")')
-        self.private_source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.config_source = "\n".join(lines) + "\n"
 
     def run_main(self, *args):
         output = io.StringIO()
@@ -70,7 +82,7 @@ class MigrationLoggingTests(unittest.TestCase):
             "API_KEY_GEMINI": 'FAKE\\ESCAPED_SENTINEL\\"quoted"\nGEND',
             "TOKEN_DISCORD": 'MOCK\\DISCORD_SENTINEL\\"quoted"\nDEND',
         }
-        self.write_source(values)
+        self.set_source(values)
         result, output = self.run_main("--dry-run")
         self.assertEqual(result, 0)
         self.assert_no_secret_fragments(output, values)
@@ -80,7 +92,7 @@ class MigrationLoggingTests(unittest.TestCase):
 
     def test_dry_run_output_does_not_depend_on_secret_content_or_length(self) -> None:
         _, before = self.run_main("--dry-run")
-        self.write_source({"API_KEY_GEMINI": "tiny", "TOKEN_DISCORD": "different-long-fictional-value"})
+        self.set_source({"API_KEY_GEMINI": "tiny", "TOKEN_DISCORD": "different-long-fictional-value"})
         result, after = self.run_main("--dry-run")
         self.assertEqual(result, 0)
         self.assertEqual(after, before)
@@ -120,7 +132,7 @@ class MigrationLoggingTests(unittest.TestCase):
         self.assert_no_secret_fragments(output)
 
     def test_missing_key_does_not_log_the_available_secret(self) -> None:
-        self.write_source({"API_KEY_GEMINI": self.values["API_KEY_GEMINI"]})
+        self.set_source({"API_KEY_GEMINI": self.values["API_KEY_GEMINI"]})
         result, output = self.run_main("--dry-run")
         self.assertEqual(result, 1)
         self.assertIn("TOKEN_DISCORD", output)
