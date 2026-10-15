@@ -70,7 +70,13 @@ python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py'))
 python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
-現時点では、常設の自動テストスイートやリンター設定はありません。自動テストとCIの整備は [Issue #10](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/10) で扱います。PRには、変更に応じた確認内容と結果を記載してください。外部サービスの呼び出しはモックに置き換え、DBの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため、完全ローカルの確認では避けてください。
+文書処理・記憶圧縮の回帰テストは標準ライブラリの `unittest` で実行できます。
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+テスト全般とCIの整備は [Issue #10](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/10) で扱います。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。外部サービスの呼び出しはモックに置き換え、DBの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため、完全ローカルの確認では避けてください。
 
 ## Discord・Geminiを使う確認
 

@@ -247,21 +247,52 @@ class DocumentService:
             # 文書要約は投稿者の記憶スペースへ保存する（ユーザー別記憶）。
             await self._memory.store_document_summary(author_id, summary_data)
         finally:
-            if uploaded_file is not None:
-                await self._gemini.delete_file(uploaded_file)
-            if temp_path is not None and temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except Exception as error:
-                    print(f"一時ファイル削除エラー: {error}")
+            try:
+                if uploaded_file is not None:
+                    await self._gemini.delete_file(uploaded_file)
+            finally:
+                # アップロード先の削除が失敗しても、ローカルの回収を実行する。
+                if temp_path is not None:
+                    self._remove_temp_file(temp_path)
 
     async def _download_to_temp_file(self, attachment: discord.Attachment, suffix: str) -> Path:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        temp_file.close()
         temp_path = Path(temp_file.name)
-        temp_bytes = await attachment.read()
-        await asyncio.to_thread(temp_path.write_bytes, temp_bytes)
-        return temp_path
+        downloaded = False
+        try:
+            temp_file.close()
+            temp_bytes = await attachment.read()
+            write_task = spawn(
+                asyncio.to_thread(temp_path.write_bytes, temp_bytes), label="文書の一時ファイル書き込み"
+            )
+            try:
+                await asyncio.shield(write_task)
+            except asyncio.CancelledError:
+                # to_thread の書き込みはキャンセルしても止まらない。
+                # 完了前に削除すると、遅れて write_bytes がファイルを再作成し得る。
+                while not write_task.done():
+                    try:
+                        await asyncio.shield(write_task)
+                    except asyncio.CancelledError:
+                        # 停止要求が重なっても、書き込みの終了までは回収を待つ。
+                        continue
+                    except Exception:
+                        # キャンセルを優先し、書き込みエラーは spawn のログに残す。
+                        break
+                raise
+            downloaded = True
+            return temp_path
+        finally:
+            # 正常に返した時点で呼び出し側へ所有権を渡す。それまではここで回収する。
+            if not downloaded:
+                self._remove_temp_file(temp_path)
+
+    @staticmethod
+    def _remove_temp_file(temp_path: Path) -> None:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError as error:
+            print(f"一時ファイル削除エラー: {error}")
 
 
 def validate_pdf_file(temp_path: Path) -> None:
