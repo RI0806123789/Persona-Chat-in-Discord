@@ -195,7 +195,7 @@ ver0.1.5 以前の `index/config_private.py` から `.env` を自動で作れま
 
 ```bash
 python3 deploy/migrate_config_to_env.py             # .env を作る（既にあれば上書きせず中断）
-python3 deploy/migrate_config_to_env.py --dry-run   # 書き込まずに内容だけ表示（キーは伏せ字）
+python3 deploy/migrate_config_to_env.py --dry-run   # 書き込まずに取得できるキー名だけ確認（値は表示しない）
 python3 deploy/migrate_config_to_env.py --force     # 既存の .env を上書き
 ```
 
@@ -355,6 +355,11 @@ systemctl status bot                        # "active (running)" なら成功
 ## 📋 更新履歴
 
 ### ver0.1.7(BETA)
+
+#### 移行スクリプトのログ出力を修正
+
+- 旧設定から `.env` を作る際、キーの採用ログから値の一部や文字数の表示を除去
+- `--dry-run` はキー名と固定の非表示ラベルだけを表示。実キーを含む本文からの置換に頼らず、引用符・改行を含む値もログへ出さない
 
 #### リマインダー・チャット設定の不具合修正
 
