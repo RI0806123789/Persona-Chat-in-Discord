@@ -48,6 +48,8 @@ class AutonomousSession:
     last_comment_reply_at: datetime | None = None
     # これまでに喋った独り言の回数（プロンプトで「話し始めか続きか」を伝えるのに使う）。
     turn_count: int = 0
+    # 自分で開いた枠のID。同じチャンネルで他の枠が開き直されても誤って閉じない。
+    stage_instance_id: int | None = None
 
 
 @dataclass(frozen=True)

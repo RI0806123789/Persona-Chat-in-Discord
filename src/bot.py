@@ -20,7 +20,7 @@ from app_state import BotState
 from affinity_service import AffinityService
 from auto_topic_service import AutoTopicService
 from autonomous_service import AutonomousService
-from background import make_guarded_loop, spawn
+from background import make_guarded_loop, run_in_thread, spawn
 from blacklist_service import BlacklistService
 from commands import register_commands
 from constants import (
@@ -156,7 +156,8 @@ feedback_prune_loop = make_guarded_loop(
 @client.event
 async def on_ready() -> None:
     print(f"ログイン成功: {client.user}")
-    memory.ensure_storage()
+    async with memory.io_lock:
+        await run_in_thread(memory.ensure_storage)
 
     if not state.memory_background_started:
         memory_maintenance_loop.start()

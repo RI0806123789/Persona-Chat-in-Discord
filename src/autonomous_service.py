@@ -165,7 +165,7 @@ class AutonomousService:
     見回り（`run_pending_checks`）はサーバーを横断して次の3つを行う:
       ・配信していないサーバー … ゲージを見て、満タンなら配信を始める
       ・配信中のサーバー       … 停止条件の確認と、独り言の投下
-      ・接続が失われたサーバー … 残ったセッション記録の片付け
+      ・接続が失われたサーバー … 自分のステージ枠・接続・セッション記録の片付け
 
     コメントの受け取り（`mark_activity` / `is_comment_channel` /
     `handle_comment`）は `bot.py` の `on_message` から呼ばれる。
@@ -448,8 +448,7 @@ class AutonomousService:
         # 記録だけが残るので、喋ろうとする前に片付ける。
         voice_client = guild.voice_client
         if not isinstance(voice_client, discord.VoiceClient) or not voice_client.is_connected():
-            print(f"自律行動: ボイス接続が失われたため配信の記録を片付けます（guild={guild.id}）。")
-            self._clear_session(guild_settings)
+            await self.stop_session(guild.id, reason="ボイス接続が失われた")
             return
 
         # 管理者にドラッグで別のチャンネルへ移されることがある。接続は生きたままなので
@@ -533,10 +532,10 @@ class AutonomousService:
             self._record_start_failure(guild_settings)
             return
 
-        stage_started_by_bot = False
+        stage_instance_id = None
         if is_stage:
             try:
-                stage_started_by_bot = await self._prepare_stage(guild, channel)
+                stage_instance_id = await self._prepare_stage(guild, channel)
             except Exception as error:
                 # 発言者になれないステージで喋っても誰にも聞こえないため、
                 # 中途半端に居座らず接続ごと諦める。
@@ -556,7 +555,8 @@ class AutonomousService:
             started_at=now,
             last_human_at=now,
             last_spoke_at=now,
-            stage_started_by_bot=stage_started_by_bot,
+            stage_started_by_bot=stage_instance_id is not None,
+            stage_instance_id=stage_instance_id,
             # 第一声を作っている間に独り言が重ならないよう、最初から busy にしておく。
             busy=True,
         )
@@ -589,18 +589,18 @@ class AutonomousService:
             f"次に試すのは約 {wait_minutes:.0f} 分後です。"
         )
 
-    async def _prepare_stage(self, guild: discord.Guild, channel: discord.StageChannel) -> bool:
-        """ステージで発言できる状態にする。自分でステージ枠を開いたら True を返す。
+    async def _prepare_stage(self, guild: discord.Guild, channel: discord.StageChannel) -> int | None:
+        """ステージで発言できる状態にし、自分で開いた枠のIDを返す。
 
         ステージチャンネルは参加しただけでは「観客」（suppress=True）のままで
         音声を流せない。自分の抑制を解除するには mute_members 権限が要る。
         ステージ枠（StageInstance）がまだ無ければ自分で開く — その看板（topic）が
         チャンネル一覧に出るので、「会話相手募集中…」を人に見せる手段にもなる。
-        他の人が開いた枠に相乗りした場合は False を返し、終了時にも閉じない。
+        他の人が開いた枠に相乗りした場合は None を返し、終了時にも閉じない。
         """
-        started_by_bot = False
+        created_instance = None
         if channel.instance is None:
-            await channel.create_instance(
+            created_instance = await channel.create_instance(
                 topic=AUTONOMOUS_STAGE_TOPIC,
                 privacy_level=discord.PrivacyLevel.guild_only,
                 # **send_start_notification を True にしないこと。** True にすると
@@ -610,7 +610,6 @@ class AutonomousService:
                 send_start_notification=False,
                 reason="ボットの自律行動による配信開始",
             )
-            started_by_bot = True
 
         try:
             # connect() 直後は自分のボイス状態がまだキャッシュに乗っておらず、
@@ -635,16 +634,16 @@ class AutonomousService:
             # 枠を開いた後で発言者になれなかった場合、そのまま抜けると「会話相手
             # 募集中…」の看板を出したステージが誰も居ないまま開きっぱなしになる。
             # 自分で開いた枠だけは閉じてから、失敗を呼び出し元へ伝える。
-            if started_by_bot:
+            if created_instance is not None:
                 instance = channel.instance
-                if instance is not None:
+                if instance is None or instance.id == created_instance.id:
                     try:
-                        await instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
+                        await created_instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
                     except discord.HTTPException as error:
                         print(f"自律行動: 中止時のステージ枠の終了に失敗しました（{channel.name}）: {error}")
             raise
 
-        return started_by_bot
+        return created_instance.id if created_instance is not None else None
 
     async def stop_session(
         self,
@@ -670,40 +669,81 @@ class AutonomousService:
         if session is None:
             return False
 
+        # 待機中に /join や別の配信へ接続が差し替わっても、その接続を切らない。
+        # 接続の情報源は常に guild.voice_client とし、ここでは照合用の参照だけを控える。
+        guild = self._client.get_guild(guild_id)
+        voice_client = guild.voice_client if guild is not None else None
         # 先に記録を消す。ここから切断までの間に見回りが来ても、二重に停止処理を
         # 走らせない（同じステージ枠を2回消そうとするのを防ぐ）。
         self._clear_session(guild_settings)
 
-        guild = self._client.get_guild(guild_id)
-        channel = self._client.get_channel(session.channel_id)
-
-        # 以下2つの後片付けは、どちらも失敗しても**先へ進める**こと。ここで例外を
-        # 通すと最後の切断に到達せず、セッション記録だけ消えた状態でボイス接続が
-        # residue として残る（誰も止められなくなる）。そのため HTTPException だけで
-        # なく想定外の例外もログにして飲み込む。
-        if notice and channel is not None:
-            try:
-                await send_long_message(channel, notice, allowed_mentions=_NO_MENTIONS)
-            except discord.HTTPException as error:
-                print(f"自律行動: 締めの投稿に失敗しました（guild={guild_id}）: {error}")
-            except Exception as error:
-                print(f"自律行動: 締めの投稿で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
-
-        if session.stage_started_by_bot and isinstance(channel, discord.StageChannel):
-            instance = channel.instance
-            if instance is not None:
+        canceled = False
+        channel = None
+        try:
+            channel = self._client.get_channel(session.channel_id)
+            # 終了案内の送信だけは呼出元と一緒にキャンセルし、後片付けへ進む。
+            if notice and channel is not None:
                 try:
-                    await instance.delete(reason="ボットの自律行動による配信終了")
+                    await send_long_message(channel, notice, allowed_mentions=_NO_MENTIONS)
                 except discord.HTTPException as error:
-                    print(f"自律行動: ステージ枠の終了に失敗しました（guild={guild_id}）: {error}")
+                    print(f"自律行動: 締めの投稿に失敗しました（guild={guild_id}）: {error}")
                 except Exception as error:
-                    print(f"自律行動: ステージ枠の終了で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
-
-        if guild is not None:
-            await self._disconnect(guild)
+                    print(f"自律行動: 締めの投稿で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
+        except asyncio.CancelledError:
+            canceled = True
+        finally:
+            cleanup = spawn(
+                self._finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
+                label="自律行動の終了後片付け",
+            )
+            while True:
+                try:
+                    await asyncio.shield(cleanup)
+                    break
+                except asyncio.CancelledError:
+                    if cleanup.cancelled():
+                        raise
+                    # キャンセルを繰り返されても、ステージ枠と元の接続を片付け終える。
+                    canceled = True
 
         print(f"自律行動: 配信を終了しました（guild={guild_id} / 理由: {reason}）。")
+        if canceled:
+            raise asyncio.CancelledError
         return True
+
+    async def _finish_session_cleanup(
+        self, guild_id: int, guild_settings: GuildSettings, session: AutonomousSession,
+        channel: Any, guild: discord.Guild | None, voice_client: discord.VoiceProtocol | None,
+    ) -> None:
+        """呼出元のキャンセルから独立して、所有枠の終了と元の接続の切断を完了する。"""
+        try:
+            await self._close_owned_stage(guild_id, guild_settings, session, channel)
+        finally:
+            # 新しい配信に同じVoiceClientが引き継がれた場合も、その配信を優先する。
+            if guild is not None and voice_client is not None and guild_settings.autonomous_session is None:
+                await self._disconnect(guild, expected_voice_client=voice_client)
+
+    async def _close_owned_stage(
+        self, guild_id: int, guild_settings: GuildSettings,
+        session: AutonomousSession, channel: Any,
+    ) -> None:
+        """自分が開いた枠だけを閉じる。待機中に始まった別の配信には触らない。"""
+        if (not session.stage_started_by_bot or session.stage_instance_id is None
+                or not isinstance(channel, discord.StageChannel)
+                or guild_settings.autonomous_session is not None):
+            return
+        try:
+            instance = channel.instance
+            if instance is None:
+                # 作成直後やキック後はキャッシュに枠が無くても、Discord上には残りうる。
+                instance = await channel.fetch_instance()
+            if (guild_settings.autonomous_session is None
+                    and instance.id == session.stage_instance_id):
+                await instance.delete(reason="ボットの自律行動による配信終了")
+        except discord.HTTPException as error:
+            print(f"自律行動: ステージ枠の終了に失敗しました（guild={guild_id}）: {error}")
+        except Exception as error:
+            print(f"自律行動: ステージ枠の終了で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
 
     def _clear_session(self, guild_settings: GuildSettings) -> None:
         """セッション記録を破棄し、「話したいゲージ」を空にする。
@@ -715,10 +755,12 @@ class AutonomousService:
         guild_settings.autonomous_last_activity = datetime.now(timezone.utc)
         guild_settings.autonomous_recent_activity.clear()
 
-    async def _disconnect(self, guild: discord.Guild) -> None:
+    async def _disconnect(
+        self, guild: discord.Guild, *, expected_voice_client: discord.VoiceProtocol | None = None,
+    ) -> None:
         """ボイス接続を切る（既に切れていても例外を外へ出さない）。"""
         voice_client = guild.voice_client
-        if voice_client is None:
+        if voice_client is None or (expected_voice_client is not None and voice_client is not expected_voice_client):
             return
         try:
             await voice_client.disconnect(force=True)

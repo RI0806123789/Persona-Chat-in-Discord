@@ -91,8 +91,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             ),
             "stats": SimpleNamespace(record=AsyncMock()),
             "memory": SimpleNamespace(
-                ensure_storage=Mock(), build_context=Mock(return_value=""),
-                build_document_memory_context=Mock(return_value=""),
+                build_contexts=AsyncMock(return_value=("", "")),
                 append_pending_log=AsyncMock(), flush_if_needed=AsyncMock(),
             ),
             "affinity": SimpleNamespace(build_dynamic_prompt=Mock(return_value="架空の親密度")),

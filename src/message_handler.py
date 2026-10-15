@@ -9,7 +9,7 @@ import discord
 
 from affinity_service import extract_affinity_changes
 from app_state import BotState, ResponseSettings
-from background import spawn
+from background import run_in_thread, spawn
 from constants import (
     BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES,
@@ -62,7 +62,7 @@ class MessageHandler:
 
     async def notify_violation(self, message: discord.Message, notice: str) -> None:
         """違反を1回記録し、ブロック状況に応じた警告をユーザーに返信する。"""
-        count, just_blocked = self.blacklist.record_violation(message.author.id, str(message.author))
+        count, just_blocked = await self.blacklist.record_violation(message.author.id, str(message.author))
         if just_blocked:
             await message.reply(
                 "🚫 違反が3回に達したため、ブラックリストに登録されました。"
@@ -240,8 +240,6 @@ class MessageHandler:
         if response_settings is None:
             response_settings = guild_settings.snapshot_response()
         async with message.channel.typing():
-            self.memory.ensure_storage()
-
             user_id = str(message.author.id)
             image_objects = await load_image_attachments(message.attachments)
             if not question:
@@ -255,11 +253,10 @@ class MessageHandler:
             )
             # 記憶カテゴリは on_message のモデレーション統合判定で既に決まっている
             # （追加の Gemini 呼び出しはしない）。ユーザー別の記憶スペースを読み込む。
-            memory_context = self.memory.build_context(memory_category, user_id)
-            document_context = self.memory.build_document_memory_context(user_id)
+            memory_context, document_context = await self.memory.build_contexts(memory_category, user_id)
 
             try:
-                prompt = load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
+                prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file)))
             except FileNotFoundError:
                 print(f"エラー: {response_settings.prompt_file} が見つかりません。")
                 await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")
