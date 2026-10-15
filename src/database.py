@@ -1,13 +1,17 @@
 """SQLite データベース層（memory/bot.db）。
 
-これまで memory/ 配下の JSON / テキストファイルで持っていた以下のデータを
-SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
+以下の9テーブルを SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
+旧 JSON / テキストファイルから移したデータと、その後追加した機能のデータを持つ。
 
   - affinity     … ユーザーごとの親密度・感情（旧 affinity.json）
   - user_stats   … ユーザー別会話統計（旧 user_stats.json）
   - queue_tasks  … 文書処理タスクキュー（旧 queue.json）
   - pending_log  … 記憶圧縮前の一時会話ログ（旧 pending_log.txt）。user_id 列でユーザー別。
   - profile      … プロフィール記憶。(user_id, key) の複合主キーでユーザー別。値はJSON文字列。
+  - guild_settings … サーバーごとの設定。DM は共通の設定枠。
+  - anniversary_posts … サーバー・ユーザー・記念日ごとの最終お祝い投稿日。
+  - reminders    … ユーザーごとの通知予定・繰り返し・通知/取り消し状態。
+  - feedback     … ボット返信への評価。(message_id, user_id) ごとに記録する。
 
 projects.json は LLM が構造を自由に決める JSON のため、
 テーブル化せず従来どおりファイルのまま扱う。
@@ -24,8 +28,9 @@ profile.json は毎回の起動時にチェックされ、中身があれば pro
 その内容が自動的にデータベースの記憶へ追加される。
 
 ■ スキーマを後から変更したくなったら（列の追加など）
-SCHEMA_VERSION を 1 つ上げ、_MIGRATIONS にそのバージョン番号で ALTER TABLE 文を
-追記するだけでよい。適用済みバージョンは DB 内の PRAGMA user_version に記録され、
+SCHEMA_VERSION を 1 つ上げ、_MIGRATIONS にそのバージョン番号で変更用の SQL 文を
+追記する。対応する読み込み・保存処理も更新する。
+適用済みバージョンは DB 内の PRAGMA user_version に記録され、
 起動時に未適用の分だけが順番に実行される（二重適用されない）。
 _CREATE_TABLE_STATEMENTS は初版（バージョン1）の形のまま変更しないこと —
 列の追加・変更は必ず _MIGRATIONS 側で行う（新規 DB にも同じ移行が走るため、
@@ -51,9 +56,9 @@ SCHEMA_VERSION = 9
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
-#   SCHEMA_VERSION = 4 に上げて、ここに
-#   4: ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"],
-#   のように追記する。既存 DB・新規 DB の両方に自動適用される。
+#   SCHEMA_VERSION を現在値から 1 つ上げ、その新しい番号をキーとして
+#   ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"]
+#   を追記する。既存 DB・新規 DB の両方に自動適用される。
 _MIGRATIONS: dict[int, list[str]] = {
     # バージョン2: プロフィール記憶を profile.json から DB へ移行
     2: [

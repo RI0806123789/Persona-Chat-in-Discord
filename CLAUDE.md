@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（`/join` 中のみ・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ソースはすべて `src/` にある。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
+Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（ボイス接続中・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ソースはすべて `src/` にある。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
 
 ## 作業の進め方
 
@@ -79,7 +79,7 @@ pip install -r requirements.txt
 #    cp .env.example .env してから API_KEY_GEMINI= と TOKEN_DISCORD= の右辺を実キーに書き換える。
 #    .env は gitignore 済み。未設定のまま起動すると "キー未設定" を出して例外で停止する。
 
-# 3. Opus 共有ライブラリは /join のボイス TTS でのみ必要（FFmpeg はもう使わない）
+# 3. Opus 共有ライブラリはボイス TTS（/join・自律行動）で必要（FFmpeg はもう使わない）
 #    Windows: 不要（discord.py が opus の DLL を同梱している）
 #    Linux:   sudo apt install -y libopus0
 #
@@ -111,7 +111,7 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ### 配線 (`bot.py`)
 
-`bot.py` がコンポジションルート（合成の起点）。設定を読み込み、`genai` を構成し、`Database`（`database.py`、後述）を最初に初期化してから、各サービスのインスタンスを1つずつ生成して、DI フレームワークを使わず手作業で相互に注入する。共有される可変ランタイム状態はすべて単一の `BotState` データクラス（`app_state.py`）にまとめられ、必要なサービスに渡される。**ただしペルソナ・モデル・応答モードなど「サーバーごとに変わる設定」は `BotState` 直下ではなく `GuildSettings` に入っている**（「ギルド単位の設定」の項を参照）。`register_commands`（`commands.py`）がスラッシュコマンドを `CommandTree` に登録する。`on_ready` でコマンドを同期し、各種の見回りループ（`memory_maintenance_loop` / `auto_topic_loop` / `autonomous_loop` / `anniversary_loop` / `reminder_loop` / `feedback_prune_loop`。いずれも `background.make_guarded_loop` で作る）を開始し、文書ワーカーのコルーチンを起動する。ループの二重起動は `BotState` の `*_background_started` フラグで防ぐ（`on_ready` は再接続のたびに発火するため）。
+`bot.py` がコンポジションルート（合成の起点）。設定を読み込み、`genai_client.create_genai_client` で共有SDKクライアントを生成し、`Database`（`database.py`、後述）を最初に初期化してから、各サービスのインスタンスを1つずつ生成して、DI フレームワークを使わず手作業で相互に注入する。共有される可変ランタイム状態はすべて単一の `BotState` データクラス（`app_state.py`）にまとめられ、必要なサービスに渡される。**ただしペルソナ・モデル・応答モードなど「サーバーごとに変わる設定」は `BotState` 直下ではなく `GuildSettings` に入っている**（「ギルド単位の設定」の項を参照）。`register_commands`（`commands.py`）がスラッシュコマンドを `CommandTree` に登録する。`on_ready` でコマンドを同期し、各種の見回りループ（`memory_maintenance_loop` / `auto_topic_loop` / `autonomous_loop` / `anniversary_loop` / `reminder_loop` / `feedback_prune_loop`。いずれも `background.make_guarded_loop` で作る）を開始し、文書ワーカーのコルーチンを起動する。ループの二重起動は `BotState` の `*_background_started` フラグで防ぐ（`on_ready` は再接続のたびに発火するため）。
 
 ### ギルド単位の設定 (`app_state.py`)
 
@@ -170,21 +170,21 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 添付ファイルはチャットをブロックしないよう別系統で処理される。`enqueue_from_message` がタスクを DB の `queue_tasks` テーブルに書き込み（`author_id` を含む）、単一のワーカーコルーチンが `pending` タスクを取得し、一時ファイルへダウンロードし、検証し、Gemini へアップロードし、構造化 JSON へ要約し、要約を**投稿者（`author_id`）の** `projects.json` スライスへ保存し、返信を生成し、その後アップロード済みファイルと一時ファイルを削除する。起動時、`processing` のまま止まっているタスク（処理中にボットがクラッシュしたもの）は `pending` へ戻される。完了済みタスクは `QUEUE_MAX_FINISHED_TASKS` 件に切り詰められる。タスクの取得（claim）は SELECT と UPDATE を同一トランザクションで行うため二重取得されない。
 
-### Gemini 呼び出し (`gemini_service.py`)
+### Gemini 呼び出し (`gemini_service.py`, `genai_client.py`)
 
-`generate(...)` により2つの生成経路が選択される:
-- **グラウンディング ON + 画像なし** → Generative Language API への直接REST呼出で `google_search` を使う。検索ツール非対応を示す400/404/422に限り、`GROUNDING_SUBMODEL_RETRY_ENABLED` が真なら `GROUNDING_MODEL_NAME` を1回試し、続いてユーザーの選択モデルのSDKへ進む。SDKでも検索ツール非対応の場合だけ検索なしへ進む。タイムアウト・5xx・認証・利用枠・その他の通信エラーでは追加APIを呼ばない。RESTの接続は1回の生成内で共有し、終了時に閉じる。
-- **それ以外** → SDK の `generate_content_async`（画像とSDK側のグラウンディングも担う）。
+`google-genai` の共有 `Client` を、生成・モデレーション・記憶ルーティング・記憶圧縮・文書処理へ注入する。接続先の種類はGemini Developer APIを明示し、APIキーはSDKがヘッダーに載せる。独自REST経路は使わない。Discord側は `bot_client.PersonaClient` を使い、終了時に `close_genai_client` でSDKの非同期・同期接続と、factoryが所有するHTTPX接続を閉じる。SDKは渡されたHTTPX接続を閉じないため、共通終了処理を使う。
 
-`generate` の開始時にmonotonicな締切を1回だけ決め、REST・SDK・検索なしへの各段に残り時間だけを渡す。SDKにも `request_options` の `timeout` と `retry=None` を渡し、外側の `wait_for` で接続開始・終了を含む生成全体を制限する。期限切れは `(None, None, [])`、利用者からのキャンセルは伝播する。timeout未指定の検索付き生成は `GROUNDING_REQUEST_TIMEOUT_SECONDS` を使う。記憶取得や生成後のモデレーションはこの生成期限の対象外。
+生成は `genai_client.generate_content` → `client.aio.models.generate_content` へ集約する。画像はPIL画像をSDKに渡し、検索は `types.Tool(google_search=types.GoogleSearch())` を指定する。検索非対応を示す400/404/422の場合だけ、設定が有効なら `GROUNDING_MODEL_NAME` で検索を試し、最後にユーザーの選択モデルで検索なしへ進む。タイムアウト・5xx・認証・利用枠・その他の通信エラーでは追加生成しない。サブモデルを使っても、最後の非検索生成には元の `model_name` を渡す。
 
-`_generate_with_grounding` では、**ユーザーが選択したモデル（`model_name`）をリトライ用モデルで上書きしないこと**。上書きすると、サブモデルでのリトライも失敗したときの最終 SDK フォールバックが選択モデルではなく `GROUNDING_MODEL_NAME` で実行され、ユーザーの設定とは別モデルの回答が黙って返る。リトライ中に実際に使うモデルは `effective_model` として分けて持つ。
+`GeminiService.generate` は開始時にmonotonicな締切を1回だけ決め、各段に残り時間だけを渡す。共通入口は秒をSDKの `HttpOptions.timeout`（ミリ秒）へ変換し、`HttpRetryOptions(attempts=1)` で生成のSDK内部リトライを止め、`asyncio.wait_for` でも同じ時間を制限する。期限切れは `(None, None, [])`、利用者からのキャンセルは伝播する。timeout未指定の検索付き生成は `GROUNDING_REQUEST_TIMEOUT_SECONDS` を使う。記憶取得や生成後のモデレーションはこの生成期限の対象外。
 
-Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこと — `response.text` はプロパティで、候補がブロック（`PROHIBITED_CONTENT`）されると**例外を投げる**ため、単なる `getattr` では防げない。モデルの JSON は `storage.extract_json_object` でパースすること（``` フェンスを除去し、ネストしたオブジェクトにも耐える波括弧バランス抽出を行う）。
+アップロード・削除は `client.aio.files`、文書要約は共通の生成入口を使う。PDFは `application/pdf`、txt/csv/mdは `text/plain` を明示し、ファイル転送にも全体の期限を設ける。factoryは公開HTTPXクライアントを指定し、aiohttp経路のSDK独自再送を避ける。転送transportはuploadコマンドの応答に必須の状態ヘッダーがない場合、応答を閉じて明示的に失敗させる。これによりSDK内の同期sleep・再送を防ぎ、イベントループと期限管理を保つ。SDKのprivate実装は上書きしない。
+
+Geminiのテキストは `storage.safe_response_text` から取得する。空候補・プロンプトや候補の安全ブロックでは本文を返さず、思考パートはSDKの本文取得で除外される。`get_prompt_block_reason` は新SDKの文字列enumと旧形式の数値enumを区別し、未指定をブロックと誤認しない。モデルのJSONは `storage.extract_json_object` でフェンス除去とネストを扱ってパースする。
 
 ### 親密度 / 感情 (`affinity_service.py`)
 
-ユーザーごとの2次元感情（valence/arousal、30分の半減期で 50 へ減衰）に加えて、緩やかに変動する親密度。DB の `affinity` テーブルに永続化される。モデルには返信の末尾に `[V:X, A:Y]` タグを付けるよう指示しており、`handle_chat_message` がそのタグを抽出・除去してから送信し、その後に親密度を更新する。保存は `asyncio.Lock` で直列化される。
+ユーザーごとの2次元感情（valence/arousal、30分の半減期で 50 へ減衰）に加えて、緩やかに変動する親密度。DB の `affinity` テーブルに永続化される。モデルには返信の末尾に `[V:X, A:Y]` タグを付けるよう指示しており、`handle_chat_message` がタグを抽出・除去し、親密度・感情を更新して対象ユーザー分の保存を開始する。本文はその後にモデレーション・送信される。保存は `asyncio.Lock` で直列化される。
 
 通常の保存は `AffinityService.save_background(user_id)` → `Database.affinity_upsert(user_id, entry)` で対象1行だけを更新する。`affinity_save_all` は明示的な全件置換用で、返信ごとの保存には使わない。ロック内で対象の現在値だけをコピーし、キャンセル時も `run_in_thread` の完了までロックを保持する。親密度・機嫌・テンション・`last_interaction` の4項目を保存・復元し、半減期・中立値・上下限・親密度の増減しきい値は `AFFINITY_*` から参照する。
 

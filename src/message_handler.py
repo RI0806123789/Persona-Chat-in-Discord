@@ -130,7 +130,8 @@ class MessageHandler:
             if claimed_comment_session is None:
                 return
 
-        # ここでの category は使わない（安全判定だけが効く）。
+        # 安全判定・記憶カテゴリ・リマインダー依頼を1回のAPI呼び出しで取得する。
+        # memory_categoryは通常チャットの記憶参照へ、reminder_requestは添付の振り分け後の登録へ渡す。
         memory_category = "none"
         reminder_request: dict[str, str] | None = None
         if question:
@@ -222,7 +223,7 @@ class MessageHandler:
             print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
             return
         if response_text:
-            # ボットが /join でボイスチャンネルに接続中のときだけ読み上げる（それ以外は no-op）。
+            # ボイス接続中なら、自律行動による参加中も読み上げる（未接続なら no-op）。
             # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
             await play_tts_response(message, response_text, tts_prompt_file)
 

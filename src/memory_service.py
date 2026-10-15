@@ -24,6 +24,7 @@ from constants import (
     ROUTER_TIMEOUT_SECONDS,
 )
 from database import Database
+from genai_client import generate_content
 from prompting import build_memory_compaction_prompt, build_router_prompt
 from storage import (
     extract_json_object,
@@ -57,9 +58,9 @@ def default_projects_memory() -> dict[str, Any]:
 
 
 class MemoryService:
-    def __init__(self, state: BotState, genai_module: Any, db: Database) -> None:
+    def __init__(self, state: BotState, genai_client: Any, db: Database) -> None:
         self._state = state
-        self._genai = genai_module
+        self._genai_client = genai_client
         self._db = db
         self.io_lock = asyncio.Lock()
         self.flush_lock = asyncio.Lock()
@@ -185,14 +186,10 @@ class MemoryService:
             return "none"
 
         try:
-            model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
             router_prompt = build_router_prompt(question)
-            response = await asyncio.wait_for(
-                model.generate_content_async(
-                    router_prompt,
-                    generation_config={"temperature": 0, "response_mime_type": "application/json"},
-                ),
-                timeout=ROUTER_TIMEOUT_SECONDS,
+            response = await generate_content(
+                self._genai_client, model=ROUTER_MODEL_NAME, contents=router_prompt,
+                timeout=ROUTER_TIMEOUT_SECONDS, temperature=0, response_mime_type="application/json",
             )
             parsed = extract_json_object(safe_response_text(response) or "")
             category = str((parsed or {}).get("category", "none")).lower()
@@ -422,13 +419,9 @@ class MemoryService:
             ANNIVERSARY_PROFILE_KEY,
         )
 
-        model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
-        response = await asyncio.wait_for(
-            model.generate_content_async(
-                compactor_prompt,
-                generation_config={"temperature": 0, "response_mime_type": "application/json"},
-            ),
-            timeout=MEMORY_COMPACT_TIMEOUT_SECONDS,
+        response = await generate_content(
+            self._genai_client, model=ROUTER_MODEL_NAME, contents=compactor_prompt,
+            timeout=MEMORY_COMPACT_TIMEOUT_SECONDS, temperature=0, response_mime_type="application/json",
         )
 
         # Gemini がプロンプトをブロックした場合を検知

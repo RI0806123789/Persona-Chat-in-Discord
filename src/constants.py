@@ -362,7 +362,7 @@ FEEDBACK_PRUNE_MINUTES = 60.0
 # /functions → ❓ 使い方 からいつでも読める。
 WELCOME_MESSAGE_ENABLED = True
 
-# ボイスチャンネルの読み上げ (/join 中のみ動作) 用
+# ボイスチャンネルの読み上げ（/join・自律行動での接続中）用
 # 退避先の gTTS に渡す言語コード（主エンジンの edge-tts は話者名で言語が決まる）。
 TTS_LANG = "ja"
 # 読み上げる最大文字数。超過分は切り捨てて末尾に TTS_TRUNCATION_NOTICE を付ける。

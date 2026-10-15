@@ -1,9 +1,10 @@
 import asyncio
+from math import ceil
 from pathlib import Path
 from time import monotonic
 from typing import Any, Sequence
 
-import httpx
+from google.genai import types
 
 from constants import (
     DOCUMENT_SUMMARY_TIMEOUT_SECONDS,
@@ -13,10 +14,9 @@ from constants import (
     GROUNDING_SUBMODEL_RETRY_ENABLED,
     MAX_GROUNDING_SOURCES,
 )
+from genai_client import generate_content
 from prompting import build_document_summary_prompt
 from storage import extract_json_object, safe_response_text
-
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 def _remaining_timeout(deadline: float | None) -> float | None:
@@ -43,16 +43,10 @@ def _grounding_is_unsupported(status_code: Any, message: str) -> bool:
 
 
 class GeminiService:
-    """Gemini API 呼び出しをまとめるサービス。
+    """共有クライアントを使い、呼び出し元が選んだモデルで非同期生成する。"""
 
-    どのモデルを使うかはギルド（サーバー）ごとに異なりうるため、モデル名は
-    内部で保持せず、呼び出し側（GuildSettings.current_model_name 等）から
-    毎回 model_name 引数として渡してもらう設計にしている。
-    """
-
-    def __init__(self, genai_module: Any, api_key: str = "") -> None:
-        self._genai = genai_module
-        self._api_key = api_key
+    def __init__(self, client: Any) -> None:
+        self._client = client
 
     async def generate(
         self,
@@ -67,185 +61,84 @@ class GeminiService:
         deadline = monotonic() + budget if budget is not None else None
         try:
             remaining = _remaining_timeout(deadline)
-            if grounding and not images:
-                request = self._generate_with_grounding(prompt, model_name, deadline)
-            else:
-                # 画像は SDK の検索ツールで扱い、REST 経路には渡さない。
-                request = self._generate_with_sdk(prompt, model_name, images, deadline, grounding=grounding)
-            # 接続開始・終了も含めて生成全体を制限する。外部からのキャンセルは捕まえない。
+            request = self._generate(prompt, model_name, images, deadline, grounding)
             result = await asyncio.wait_for(request, timeout=remaining) if remaining is not None else await request
+            # 締切を越えて戻った応答も成功として返さない。
             _remaining_timeout(deadline)
             return result
         except asyncio.TimeoutError:
             print("Gemini生成: 制限時間に達したため打ち切りました。")
             return None, None, []
 
-    def _build_grounding_tools(self) -> list[Any] | None:
-        """SDK 経由のグラウンディング用ツールを構築する。
-
-        gemini-2.x / 3.x は `google_search`、旧 gemini-1.5 系は
-        `google_search_retrieval` を使う。SDK が対応している方を優先して選ぶ。
-        """
-        protos = getattr(self._genai, "protos", None)
-        if protos is None:
-            return None
-
-        if hasattr(protos, "GoogleSearch"):
-            try:
-                return [protos.Tool(google_search=protos.GoogleSearch())]
-            except Exception as error:
-                print(f"検索ツール（google_search）の構築失敗: {error}")
-
-        if hasattr(protos, "GoogleSearchRetrieval"):
-            try:
-                return [protos.Tool(google_search_retrieval=protos.GoogleSearchRetrieval())]
-            except Exception as error:
-                print(f"検索ツール（google_search_retrieval）の構築失敗: {error}")
-
-        return None
-
-    async def _generate_with_sdk(
+    async def _generate(
         self,
         prompt: str,
         model_name: str,
-        images: Sequence[Any] | None = None,
-        deadline: float | None = None,
-        grounding: bool = False,
+        images: Sequence[Any] | None,
+        deadline: float | None,
+        grounding: bool,
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
-        """SDK 経由での生成（フォールバック時にもグラウンディングを維持）。"""
-        try:
-            content: list[Any] = [prompt]
-            if images:
-                content.extend(images)
+        contents: list[Any] = [prompt]
+        if images:
+            contents.extend(images)
+        attempts = [(model_name, grounding)]
+        if grounding:
+            if GROUNDING_SUBMODEL_RETRY_ENABLED and model_name != GROUNDING_MODEL_NAME:
+                attempts.append((GROUNDING_MODEL_NAME, True))
+            attempts.append((model_name, False))
 
-            tools = self._build_grounding_tools() if grounding else None
-            for use_grounding in ((True, False) if grounding and tools else (False,)):
-                remaining = _remaining_timeout(deadline)
-                model = self._genai.GenerativeModel(model_name, tools=tools if use_grounding else None)
-                try:
-                    # SDK内部にも残り時間を渡し、通信障害時の自動再試行を抑える。
-                    request_options: dict[str, Any] = {"retry": None}
-                    if remaining is not None:
-                        request_options["timeout"] = remaining
-                    request = model.generate_content_async(content, request_options=request_options)
-                    response = await asyncio.wait_for(request, timeout=remaining) if remaining is not None else await request
-                    break
-                except asyncio.TimeoutError:
-                    raise
-                except Exception as error:
-                    if use_grounding and _grounding_is_unsupported(getattr(error, "code", None), str(error)):
-                        print("SDK検索ツールが非対応のため、選択モデルで検索なしの生成を試します。")
-                        continue
-                    raise
+        for effective_model, use_grounding in attempts:
+            remaining = _remaining_timeout(deadline)
+            try:
+                options: dict[str, Any] = {}
+                if use_grounding:
+                    options["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+                    print(f"Google検索グラウンディング: 有効（モデル: {effective_model}）")
+                response = await generate_content(
+                    self._client, model=effective_model, contents=contents, timeout=remaining, **options,
+                )
+                sources = self._grounding_sources(response) if use_grounding else []
+                return safe_response_text(response), getattr(response, "usage_metadata", None), sources
+            except asyncio.TimeoutError:
+                raise
+            except Exception as error:
+                if use_grounding and _grounding_is_unsupported(getattr(error, "code", None), str(error)):
+                    print("検索ツールが非対応のため、残り時間内で代替の生成を試します。")
+                    continue
+                # 通信・認証・利用枠・サーバー障害では追加のAPI呼び出しを行わない。
+                print(f"Gemini生成エラー: {error}")
+                return None, None, []
+        return None, None, []
 
-            sources = []
-            if use_grounding:
-                try:
-                    if hasattr(response, "candidates") and response.candidates:
-                        candidate = response.candidates[0]
-                        if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
-                            chunks = getattr(candidate.grounding_metadata, "grounding_chunks", [])
-                            for chunk in chunks[:MAX_GROUNDING_SOURCES]:
-                                web = getattr(chunk, "web", None)
-                                uri = getattr(web, "uri", "") if web is not None else ""
-                                if uri:
-                                    title = getattr(web, "title", "") or ""
-                                    sources.append({"title": title, "uri": uri})
-                except Exception as error:
-                    print(f"SDK検索結果の解析エラー: {error}")
-
-            return safe_response_text(response), getattr(response, "usage_metadata", None), sources
-        except asyncio.TimeoutError:
-            raise
-        except Exception as error:
-            print(f"Gemini SDK生成エラー: {error}")
-            return None, None, []
-
-    async def _generate_with_grounding(
-        self,
-        prompt: str,
-        model_name: str,
-        deadline: float | None = None,
-    ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
-        """REST API 直接呼び出しによるグラウンディング付き生成。
-
-        検索ツール非対応の4xxに限り対応モデル・SDKへ進む。
-        通信やサーバー障害・認証・利用枠不足では、追加のAPI呼び出しをしない。
-        """
-        body: dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],
-        }
-
-        models = [model_name]
-        if GROUNDING_SUBMODEL_RETRY_ENABLED and model_name != GROUNDING_MODEL_NAME:
-            models.append(GROUNDING_MODEL_NAME)
-        try:
-            _remaining_timeout(deadline)
-            # 1回の生成に含まれるREST再試行で接続を共有し、終了時に確実に閉じる。
-            async with httpx.AsyncClient() as client:
-                for effective_model in models:
-                    remaining = _remaining_timeout(deadline)
-                    print(f"🔍 Google検索グラウンディング: 有効（モデル: {effective_model}）")
-                    response = await asyncio.wait_for(
-                        client.post(
-                            f"{GEMINI_API_BASE}/{effective_model}:generateContent",
-                            params={"key": self._api_key}, json=body, timeout=remaining,
-                        ),
-                        timeout=remaining,
-                    )
-                    if response.status_code == 200:
-                        return self._parse_grounding_response(response.json())
-                    print(f"🔍 グラウンディング API エラー: {response.status_code}")
-                    if not _grounding_is_unsupported(response.status_code, response.text):
-                        return None, None, []
-            # サブモデルを使っても、最終SDK生成のモデルはユーザーの選択を保つ。
-            _remaining_timeout(deadline)
-            print(f"   => SDK にフォールバック（モデル: {model_name}）")
-            return await self._generate_with_sdk(prompt, model_name, deadline=deadline, grounding=True)
-        except asyncio.TimeoutError:
-            raise
-        except Exception as error:
-            print(f"🔍 グラウンディング例外: {error}")
-            return None, None, []
-
-    def _parse_grounding_response(
-        self, data: dict[str, Any]
-    ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
-        """REST API レスポンス JSON からテキスト・メタデータ・ソースを抽出する。"""
-        candidates = data.get("candidates", [])
+    @staticmethod
+    def _grounding_sources(response: Any) -> list[dict[str, str]]:
+        candidates = getattr(response, "candidates", None) or []
         if not candidates:
-            return None, None, []
-
-        candidate = candidates[0]
-
-        # テキスト抽出
-        parts = candidate.get("content", {}).get("parts", [])
-        text_parts = [p.get("text", "") for p in parts if "text" in p]
-        text = "".join(text_parts) if text_parts else None
-
-        # 使用量メタデータ
-        usage = data.get("usageMetadata")
-
-        # グラウンディングソース抽出
-        sources: list[dict[str, str]] = []
-        grounding_metadata = candidate.get("groundingMetadata", {})
-        chunks = grounding_metadata.get("groundingChunks", [])
-
+            return []
+        metadata = getattr(candidates[0], "grounding_metadata", None)
+        chunks = getattr(metadata, "grounding_chunks", None) or []
+        sources = []
         for chunk in chunks[:MAX_GROUNDING_SOURCES]:
-            web = chunk.get("web", {})
-            title = web.get("title", "")
-            uri = web.get("uri", "")
+            web = getattr(chunk, "web", None)
+            uri = (getattr(web, "uri", "") or "").strip()
             if uri:
-                sources.append({"title": title.strip(), "uri": uri.strip()})
-
-        print(f"🔍 グラウンディング結果: ソース {len(sources)} 件取得")
-        return text, usage, sources
+                sources.append({"title": (getattr(web, "title", "") or "").strip(), "uri": uri})
+        return sources
 
     async def upload_file(self, file_path: Path) -> Any:
-        upload_file = getattr(self._genai, "upload_file")
+        # テキスト系はOSごとのMIME推定に任せず、モデルが受け取れるtext/plainへ揃える。
+        mime_type = "application/pdf" if file_path.suffix.lower() == ".pdf" else "text/plain"
         return await asyncio.wait_for(
-            asyncio.to_thread(upload_file, str(file_path)),
+            self._client.aio.files.upload(
+                file=file_path,
+                config=types.UploadFileConfig(
+                    mime_type=mime_type,
+                    http_options=types.HttpOptions(
+                        timeout=ceil(DOCUMENT_UPLOAD_TIMEOUT_SECONDS * 1000),
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
+                ),
+            ),
             timeout=DOCUMENT_UPLOAD_TIMEOUT_SECONDS,
         )
 
@@ -254,29 +147,35 @@ class GeminiService:
         if not uploaded_name:
             return
         try:
-            delete_file = getattr(self._genai, "delete_file")
-            await asyncio.to_thread(delete_file, uploaded_name)
+            await asyncio.wait_for(
+                self._client.aio.files.delete(
+                    name=uploaded_name,
+                    config=types.DeleteFileConfig(http_options=types.HttpOptions(
+                        timeout=ceil(DOCUMENT_UPLOAD_TIMEOUT_SECONDS * 1000),
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    )),
+                ),
+                timeout=DOCUMENT_UPLOAD_TIMEOUT_SECONDS,
+            )
         except Exception as error:
             print(f"Geminiファイル削除エラー: {error}")
 
     async def summarize_document(self, uploaded_file: Any, document_name: str, model_name: str) -> dict[str, Any]:
-        model = self._genai.GenerativeModel(model_name)
         prompt = build_document_summary_prompt(document_name)
-        response = await asyncio.wait_for(
-            model.generate_content_async(
-                [prompt, uploaded_file],
-                generation_config={"temperature": 0, "response_mime_type": "application/json"},
-            ),
+        response = await generate_content(
+            self._client,
+            model=model_name,
+            contents=[prompt, uploaded_file],
             timeout=DOCUMENT_SUMMARY_TIMEOUT_SECONDS,
+            temperature=0,
+            response_mime_type="application/json",
         )
         parsed = extract_json_object(safe_response_text(response) or "")
         if not parsed:
             raise ValueError("要約JSONを取得できませんでした。")
-
         summary_text = str(parsed.get("summary", "")).strip()
         if not summary_text:
             raise ValueError("要約テキストが空です。")
-
         return {
             "document_name": document_name,
             "summary": summary_text,

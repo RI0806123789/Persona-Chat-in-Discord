@@ -25,7 +25,7 @@ body:
       placeholder: |
         OS: Windows / Ubuntu など（バージョンも記載）
         Python: python --version の結果
-        ライブラリ: discord.py、google-generativeai など
+        ライブラリ: discord.py、google-genai など
         起動方法: ターミナル / systemd など
     validations:
       required: true

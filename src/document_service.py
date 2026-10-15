@@ -1,12 +1,12 @@
 import asyncio
 import codecs
-import importlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 import discord
+from pypdf import PdfReader
 
 from affinity_service import strip_affinity_tag
 from app_state import BotState
@@ -304,13 +304,7 @@ class DocumentService:
 
 
 def validate_pdf_file(temp_path: Path) -> None:
-    try:
-        pypdf_module = importlib.import_module("pypdf")
-    except ImportError:
-        pypdf_module = importlib.import_module("PyPDF2")
-
-    reader_class = getattr(pypdf_module, "PdfReader")
-    reader = reader_class(str(temp_path))
+    reader = PdfReader(str(temp_path))
     if reader.is_encrypted:
         raise ValueError("PDFが暗号化されています。")
 

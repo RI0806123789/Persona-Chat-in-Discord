@@ -95,7 +95,7 @@ class GraphButton(ui.Button):
 class GroundingToggleButton(ui.Button):
     """Google検索グラウンディングON/OFFトグルボタン。
 
-    ハブは「その場で実行」系のため、確定を待たず押した瞬間に BotState へ反映する。
+    確定を待たず、押した瞬間にそのサーバーの GuildSettings.grounding_enabled を変更して保存する。
     """
 
     def __init__(self, enabled: bool) -> None:
