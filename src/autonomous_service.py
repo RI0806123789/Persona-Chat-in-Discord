@@ -348,14 +348,14 @@ class AutonomousService:
             return response_text
 
     def _claim_comment_slot(self, session: AutonomousSession) -> bool:
-        """このコメントに応答してよければ True を返し、同時に応答時刻を記録する。
+        """入力AI判定の前に受付枠を確保し、同時に受付時刻を記録する。
 
         配信中のチャンネルではメンション不要でコメントを拾うため、何もしないと
         「そのチャンネルの全メッセージ × (モデレーション + 応答生成)」で Gemini 呼び出しが
         発散する（通常のメンション必須モードでは、メンションが自然な流量制限だった）。
-        直前の応答から `AUTONOMOUS_COMMENT_COOLDOWN_SECONDS` 空いていれば必ず拾うので、
-        1対1のやり取りは従来どおり全部返る。効くのは複数人が同時に書き込んでいる
-        ときだけ（`feedback_service._claim_reaction_slot` と同じ考え方）。
+        直前の受付から `AUTONOMOUS_COMMENT_COOLDOWN_SECONDS` 未満のコメントは見送る。
+        これは配信単位の制限で、同じユーザーの連投にも適用される。
+        入力AIで拒否された場合も枠は消費するが、受付前のローカルNG判定では消費しない。
 
         **判定と時刻の記録を1つのメソッドにまとめてあるのは、間に `await` を
         挟ませないため。** 挟むと同時に届いた2件が両方とも通り、クールダウンが効かない。
