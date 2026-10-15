@@ -11,7 +11,7 @@ ver0.1.6 で APIキーの管理を `index/config_private.py` から
 使い方（プロジェクトのどこから実行してもよい）:
 
     python3 deploy/migrate_config_to_env.py              # .env を作る
-    python3 deploy/migrate_config_to_env.py --dry-run    # 何が書かれるか確認するだけ
+    python3 deploy/migrate_config_to_env.py --dry-run    # キー名の取得状況だけを確認する
     python3 deploy/migrate_config_to_env.py --force      # 既存の .env を上書きする
 """
 
@@ -59,13 +59,6 @@ _SAFE_VALUE_CHARS = set(
     "0123456789"
     "._:/+-@"
 )
-
-
-def _mask(value: str) -> str:
-    """キーを画面に出すための伏せ字。値そのものはログに残さない。"""
-    if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
 
 
 def _extract_keys(path: Path) -> dict[str, str]:
@@ -136,7 +129,7 @@ def _collect() -> dict[str, str]:
                 print(f"    {name}: プレースホルダまたは空のため採用しません")
                 continue
             collected[name] = value.strip()
-            print(f"    {name}: 採用しました（{_mask(collected[name])} / {len(collected[name])}文字）")
+            print(f"    {name}: 採用しました（値は表示しません）")
 
     return collected
 
@@ -194,7 +187,7 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="ファイルを書かず、何が生成されるかだけ表示する",
+        help="ファイルを書かず、取得できたキー名だけを表示する（値は表示しない）",
     )
     args = parser.parse_args()
 
@@ -225,17 +218,16 @@ def main() -> int:
         print("旧ファイルが残っていない場合は、.env.example をコピーして手で記入してください。")
         return 1
 
-    env_text = _build_env_text(values)
-
     if args.dry_run:
-        print("--dry-run のためファイルは書き込みません。生成される内容（値は伏せ字）:")
+        print("--dry-run のためファイルは書き込みません。取得できたキー（値は表示しません）:")
         print("")
-        for line in env_text.splitlines():
-            for name, value in values.items():
-                line = line.replace(value, _mask(value))
-            print(f"  {line}")
+        # 秘密値を含む .env 本文を生成してからマスクする方法は使わない。
+        # 表示は固定のキー名と非表示ラベルだけで構成し、値や長さに依存させない。
+        for name in REQUIRED_KEYS:
+            print(f"  {name}=<非表示>")
         return 0
 
+    env_text = _build_env_text(values)
     _write_secret_file(ENV_PATH, env_text)
 
     print(f".env を作成しました: {ENV_PATH}")
