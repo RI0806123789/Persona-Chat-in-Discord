@@ -125,7 +125,9 @@ MAX_USAGE_HISTORY = 500
 
 # matplotlib で日本語ラベルを描くためのフォント候補（先頭から見つかったものを使う）。
 # 利用トークングラフと会話統計グラフで同じ見た目にするため、ここを唯一の情報源にする。
-GRAPH_FONT_FAMILY = ["Yu Gothic", "Meiryo", "sans-serif"]
+GRAPH_FONT_FAMILY = [
+    "Yu Gothic", "Meiryo", "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "sans-serif",
+]
 
 # ── UI（View / セレクトメニュー）共通 ──
 # 各パネル（View）の操作待ち時間（秒）。これを過ぎると UI を取り除いて時間切れ表示にする。

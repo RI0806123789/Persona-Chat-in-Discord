@@ -22,14 +22,11 @@ from constants import (
     STATS_TOPIC_COUNT,
 )
 from background import run_in_thread
-from graph_rendering import serialized_plot
+from graph_rendering import graph_font_context, serialized_plot
 from database import Database
 from prompting import build_stats_analysis_prompt
 from storage import extract_json_object
 from timeutil import resolve_timezone, timezone_label
-
-# matplotlib の日本語フォント指定（usage_graph.py と同じ作法）
-_FONT_CONTEXT = {"font.family": ["Yu Gothic", "Meiryo", "sans-serif"]}
 
 # ビッグファイブの軸（英語キー → 日本語表示名）。レーダーチャートの軸ラベルに使う。
 BIG_FIVE_LABELS = {
@@ -320,7 +317,7 @@ class StatsService:
     def build_hourly_graph(self, entry: dict) -> io.BytesIO:
         """時間帯別の発言回数ヒストグラム（24時間）。"""
         hourly = entry.get("hourly") or [0] * 24
-        with plt.rc_context(_FONT_CONTEXT):
+        with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, 5))
             x = np.arange(24)
             axis.bar(x, hourly, color="tab:blue")
@@ -347,7 +344,7 @@ class StatsService:
         cleaned = cleaned[:STATS_TOPIC_COUNT][::-1]  # 横棒は下から上へ並ぶため反転
         labels = [c[0] for c in cleaned]
         weights = [c[1] for c in cleaned]
-        with plt.rc_context(_FONT_CONTEXT):
+        with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, max(3, len(labels) * 0.6)))
             axis.barh(range(len(labels)), weights, color="tab:green")
             axis.set_yticks(range(len(labels)))
@@ -369,7 +366,7 @@ class StatsService:
         # レーダーを閉じるため先頭要素を末尾に足す
         values_closed = values + values[:1]
         angles_closed = angles + angles[:1]
-        with plt.rc_context(_FONT_CONTEXT):
+        with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(6, 6), subplot_kw={"polar": True})
             axis.plot(angles_closed, values_closed, color="tab:purple", marker="o")
             axis.fill(angles_closed, values_closed, color="tab:purple", alpha=0.25)
@@ -408,7 +405,7 @@ class StatsService:
         items = items[:top_n][::-1]  # 横棒は下から上へ並ぶため反転
         names = [i[0] for i in items]
         counts = [i[1] for i in items]
-        with plt.rc_context(_FONT_CONTEXT):
+        with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, max(3, len(names) * 0.5)))
             axis.barh(range(len(names)), counts, color="tab:orange")
             axis.set_yticks(range(len(names)))

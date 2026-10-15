@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from background import run_in_thread
-from graph_rendering import serialized_plot
+from graph_rendering import graph_font_context, serialized_plot
 from constants import MAX_USAGE_HISTORY
 
 
@@ -64,7 +64,7 @@ class UsageTracker:
 
     @serialized_plot
     def _render_graph_buffer(self, input_tokens, output_tokens, total_tokens) -> io.BytesIO:
-        with plt.rc_context({"font.family": ["Yu Gothic", "Meiryo", "sans-serif"]}):
+        with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, 6))
             x = np.arange(1, len(total_tokens) + 1)
             axis.plot(x, input_tokens, label="入力トークン数", marker="o", color="red")

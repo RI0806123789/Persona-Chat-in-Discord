@@ -117,6 +117,26 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.settings.autonomous_recent_activity), 5)
         self.assertEqual(self.session.last_human_at, self.now - timedelta(seconds=1))
 
+    async def test_cooldown_keeps_local_ng_checks_without_more_ai_calls(self) -> None:
+        await self.on_message(self.message)
+        claimed_at = self.session.last_comment_reply_at
+        self.ng_filter.contains_ng_word.reset_mock()
+        self.ng_filter.contains_ng_word.return_value = True
+        self.ng_filter.find_ng_words = Mock(return_value=["架空のNG対象"])
+
+        # 受付枠が埋まっていても、ローカルNG判定と違反通知は省略しない。
+        for _ in range(3):
+            await self.on_message(self.message)
+
+        self.assertEqual(self.ng_filter.contains_ng_word.call_count, 3)
+        self.assertEqual(self.ng_filter.find_ng_words.call_count, 3)
+        self.assertEqual(self.notify.await_count, 3)
+        self.moderator.check_and_route.assert_awaited_once()
+        self.moderator.check.assert_awaited_once()
+        self.gemini.generate.assert_awaited_once()
+        self.sent.assert_awaited_once()
+        self.assertEqual(self.session.last_comment_reply_at, claimed_at)
+
     async def test_concurrent_comments_share_one_admission_slot(self) -> None:
         async def check(*args):
             await asyncio.sleep(0)

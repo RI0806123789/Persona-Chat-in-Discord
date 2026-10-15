@@ -313,6 +313,8 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ### グラフ描画と同期I/Oの待機
 
+フォント候補は `constants.GRAPH_FONT_FAMILY` を唯一の情報源とし、`graph_rendering.graph_font_context()` が導入済み候補と汎用フォントだけを順序どおり返す。利用量・時間帯・話題・性格・ランキングの全描画でこの設定を `plt.rc_context` に渡し、グローバルな設定は変更しない。Linuxでは `fonts-noto-cjk` 等の日本語フォントをOSへ導入する必要がある。導入・キャッシュ再生成の手順はREADME、字形と5種類のPNG確認は `tests/test_graph_fonts.py` を参照する。LinuxのCIはフォントを導入し、未解決ならテストを失敗させる。
+
 統計の `build_dashboard` / `build_ranking_graph` と利用量の `build_graph_buffer` は、データをイベントループでコピーしてから描画をワーカーへ渡す。matplotlibはスレッド間で共有状態を持つため、全描画関数を `graph_rendering.serialized_plot` の共通ロックで直列化する（Aggバックエンドを維持）。UIは描画前に応答をdeferし、完了後に本人だけのfollowupで返す。描画中の収集設定変更・削除は更新世代でも照合し、古い画像を破棄する。中断時の画像バッファ・Figureも回収する。
 
 `background.run_in_thread` は `asyncio.to_thread` の完了を待つ入口。キャンセルしてもスレッド自体は止まらないため、worker完了まで呼出元のロックを保持してからキャンセルを伝播する。記憶・違反記録・会話統計の保存はこの入口を使い、後着した保存が削除や新しい更新を上書きしないようにする。起動時の記憶ディレクトリ準備も `MemoryService.io_lock` の下で実行する。

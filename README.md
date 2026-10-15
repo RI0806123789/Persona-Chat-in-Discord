@@ -132,6 +132,7 @@ Windows と Linux（Ubuntu など）の両方で動作します。
 - **Discord Bot トークン**（[Discord Developer Portal](https://discord.com/developers/applications) で取得）
 - **Gemini API キー**（[Google AI Studio](https://aistudio.google.com/app/apikey) で取得）
 - **Opus 共有ライブラリ**（Linux で読み上げを使う場合のみ。手順 4）
+- **日本語フォント**（Linuxでグラフを使う場合。手順 7の「日本語グラフのフォント」）
 
 > **FFmpeg は不要です。** 読み上げの音声変換は、Python パッケージの `miniaudio` がプロセス内で行います。
 
@@ -240,6 +241,26 @@ systemctl status bot                        # "active (running)" なら成功
 - 再起動の回数制限を外している（`StartLimitIntervalSec=0`）ため、設定ミスがあると**再起動を繰り返し続けます**。`systemctl status bot` が `activating (auto-restart)` のままなら、`journalctl -u bot -n 50` を確認してください。
 - `ProtectSystem=strict` や `ProtectHome=yes` は追加しないでください。実行中に `memory/` と `ng/` へ書き込むため、記憶とモデレーションが黙って壊れます。
 - 過去に `sudo python bot.py` で動かしたことがあると、`memory/` が root の所有になって書き込めません。`sudo chown -R <USER>:<USER> <PROJECT_DIR>` で直せます。
+
+#### 日本語グラフのフォント
+
+Ubuntu／Debianで利用トークン・会話統計グラフを使う場合は、日本語字形を持つフォントを導入します。
+
+```bash
+sudo apt update
+sudo apt install -y fonts-noto-cjk
+```
+
+候補の順序は `src/constants.py` の `GRAPH_FONT_FAMILY` が共通の設定です。Windows用のYu Gothic・Meiryoに続いて、Linuxでも使えるNoto Sans CJK JP・Noto Sans JP・IPAexGothicを選べます。導入済みの候補だけを描画へ渡すため、LinuxでWindows専用フォントを探す警告も抑えます。日本語フォントが1つも無い場合、汎用フォントでの描画は続きますが、日本語は欠落することがあります。
+
+ボットと同じユーザー・仮想環境で、リポジトリルートから解決と実描画を確認します。
+
+```bash
+python -B -c "from matplotlib import font_manager; font_manager.findfont(font_manager.FontProperties(family=['Noto Sans CJK JP']), fallback_to_default=False); print('日本語フォント: OK')"
+REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_graph_fonts.py -v
+```
+
+導入後もフォントが見つからない場合は、`python -c "import matplotlib; print(matplotlib.get_cachedir())"` で保存先を確認し、そのフォルダー内の `fontlist-v*.json` だけを退避してから確認コマンドを再実行します。確認後、稼働中のボットを `sudo systemctl restart bot` で再起動してください。
 
 ---
 
@@ -371,6 +392,12 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 ## 📋 更新履歴
 
 ### ver0.1.7(BETA)
+
+#### 日本語グラフのフォントとコメント流量制限の検証
+
+- 利用トークン・時間帯・話題・性格・ランキングのフォント候補を `GRAPH_FONT_FAMILY` に統一。Linux向け日本語フォントを追加し、未導入の候補は描画から除外
+- Ubuntu／Debianでのフォント導入・解決・キャッシュ再生成の手順を追加。LinuxのCIにも日本語フォントを準備し、全5種類のPNGと日本語字形を検証
+- #17は#8との重複として修正済みであることを再確認。クールダウン中もローカルNG判定を維持し、入力・出力AIの呼出回数を増やさない回帰テストを追加
 
 #### 自律配信の後片付け・イベント処理・生成期限を改善
 
