@@ -1,10 +1,11 @@
 import discord
 from discord import ui
 
+from constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS
 from discord_helpers import is_administrator
 from feedback_service import FeedbackService, get_default_service
 from stats_service import StatsService
-from view_parts import BackButton, HubFactory, PanelView
+from view_parts import BackButton, HubFactory, PanelView, send_graph_ephemeral
 
 # 項目セレクトの値 → 表示名
 _ITEM_LABELS = {
@@ -37,10 +38,10 @@ class StatsUserSelect(ui.Select):
 
     def __init__(self, users: list[tuple[str, str, int]], current: str) -> None:
         options = []
-        for user_id, name, count in users:
+        for user_id, name, count in users[:DISCORD_SELECT_MAX_OPTIONS]:
             options.append(
                 discord.SelectOption(
-                    label=name[:100],
+                    label=name[:DISCORD_SELECT_LABEL_MAX_LENGTH],
                     value=str(user_id),
                     description=f"発言 {count} 回",
                     default=(str(user_id) == current),
@@ -102,9 +103,7 @@ class RankingButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsView" = self.view  # type: ignore[assignment]
 
-        member = interaction.user
-        is_admin = isinstance(member, discord.Member) and member.guild_permissions.administrator
-        if not is_admin:
+        if not is_administrator(interaction.user):
             await interaction.response.send_message(
                 "この機能はサーバー管理者のみ利用できます。", ephemeral=True
             )
@@ -123,22 +122,12 @@ class RankingButton(ui.Button):
                 "ランキングを表示できるデータがありません。", ephemeral=True
             )
             return
-        picture = None
-        try:
-            picture = discord.File(buffer, filename="stats_ranking.png")
-            # パネルは残したまま、ランキングを新しいエフェメラルメッセージで送る。
-            await interaction.followup.send(
-                "📊 発言回数ランキング（全体比較）です。", file=picture, ephemeral=True
-            )
-        except Exception as error:
-            print(f"ランキング送信中にエラー: {error}")
-            await interaction.followup.send(
-                "エラー: ランキングの送信に失敗しました。", ephemeral=True
-            )
-        finally:
-            if picture is not None:
-                picture.close()
-            buffer.close()
+        # パネルは残したまま、ランキングを新しいエフェメラルメッセージで送る。
+        await send_graph_ephemeral(
+            interaction, buffer, "stats_ranking.png", "📊 発言回数ランキング（全体比較）です。",
+            followup=True, error_log="ランキング送信中にエラー",
+            error_notice="エラー: ランキングの送信に失敗しました。",
+        )
 
 
 class FeedbackButton(ui.Button):

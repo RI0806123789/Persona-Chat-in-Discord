@@ -1,7 +1,7 @@
 """ボイスチャンネルでの読み上げ（TTS）。
 
-`/join` でボットがボイスチャンネルに接続している間だけ、テキストチャンネルへの
-AI の返信を音声で読み上げる。接続していなければ黙って何もしない（no-op）。
+ボットがボイスチャンネルに接続中に、AI の返信や自律行動の発話を音声で読み上げる。
+接続は `/join` または自律行動が行う。未接続なら黙って何もしない（no-op）。
 
 **声はペルソナごとに変わる。** 主エンジンの **edge-tts**（Microsoft Edge の読み上げが
 使っているニューラル音声。APIキー不要）に、キャラクターごとの話者・声の高さ・話す速さを
@@ -35,6 +35,8 @@ from gtts import gTTS
 from background import spawn
 from constants import (
     EDGE_TTS_VOICE_FEMALE,
+    PCM_INT16_MAX,
+    PCM_INT16_MIN,
     TTS_CHANNELS,
     TTS_LANG,
     TTS_MAX_CHARS,
@@ -65,10 +67,6 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 # 起動時にプロファイルを点検するために持つ。
 _EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
 _EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
-
-# int16 で表せる範囲。加工でこれを超えたまま変換すると音が割れるため必ず丸める。
-_INT16_MIN = -32768.0
-_INT16_MAX = 32767.0
 
 # edge-tts が失敗し続けている間、返信のたびに同じログを出さないための状態。
 # 「失敗し始めたとき」と「復旧したとき」の2回だけ記録する。
@@ -195,7 +193,7 @@ def _decode_to_pcm(mp3_bytes: bytes, profile: Mapping[str, Any]) -> bytes:
     shaped = apply_equalizer(mono, profile, sample_rate=TTS_SAMPLE_RATE)
 
     # EQ のブーストで int16 の範囲を超えることがあるので、必ずクリップしてから丸める。
-    clipped = np.clip(shaped, _INT16_MIN, _INT16_MAX).astype(np.int16)
+    clipped = np.clip(shaped, PCM_INT16_MIN, PCM_INT16_MAX).astype(np.int16)
     # モノラル1ch分を L/R へ複製してインターリーブする（Discord はステレオしか受け取らない）。
     return np.repeat(clipped, TTS_CHANNELS).tobytes()
 
@@ -310,9 +308,10 @@ async def play_tts_response(
     ボットがボイスチャンネルに接続しているときだけ動作し、それ以外は
     何もせずに戻る（テキストチャットは読み上げの成否に影響されない）。
 
-    `prompt_file` はそのサーバーで選ばれているペルソナ（`GuildSettings` の
-    `current_prompt_file`）。話者・声の高さ・話す速さ・音色をキャラクターに
-    合わせるために使う。省略・未登録のペルソナの場合は既定の声で読み上げる。
+    `prompt_file` は今回の応答に使ったペルソナのパス。通常のチャットでは
+    `MessageHandler` が生成開始時の `ResponseSettings.prompt_file` を渡し、
+    途中で設定が変わっても同じキャラクターの話者・高さ・速さ・音色を使う。
+    省略・未登録のペルソナの場合は既定の声で読み上げる。
 
     DM にはギルドが無く、ボットが参加できるボイスチャンネルも存在しないため、
     `message.guild` が None のときは `speak_text` 側で no-op になる。

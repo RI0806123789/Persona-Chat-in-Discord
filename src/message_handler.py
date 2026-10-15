@@ -65,7 +65,7 @@ class MessageHandler:
         count, just_blocked = await self.blacklist.record_violation(message.author.id, str(message.author))
         if just_blocked:
             await message.reply(
-                "🚫 違反が3回に達したため、ブラックリストに登録されました。"
+                f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
                 "以降のメッセージは無視されます。"
             )
         else:
@@ -130,7 +130,8 @@ class MessageHandler:
             if claimed_comment_session is None:
                 return
 
-        # ここでの category は使わない（安全判定だけが効く）。
+        # 安全判定・記憶カテゴリ・リマインダー依頼を1回のAPI呼び出しで取得する。
+        # memory_categoryは通常チャットの記憶参照へ、reminder_requestは添付の振り分け後の登録へ渡す。
         memory_category = "none"
         reminder_request: dict[str, str] | None = None
         if question:
@@ -222,7 +223,7 @@ class MessageHandler:
             print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
             return
         if response_text:
-            # ボットが /join でボイスチャンネルに接続中のときだけ読み上げる（それ以外は no-op）。
+            # ボイス接続中なら、自律行動による参加中も読み上げる（未接続なら no-op）。
             # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
             await play_tts_response(message, response_text, tts_prompt_file)
 
@@ -288,7 +289,7 @@ class MessageHandler:
             if emotion_changes is not None:
                 v_change, a_change = emotion_changes
                 self.affinity.update_emotion(str(message.author.id), v_change, a_change)
-                spawn(self.affinity.save_background(), label="親密度の保存")
+                spawn(self.affinity.save_background(user_id), label="親密度の保存")
 
             # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
             # （モデルが感情タグだけを返したケース）。

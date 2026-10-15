@@ -8,6 +8,7 @@ from app_state import BotState
 from background import run_in_thread
 from constants import (
     ANNIVERSARY_PROFILE_KEY,
+    DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_SUMMARY_LIMIT,
     LEGACY_MEMORY_OWNER_ID,
     MEMORY_COMPACT_MAX_FAILURES,
@@ -23,6 +24,7 @@ from constants import (
     ROUTER_TIMEOUT_SECONDS,
 )
 from database import Database
+from genai_client import generate_content
 from prompting import build_memory_compaction_prompt, build_router_prompt
 from storage import (
     extract_json_object,
@@ -56,9 +58,9 @@ def default_projects_memory() -> dict[str, Any]:
 
 
 class MemoryService:
-    def __init__(self, state: BotState, genai_module: Any, db: Database) -> None:
+    def __init__(self, state: BotState, genai_client: Any, db: Database) -> None:
         self._state = state
-        self._genai = genai_module
+        self._genai_client = genai_client
         self._db = db
         self.io_lock = asyncio.Lock()
         self.flush_lock = asyncio.Lock()
@@ -115,7 +117,9 @@ class MemoryService:
 
     # ---- プロンプトへ差し込む記憶コンテキスト --------------------------------
 
-    async def build_contexts(self, category: str, user_id: str, limit: int = 3) -> tuple[str, str]:
+    async def build_contexts(
+        self, category: str, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+    ) -> tuple[str, str]:
         """同じスナップショットから通常記憶と文書記憶を作り、JSONを1回だけ読む。"""
         async with self.io_lock:
             return await run_in_thread(self._build_contexts, category, str(user_id), limit)
@@ -131,7 +135,7 @@ class MemoryService:
             context = json.dumps(projects, ensure_ascii=False, indent=2)
         summaries = projects.get("document_summaries", [])
         lines = []
-        if isinstance(summaries, list):
+        if isinstance(summaries, list) and limit > 0:
             for summary in summaries[-limit:]:
                 if not isinstance(summary, dict):
                     continue
@@ -145,7 +149,9 @@ class MemoryService:
         context, _ = await self.build_contexts(category, user_id)
         return context
 
-    async def build_document_memory_context(self, user_id: str, limit: int = 3) -> str:
+    async def build_document_memory_context(
+        self, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+    ) -> str:
         _, documents = await self.build_contexts("none", user_id, limit)
         return documents
 
@@ -180,14 +186,10 @@ class MemoryService:
             return "none"
 
         try:
-            model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
             router_prompt = build_router_prompt(question)
-            response = await asyncio.wait_for(
-                model.generate_content_async(
-                    router_prompt,
-                    generation_config={"temperature": 0, "response_mime_type": "application/json"},
-                ),
-                timeout=ROUTER_TIMEOUT_SECONDS,
+            response = await generate_content(
+                self._genai_client, model=ROUTER_MODEL_NAME, contents=router_prompt,
+                timeout=ROUTER_TIMEOUT_SECONDS, temperature=0, response_mime_type="application/json",
             )
             parsed = extract_json_object(safe_response_text(response) or "")
             category = str((parsed or {}).get("category", "none")).lower()
@@ -417,13 +419,9 @@ class MemoryService:
             ANNIVERSARY_PROFILE_KEY,
         )
 
-        model = self._genai.GenerativeModel(ROUTER_MODEL_NAME)
-        response = await asyncio.wait_for(
-            model.generate_content_async(
-                compactor_prompt,
-                generation_config={"temperature": 0, "response_mime_type": "application/json"},
-            ),
-            timeout=MEMORY_COMPACT_TIMEOUT_SECONDS,
+        response = await generate_content(
+            self._genai_client, model=ROUTER_MODEL_NAME, contents=compactor_prompt,
+            timeout=MEMORY_COMPACT_TIMEOUT_SECONDS, temperature=0, response_mime_type="application/json",
         )
 
         # Gemini がプロンプトをブロックした場合を検知

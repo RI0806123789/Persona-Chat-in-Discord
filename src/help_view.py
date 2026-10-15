@@ -21,7 +21,7 @@
 
 from typing import Any
 
-from constants import DISCORD_MESSAGE_MAX_LENGTH
+from constants import BLACKLIST_MAX_VIOLATIONS, DISCORD_MESSAGE_MAX_LENGTH, VIEW_TIMEOUT_SECONDS
 from view_parts import BackButton, HubFactory, PanelView
 
 # client.user がまだ取れないとき（起動直後など）に使う表示名。
@@ -149,9 +149,9 @@ def build_help_text(bot_name: str) -> str:
         "**4. 記憶とプライバシー**",
         f"・{_MEMORY_LINE}",
         f"・{_STATS_LINE}",
-        "・NGワードや不適切な発言は自動で検知され、3回でボットが応答しなくなります。",
+        f"・NGワードや不適切な発言は自動で検知され、{BLACKLIST_MAX_VIOLATIONS}回でボットが応答しなくなります。",
         "",
-        "※ 各パネルは120秒で時間切れになります。消えたら、もう一度 `/functions` を実行してください。",
+        f"※ 各パネルは{VIEW_TIMEOUT_SECONDS:g}秒で時間切れになります。消えたら、もう一度 `/functions` を実行してください。",
     ]
     return _fit_to_discord_limit("\n".join(lines))
 

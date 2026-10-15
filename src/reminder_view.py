@@ -1,7 +1,7 @@
 import discord
 from discord import ui
 
-from constants import DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
+from constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
 from reminder_service import ReminderService
 from view_parts import BackButton, HubFactory, PanelView
 
@@ -47,9 +47,9 @@ class ReminderCancelSelect(ui.Select):
             options.append(
                 discord.SelectOption(
                     # ラベルは100文字までのため、本文が長い場合は切り詰める
-                    label=message[:100] or "（本文なし）",
+                    label=message[:DISCORD_SELECT_LABEL_MAX_LENGTH] or "（本文なし）",
                     value=str(record.get("reminder_id")),
-                    description=service.describe(record)[:100],
+                    description=service.describe(record)[:DISCORD_SELECT_LABEL_MAX_LENGTH],
                 )
             )
         super().__init__(placeholder="🗑️ 取り消すリマインダーを選択…", options=options, row=0)

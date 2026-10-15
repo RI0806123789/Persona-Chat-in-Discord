@@ -22,7 +22,7 @@ Google Gemini を使い、ペルソナ（キャラクター）になりきって
 | キャラ設定 | ペルソナ 12 種・モデル 3 種・応答モードの切り替えと、チャンネルの会話リセット |
 | 長期記憶 | 会話の内容を覚えて回答に使う。記憶はユーザーごとに完全に分離される |
 | Google 検索 | 最新の情報を検索し、回答に参考リンクを付ける（ON/OFF 切り替え可） |
-| 音声読み上げ | `/join` 中だけ返信を読み上げる。声（話者・高さ・速さ・音色）はペルソナごとに変わる。FFmpeg 不要 |
+| 音声読み上げ | `/join` または自律行動でボイス接続中に返信を読み上げる。声（話者・高さ・速さ・音色）はペルソナごとに変わる。FFmpeg 不要 |
 | 会話要約 | チャンネルの会話を、発言者名つきの議事録にまとめる |
 | 会話統計 | 発言回数・時間帯・話題・性格推定をグラフで表示する（本人だけに表示。収集の停止・削除も可） |
 | 自発的な会話 | 会話が途絶えたチャンネルへ、ボットから話題を振る |
@@ -132,6 +132,7 @@ Windows と Linux（Ubuntu など）の両方で動作します。
 - **Discord Bot トークン**（[Discord Developer Portal](https://discord.com/developers/applications) で取得）
 - **Gemini API キー**（[Google AI Studio](https://aistudio.google.com/app/apikey) で取得）
 - **Opus 共有ライブラリ**（Linux で読み上げを使う場合のみ。手順 4）
+- **日本語フォント**（Linuxでグラフを使う場合。手順 7の「日本語グラフのフォント」）
 
 > **FFmpeg は不要です。** 読み上げの音声変換は、Python パッケージの `miniaudio` がプロセス内で行います。
 
@@ -163,9 +164,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.10と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
+
+旧SDKを使っていた環境を更新するときは、新しい仮想環境へこの依存一覧を導入して検証してください。Geminiは `google-genai`、PDF検証は `pypdf` を使います。APIキーの設定名と既存の `.env` はそのまま利用できます。SDKの変更点は[Googleの移行ガイド](https://ai.google.dev/gemini-api/docs/migrate)、PDFの名称変更は[pypdfの公式履歴](https://pypdf.readthedocs.io/en/stable/meta/history.html)を参照してください。
+
 ### 4. Opus ライブラリのセットアップ（Linux のみ）
 
-ボイスチャンネルでの読み上げ（`/join`）にだけ必要です。使わない場合は省略できます。Windows は discord.py が DLL を同梱しているため不要です。
+ボイスチャンネルでの読み上げ（`/join`・自律行動）に必要です。読み上げを使わない場合は省略できます。Windows は discord.py が DLL を同梱しているため不要です。
 
 ```bash
 sudo apt install -y libopus0
@@ -240,6 +245,26 @@ systemctl status bot                        # "active (running)" なら成功
 - 再起動の回数制限を外している（`StartLimitIntervalSec=0`）ため、設定ミスがあると**再起動を繰り返し続けます**。`systemctl status bot` が `activating (auto-restart)` のままなら、`journalctl -u bot -n 50` を確認してください。
 - `ProtectSystem=strict` や `ProtectHome=yes` は追加しないでください。実行中に `memory/` と `ng/` へ書き込むため、記憶とモデレーションが黙って壊れます。
 - 過去に `sudo python bot.py` で動かしたことがあると、`memory/` が root の所有になって書き込めません。`sudo chown -R <USER>:<USER> <PROJECT_DIR>` で直せます。
+
+#### 日本語グラフのフォント
+
+Ubuntu／Debianで利用トークン・会話統計グラフを使う場合は、日本語字形を持つフォントを導入します。
+
+```bash
+sudo apt update
+sudo apt install -y fonts-noto-cjk
+```
+
+候補の順序は `src/constants.py` の `GRAPH_FONT_FAMILY` が共通の設定です。Windows用のYu Gothic・Meiryoに続いて、Linuxでも使えるNoto Sans CJK JP・Noto Sans JP・IPAexGothicを選べます。導入済みの候補だけを描画へ渡すため、LinuxでWindows専用フォントを探す警告も抑えます。日本語フォントが1つも無い場合、汎用フォントでの描画は続きますが、日本語は欠落することがあります。
+
+ボットと同じユーザー・仮想環境で、リポジトリルートから解決と実描画を確認します。
+
+```bash
+python -B -c "from matplotlib import font_manager; font_manager.findfont(font_manager.FontProperties(family=['Noto Sans CJK JP']), fallback_to_default=False); print('日本語フォント: OK')"
+REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_graph_fonts.py -v
+```
+
+導入後もフォントが見つからない場合は、`python -c "import matplotlib; print(matplotlib.get_cachedir())"` で保存先を確認し、そのフォルダー内の `fontlist-v*.json` だけを退避してから確認コマンドを再実行します。確認後、稼働中のボットを `sudo systemctl restart bot` で再起動してください。
 
 ---
 
@@ -371,6 +396,25 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 ## 📋 更新履歴
 
 ### ver0.1.7(BETA)
+
+#### Gemini SDK・依存関係と実装説明を更新
+
+- Geminiを `google-genai` の共有クライアントへ移行。生成・検索・モデレーション・記憶・文書のAPIを非同期化し、検索の独自REST経路をSDKへ統合
+- 生成全体の期限と検索非対応時だけのフォールバックを維持。生成時のSDK内部リトライを抑止し、停止時には共有クライアントの接続も回収
+- PDF検証を `pypdf` に統一し、暗号化・破損PDFの拒否を確認。直接依存の版を固定し、CIで環境ごとの解決済み依存一覧を保存
+- 設定の所属・処理順序・DBテーブル・曜日表・TTSの説明を現在の実装へ整合
+
+#### 親密度保存・調整定数・共通処理を整理
+
+- 親密度・感情は更新したユーザーの1行だけをUPSERTし、他ユーザーの削除・再挿入を廃止。保存後の再起動でも親密度・機嫌・テンション・最終対話時刻を保持
+- 親密度、NGワード判定、文書・記憶、統計、音声EQ、セレクトメニューの利用側を既存の調整定数へ統一。違反回数の案内も設定値に追従
+- 長文投稿・管理者判定・グラフ送信・NGワードのログ付きマスクを共通ヘルパーへ統一。送信オプションと本人限定表示を維持し、グラフ送信の成功・失敗・キャンセル時にバッファを回収
+
+#### 日本語グラフのフォントとコメント流量制限の検証
+
+- 利用トークン・時間帯・話題・性格・ランキングのフォント候補を `GRAPH_FONT_FAMILY` に統一。Linux向け日本語フォントを追加し、未導入の候補は描画から除外
+- Ubuntu／Debianでのフォント導入・解決・キャッシュ再生成の手順を追加。LinuxのCIにも日本語フォントを準備し、全5種類のPNGと日本語字形を検証
+- #17は#8との重複として修正済みであることを再確認。クールダウン中もローカルNG判定を維持し、入力・出力AIの呼出回数を増やさない回帰テストを追加
 
 #### 自律配信の後片付け・イベント処理・生成期限を改善
 
@@ -667,7 +711,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 - **項目別グラフ**（matplotlib）: 時間帯＝棒グラフ / 話題＝重み付き横棒 / 性格＝ビッグファイブのレーダーチャート。項目セレクトで「全部 / 時間帯 / 話題 / 性格推定」を切り替え可能
 - 性格推定は直近サンプルが 10 件未満のとき「データ不足」として描画をスキップ（推定である旨も明記）
 - **権限**: 一般ユーザーは**自分の統計のみ**閲覧可。**管理者のみ**、ユーザー選択メニューで他メンバーの統計を閲覧でき、発言回数ランキング（全体比較）も表示可能
-- データは `memory/user_stats.json` に永続化され、`asyncio.Lock` で保存を直列化（ボット再起動でもリセットされない）
+- データは `memory/bot.db` の `user_stats` テーブルに永続化され、`asyncio.Lock` で対象ユーザー1行の保存を直列化（ボット再起動でもリセットされない）
 - 調整値（TTL・上限・タイムゾーンなど）は `constants.py` の `STATS_*` に集約
 
 #### 自発的な会話機能を追加
@@ -901,14 +945,14 @@ Discord ボットの記憶処理をカテゴリ分割・ルーティング型に
 | パッケージ | 用途 |
 | --- | --- |
 | `discord.py[voice]` | Discord API クライアント（ボイス用の `PyNaCl`・`davey` も入る） |
-| `google-generativeai` | Gemini API クライアント |
+| `google-genai` | Gemini API の非同期クライアント |
 | `python-dotenv` | `.env` からAPIキーを読み込む（環境変数で渡すなら無くても動く） |
 | `edge-tts` / `gTTS` | 読み上げの主エンジン / 失敗したときの退避先 |
 | `miniaudio` | mp3 → PCM の変換（FFmpeg の代わり） |
 | `httpx` | HTTP 通信（Google 検索） |
 | `matplotlib` / `numpy` | グラフの描画、読み上げ音声の音色の調整 |
 | `Pillow` | 添付画像の読み込み |
-| `PyPDF2` | PDF 添付の検証 |
+| `pypdf` | PDF 添付の検証 |
 
 ---
 

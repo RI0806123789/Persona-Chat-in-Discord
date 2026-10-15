@@ -3,10 +3,17 @@ import math
 import asyncio
 import re
 
+from background import run_in_thread
+from constants import (
+    AFFINITY_HALF_LIFE_SECONDS,
+    AFFINITY_LOWER_THRESHOLD,
+    AFFINITY_MAX,
+    AFFINITY_MIN,
+    AFFINITY_NEUTRAL,
+    AFFINITY_RAISE_THRESHOLD,
+)
 from database import Database
 from prompting import build_affinity_prompt
-
-HALF_LIFE = 1800.0  # 30 minutes in seconds
 
 # モデルが返答の末尾に付ける感情タグ `[V:X, A:Y]`。
 # `[V: +5, A: -10]` のように空白を挟むことがあるため各要素の前後に \s* を許容する
@@ -50,15 +57,15 @@ class AffinityService:
         # 起動時に DB の affinity テーブルからキャッシュへ読み込む
         try:
             self.cache = self._db.affinity_load_all()
-        except Exception as e:
-            print(f"Failed to load affinity data: {e}")
+        except Exception as error:
+            print(f"親密度データの読み込みに失敗しました: {error}")
             self.cache = {}
 
     def get_user_data(self, user_id: str) -> dict:
         data = self.cache.get(user_id, {
-            "affinity": 50,
-            "valence": 50,
-            "arousal": 50,
+            "affinity": AFFINITY_NEUTRAL,
+            "valence": AFFINITY_NEUTRAL,
+            "arousal": AFFINITY_NEUTRAL,
             "last_interaction": time.time()
         }).copy()
         return self._apply_decay(data)
@@ -67,41 +74,45 @@ class AffinityService:
         current_time = time.time()
         last_time = data.get("last_interaction", current_time)
         elapsed = current_time - last_time
-        
+
         if elapsed > 0:
-            decay_factor = math.pow(0.5, elapsed / HALF_LIFE)
-            data["valence"] = 50 + (data["valence"] - 50) * decay_factor
-            data["arousal"] = 50 + (data["arousal"] - 50) * decay_factor
-            data["valence"] = max(0, min(100, int(round(data["valence"]))))
-            data["arousal"] = max(0, min(100, int(round(data["arousal"]))))
-            
+            decay_factor = math.pow(0.5, elapsed / AFFINITY_HALF_LIFE_SECONDS)
+            data["valence"] = AFFINITY_NEUTRAL + (data["valence"] - AFFINITY_NEUTRAL) * decay_factor
+            data["arousal"] = AFFINITY_NEUTRAL + (data["arousal"] - AFFINITY_NEUTRAL) * decay_factor
+            data["valence"] = max(AFFINITY_MIN, min(AFFINITY_MAX, int(round(data["valence"]))))
+            data["arousal"] = max(AFFINITY_MIN, min(AFFINITY_MAX, int(round(data["arousal"]))))
+
         return data
 
     def update_emotion(self, user_id: str, v_change: int, a_change: int) -> dict:
         data = self.get_user_data(user_id)
         data["valence"] += v_change
         data["arousal"] += a_change
-        
-        data["valence"] = max(0, min(100, data["valence"]))
-        data["arousal"] = max(0, min(100, data["arousal"]))
-        
-        if data["valence"] > 70:
-            data["affinity"] = min(100, data["affinity"] + 1)
-        elif data["valence"] < 30:
-            data["affinity"] = max(0, data["affinity"] - 1)
-            
+
+        data["valence"] = max(AFFINITY_MIN, min(AFFINITY_MAX, data["valence"]))
+        data["arousal"] = max(AFFINITY_MIN, min(AFFINITY_MAX, data["arousal"]))
+
+        if data["valence"] > AFFINITY_RAISE_THRESHOLD:
+            data["affinity"] = min(AFFINITY_MAX, data["affinity"] + 1)
+        elif data["valence"] < AFFINITY_LOWER_THRESHOLD:
+            data["affinity"] = max(AFFINITY_MIN, data["affinity"] - 1)
+
         data["last_interaction"] = time.time()
         self.cache[user_id] = data
         return data
 
-    async def save_background(self):
-        # 同一テーブルへの並行書き込みを避けるため、保存はロックで直列化する。
+    async def save_background(self, user_id: str) -> None:
+        """対象ユーザーだけを保存し、後続保存が古い値に巻き戻されないよう直列化する。"""
         async with self._save_lock:
-            cache_copy = {user_id: data.copy() for user_id, data in self.cache.items()}
+            data = self.cache.get(user_id)
+            if data is None:
+                return
+            snapshot = data.copy()
             try:
-                await asyncio.to_thread(self._db.affinity_save_all, cache_copy)
-            except Exception as e:
-                print(f"Failed to save affinity data: {e}")
+                # キャンセルしてもworker終了までロックを保ち、後続の保存を追い越させない。
+                await run_in_thread(self._db.affinity_upsert, user_id, snapshot)
+            except Exception as error:
+                print(f"親密度データの保存に失敗しました: {error}")
 
     def build_dynamic_prompt(self, user_id: str) -> str:
         # 文面そのものは prompting.py に集約している（ここは現在値を渡すだけ）。

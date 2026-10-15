@@ -84,7 +84,9 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                 claim_comment_slot=Mock(return_value=object()),
             ),
             "blacklist": SimpleNamespace(is_blocked=Mock(return_value=False)),
-            "ng_filter": SimpleNamespace(contains_ng_word=Mock(return_value=False)),
+            "ng_filter": SimpleNamespace(
+                contains_ng_word=Mock(return_value=False), mask_with_log=Mock(side_effect=lambda text, **kwargs: text),
+            ),
             "moderator": SimpleNamespace(
                 check_and_route=AsyncMock(return_value=(True, "", "none", None)),
                 check=AsyncMock(side_effect=moderate),
@@ -186,6 +188,16 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.feedback.track_reply.assert_not_called()
         self.voice.assert_not_awaited()
         self.message.reply.assert_awaited_once()
+
+    async def test_affinity_tag_saves_only_the_reply_authors_changes(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        affinity = self.namespace["affinity"]
+        affinity.update_emotion = Mock()
+        affinity.save_background = AsyncMock()
+        await self.on_message(self.message)
+        await asyncio.gather(*self.tasks)
+        affinity.update_emotion.assert_called_once_with("11", 1, 2)
+        affinity.save_background.assert_awaited_once_with("11")
 
     async def test_autonomous_comment_keeps_existing_voice_routing(self) -> None:
         self.namespace["autonomous"].is_comment_channel.return_value = True

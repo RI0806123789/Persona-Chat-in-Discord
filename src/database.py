@@ -1,13 +1,17 @@
 """SQLite データベース層（memory/bot.db）。
 
-これまで memory/ 配下の JSON / テキストファイルで持っていた以下のデータを
-SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
+以下の9テーブルを SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
+旧 JSON / テキストファイルから移したデータと、その後追加した機能のデータを持つ。
 
   - affinity     … ユーザーごとの親密度・感情（旧 affinity.json）
   - user_stats   … ユーザー別会話統計（旧 user_stats.json）
   - queue_tasks  … 文書処理タスクキュー（旧 queue.json）
   - pending_log  … 記憶圧縮前の一時会話ログ（旧 pending_log.txt）。user_id 列でユーザー別。
   - profile      … プロフィール記憶。(user_id, key) の複合主キーでユーザー別。値はJSON文字列。
+  - guild_settings … サーバーごとの設定。DM は共通の設定枠。
+  - anniversary_posts … サーバー・ユーザー・記念日ごとの最終お祝い投稿日。
+  - reminders    … ユーザーごとの通知予定・繰り返し・通知/取り消し状態。
+  - feedback     … ボット返信への評価。(message_id, user_id) ごとに記録する。
 
 projects.json は LLM が構造を自由に決める JSON のため、
 テーブル化せず従来どおりファイルのまま扱う。
@@ -24,8 +28,9 @@ profile.json は毎回の起動時にチェックされ、中身があれば pro
 その内容が自動的にデータベースの記憶へ追加される。
 
 ■ スキーマを後から変更したくなったら（列の追加など）
-SCHEMA_VERSION を 1 つ上げ、_MIGRATIONS にそのバージョン番号で ALTER TABLE 文を
-追記するだけでよい。適用済みバージョンは DB 内の PRAGMA user_version に記録され、
+SCHEMA_VERSION を 1 つ上げ、_MIGRATIONS にそのバージョン番号で変更用の SQL 文を
+追記する。対応する読み込み・保存処理も更新する。
+適用済みバージョンは DB 内の PRAGMA user_version に記録され、
 起動時に未適用の分だけが順番に実行される（二重適用されない）。
 _CREATE_TABLE_STATEMENTS は初版（バージョン1）の形のまま変更しないこと —
 列の追加・変更は必ず _MIGRATIONS 側で行う（新規 DB にも同じ移行が走るため、
@@ -39,16 +44,21 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from constants import REMINDER_MAX_PENDING_PER_USER, STATS_OPT_OUT_DEFAULT
+from constants import (
+    AFFINITY_NEUTRAL,
+    REMINDER_MAX_PENDING_PER_USER,
+    STATS_HOURLY_BUCKETS,
+    STATS_OPT_OUT_DEFAULT,
+)
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
 SCHEMA_VERSION = 9
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
-#   SCHEMA_VERSION = 4 に上げて、ここに
-#   4: ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"],
-#   のように追記する。既存 DB・新規 DB の両方に自動適用される。
+#   SCHEMA_VERSION を現在値から 1 つ上げ、その新しい番号をキーとして
+#   ["ALTER TABLE user_stats ADD COLUMN favorite_emoji TEXT NOT NULL DEFAULT ''"]
+#   を追記する。既存 DB・新規 DB の両方に自動適用される。
 _MIGRATIONS: dict[int, list[str]] = {
     # バージョン2: プロフィール記憶を profile.json から DB へ移行
     2: [
@@ -356,9 +366,9 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", 50),
-                        entry.get("valence", 50),
-                        entry.get("arousal", 50),
+                        entry.get("affinity", AFFINITY_NEUTRAL),
+                        entry.get("valence", AFFINITY_NEUTRAL),
+                        entry.get("arousal", AFFINITY_NEUTRAL),
                         entry.get("last_interaction", 0.0),
                     ),
                 )
@@ -381,7 +391,7 @@ class Database:
                         str(user_id),
                         str(entry.get("user_name", "")),
                         int(entry.get("total_count", 0)),
-                        json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
+                        json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
                         str(entry.get("first_seen", "")),
                         str(entry.get("last_seen", "")),
                         json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
@@ -931,8 +941,27 @@ class Database:
             for row in rows
         }
 
+    def affinity_upsert(self, user_id: str, entry: dict[str, Any]) -> None:
+        """対象ユーザー1行だけを保存し、他ユーザーの行やrowidは変更しない。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO affinity"
+                " (user_id, affinity, valence, arousal, last_interaction)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(user_id) DO UPDATE SET"
+                " affinity=excluded.affinity, valence=excluded.valence,"
+                " arousal=excluded.arousal, last_interaction=excluded.last_interaction",
+                (
+                    str(user_id),
+                    entry.get("affinity", AFFINITY_NEUTRAL),
+                    entry.get("valence", AFFINITY_NEUTRAL),
+                    entry.get("arousal", AFFINITY_NEUTRAL),
+                    entry.get("last_interaction", 0.0),
+                ),
+            )
+
     def affinity_save_all(self, cache: dict[str, dict[str, Any]]) -> None:
-        """キャッシュ全体で置き換える（旧「ファイル全体を書き直す」動作と等価）。"""
+        """明示的な全件置換用。通常の感情更新には affinity_upsert を使う。"""
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM affinity")
             for user_id, entry in cache.items():
@@ -942,9 +971,9 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", 50),
-                        entry.get("valence", 50),
-                        entry.get("arousal", 50),
+                        entry.get("affinity", AFFINITY_NEUTRAL),
+                        entry.get("valence", AFFINITY_NEUTRAL),
+                        entry.get("arousal", AFFINITY_NEUTRAL),
                         entry.get("last_interaction", 0.0),
                     ),
                 )
@@ -960,7 +989,7 @@ class Database:
             result[row["user_id"]] = {
                 "user_name": row["user_name"],
                 "total_count": row["total_count"],
-                "hourly": _json_loads_or(row["hourly"], [0] * 24),
+                "hourly": _json_loads_or(row["hourly"], [0] * STATS_HOURLY_BUCKETS),
                 "first_seen": row["first_seen"],
                 "last_seen": row["last_seen"],
                 "recent_samples": _json_loads_or(row["recent_samples"], []),
@@ -999,7 +1028,7 @@ class Database:
                 str(user_id),
                 str(entry.get("user_name", "")),
                 int(entry.get("total_count", 0)),
-                json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
+                json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
                 str(entry.get("first_seen", "")),
                 str(entry.get("last_seen", "")),
                 json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),

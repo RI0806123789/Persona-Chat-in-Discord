@@ -123,6 +123,10 @@ async def send_graph_ephemeral(
     buffer: io.BytesIO,
     filename: str,
     caption: str,
+    *,
+    followup: bool = False,
+    error_log: str | None = None,
+    error_notice: str | None = None,
 ) -> None:
     """グラフ画像を、本人だけに見えるエフェメラルの新規メッセージとして送る。
 
@@ -137,20 +141,27 @@ async def send_graph_ephemeral(
     ファイルオブジェクトを渡した場合その所有権を持たず閉じてくれない。）
 
     引数:
-        interaction: ボタンが受け取った Interaction（まだ応答していないこと）。
+        interaction: ボタンが受け取った Interaction。
         buffer:      PNG 画像を保持する BytesIO。この関数が閉じる。
         filename:    Discord 上でのファイル名（例: "usage_graph.png"）。
         caption:     画像に添えるメッセージ本文。
+        followup:    defer済みの場合はTrueにし、followupで送信する。
+        error_log:   送信失敗ログの文脈名。省略時はファイル名を含む。
+        error_notice: 送信失敗時の案内文。省略時は例外の内容を添える。
     """
+    picture = None
     try:
         picture = discord.File(buffer, filename=filename)
-        await interaction.response.send_message(caption, file=picture, ephemeral=True)
+        sender = interaction.followup.send if followup else interaction.response.send_message
+        await sender(caption, file=picture, ephemeral=True)
     except Exception as error:
-        print(f"グラフ送信中に予期せぬエラー ({filename}): {error}")
+        print(f"{error_log or f'グラフ送信中に予期せぬエラー ({filename})'}: {error}")
         # 送信が始まる前に失敗した場合のみ、同じ Interaction でエラーを返せる。
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True
-            )
+        if followup or not interaction.response.is_done():
+            sender = interaction.followup.send if followup else interaction.response.send_message
+            await sender(error_notice or f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True)
     finally:
+        # discord.Fileが差し替えたbuffer.closeを元へ戻してから閉じる。
+        if picture is not None:
+            picture.close()
         buffer.close()

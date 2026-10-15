@@ -149,8 +149,7 @@ def get_prompt_block_reason(response: Any) -> str | None:
     """Gemini response の prompt_feedback からブロック理由名を取得する。
 
     ブロックされていなければ None を返す。
-    注意: block_reason は enum のため、値0 (BLOCK_REASON_UNSPECIFIED) でも
-    truthy になる。int() に変換して比較する必要がある。
+    新SDKの文字列enumと、既存の数値enumのどちらでも未指定とブロックを区別する。
     """
     prompt_feedback = getattr(response, "prompt_feedback", None)
     if not prompt_feedback:
@@ -158,23 +157,30 @@ def get_prompt_block_reason(response: Any) -> str | None:
     block_reason = getattr(prompt_feedback, "block_reason", None)
     if block_reason is None:
         return None
-    try:
-        if int(block_reason) == 0:
-            return None
-    except (TypeError, ValueError):
+    value = getattr(block_reason, "value", block_reason)
+    if value in (None, 0, "0", "", "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"):
         return None
-    return getattr(block_reason, "name", str(block_reason))
+    return getattr(block_reason, "name", str(value))
 
 
 def safe_response_text(response: Any) -> str | None:
     """Gemini の response から安全にテキストを取得する。
 
-    response.text はプロパティとして実装されており、candidates が空の場合
-    （PROHIBITED_CONTENT 等でブロックされた場合）に例外を投げる。
-    getattr(response, "text", default) ではプロパティの例外を防げないため、
-    try/except で囲む必要がある。
+    新SDKの空応答・安全フィルタと、例外を投げる旧形式のプロパティを吸収する。
+    プロンプトや応答が安全フィルタでブロックされた場合は本文を返さない。
     """
     try:
+        if get_prompt_block_reason(response) is not None:
+            return None
+        candidates = getattr(response, "candidates", None)
+        if candidates:
+            reason = getattr(candidates[0], "finish_reason", None)
+            reason_name = getattr(reason, "name", str(reason))
+            if reason_name in {
+                "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+                "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION",
+            }:
+                return None
         text = response.text
         return text if text else None
     except (ValueError, IndexError, AttributeError):

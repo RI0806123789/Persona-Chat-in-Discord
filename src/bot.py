@@ -2,7 +2,6 @@ import sys
 
 import discord
 from discord import app_commands
-import google.generativeai as genai
 
 # Windows の既定コンソール（cp932）は絵文字などを出力できず、print した時点で
 # UnicodeEncodeError になって処理がそこで止まる。ボット名・ユーザーの発言・NGワード・
@@ -22,6 +21,7 @@ from auto_topic_service import AutoTopicService
 from autonomous_service import AutonomousService
 from background import make_guarded_loop, run_in_thread, spawn
 from blacklist_service import BlacklistService
+from bot_client import PersonaClient
 from commands import register_commands
 from constants import (
     ANNIVERSARY_CHECK_MINUTES,
@@ -41,6 +41,7 @@ from discord_helpers import post_welcome_message
 from document_service import DocumentService
 from feedback_service import FeedbackService, set_default_service
 from gemini_service import GeminiService
+from genai_client import create_genai_client
 from help_view import build_welcome_text, resolve_bot_name
 from memory_service import MemoryService
 from message_handler import MessageHandler
@@ -52,13 +53,13 @@ from usage_graph import UsageTracker
 
 
 settings = load_settings()
-genai.configure(api_key=settings.API_KEY_GEMINI)  # type: ignore[reportPrivateImportUsage]
+genai_client = create_genai_client(settings.API_KEY_GEMINI)
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
-client = discord.Client(intents=intents)
+client = PersonaClient(genai_client=genai_client, intents=intents)
 tree = app_commands.CommandTree(client)
 
 state = BotState()
@@ -68,12 +69,12 @@ database.initialize()
 # 保存済みのサーバーごとの設定（ペルソナ・モデル・応答モード・Google検索・自発会話）と
 # 記念日の投稿記録をメモリへ復元する。以降の設定変更は各 GuildSettings.persist() で保存される。
 state.restore_from_database(database)
-gemini = GeminiService(genai, settings.API_KEY_GEMINI)
-memory = MemoryService(state, genai, database)
+gemini = GeminiService(genai_client)
+memory = MemoryService(state, genai_client, database)
 affinity = AffinityService(database)
 ng_filter = NgWordFilter()
 moderator = ContentModerator(
-    genai,
+    genai_client,
     ng_filter,
     model_name=MODERATION_MODEL_NAME,
     timeout=MODERATION_TIMEOUT_SECONDS,

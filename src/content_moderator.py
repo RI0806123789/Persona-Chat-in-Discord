@@ -9,8 +9,12 @@ import asyncio
 from datetime import datetime
 from typing import Any
 
-from constants import MEMORY_ROUTE_CATEGORIES, REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE
+from constants import (
+    MEMORY_ROUTE_CATEGORIES, MODERATION_NG_WORD_SAMPLE_LIMIT,
+    REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE,
+)
 from ng_word_service import NgWordFilter
+from genai_client import generate_content
 from storage import extract_json_object, get_prompt_block_reason, safe_response_text
 from timeutil import format_weekday, resolve_timezone, timezone_label
 
@@ -114,12 +118,12 @@ def _build_prompt(
     """モデレーション用のプロンプトを組み立てる。"""
     ng_section = ""
     if ng_words:
-        # プロンプトが長くなりすぎないよう先頭100語まで
-        sample = ng_words[:100]
+        # プロンプトが長くなりすぎないようサンプル数を制限する。
+        sample = ng_words[:MODERATION_NG_WORD_SAMPLE_LIMIT]
         ng_section = (
             "\n## 参考: NGワードリスト\n"
             + ", ".join(sample)
-            + ("\n（他にもあります）" if len(ng_words) > 100 else "")
+            + ("\n（他にもあります）" if len(ng_words) > MODERATION_NG_WORD_SAMPLE_LIMIT else "")
             + "\n"
         )
 
@@ -165,13 +169,13 @@ class ContentModerator:
 
     def __init__(
         self,
-        genai_module: Any,
+        genai_client: Any,
         ng_filter: NgWordFilter,
         *,
         model_name: str = "gemini-3.1-flash-lite",
         timeout: float = 10.0,
     ) -> None:
-        self._genai = genai_module
+        self._genai_client = genai_client
         self._ng_filter = ng_filter
         self._model_name = model_name
         self._timeout = timeout
@@ -195,16 +199,9 @@ class ContentModerator:
         抜けた例外はそのメッセージの処理ごと落として無応答にしてしまう。
         """
         try:
-            model = self._genai.GenerativeModel(self._model_name)
-            response = await asyncio.wait_for(
-                model.generate_content_async(
-                    prompt,
-                    generation_config={
-                        "temperature": 0,
-                        "response_mime_type": "application/json",
-                    },
-                ),
-                timeout=self._timeout,
+            response = await generate_content(
+                self._genai_client, model=self._model_name, contents=prompt,
+                timeout=self._timeout, temperature=0, response_mime_type="application/json",
             )
 
             # Gemini がプロンプト自体をブロックした場合
@@ -214,10 +211,7 @@ class ContentModerator:
                 print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
                 return False, f"安全フィルタによりブロック ({reason_name})", None
 
-            # response.text はプロパティなので getattr のデフォルト値が使われず、
-            # 候補が空・ブロック済みだと例外が出る。捕捉する例外の種類を取りこぼさない
-            # よう、独自に try/except せず storage.safe_response_text 経由で読む
-            # （取得できなかった場合と空応答の場合はどちらも None が返る）。
+            # SDKの応答差異や空候補を各呼出側で処理せず、共通入口で安全に読む。
             result_text = safe_response_text(response)
             if result_text is None:
                 # candidates が空 = Gemini が応答を生成できなかった
@@ -334,10 +328,8 @@ async def screen_bot_response(
     NG ワードは ● でマスクし、モデレーションで不適切と判定された場合は
     定型の謝罪文に差し替える。チャット応答と文書応答で共通の後処理。
     """
-    if ng_filter is not None and ng_filter.contains_ng_word(response_text):
-        detected = ng_filter.find_ng_words(response_text)
-        print(f"NGワード検出 ({log_label}): {detected}")
-        response_text = ng_filter.mask_ng_words(response_text)
+    if ng_filter is not None:
+        response_text = ng_filter.mask_with_log(response_text, label=log_label)
 
     if moderator is not None:
         is_safe, reason = await moderator.check(response_text, direction="Bot応答")

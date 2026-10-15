@@ -13,6 +13,7 @@ from discord_helpers import (
     build_summary_source_text,
     fetch_messages_since,
     is_supported_message_channel,
+    send_long_message,
     split_message,
 )
 from gemini_service import GeminiService
@@ -189,16 +190,15 @@ class RunSummaryButton(ui.Button):
             await interaction.edit_original_response(content=text)
             return
 
-        chunks = split_message(text)
         if view.temp_private:
             # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
+            chunks = split_message(text)
             await interaction.edit_original_response(content=chunks[0])
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk, ephemeral=True)
         else:
             # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
-            for chunk in chunks:
-                await channel.send(chunk)
+            await send_long_message(channel, text)
             await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
 
 

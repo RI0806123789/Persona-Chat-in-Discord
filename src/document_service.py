@@ -1,12 +1,12 @@
 import asyncio
 import codecs
-import importlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 import discord
+from pypdf import PdfReader
 
 from affinity_service import strip_affinity_tag
 from app_state import BotState
@@ -17,6 +17,7 @@ from constants import (
     HISTORY_LIMIT,
     MAX_DOCUMENT_SIZE_BYTES,
     QUEUE_MAX_FINISHED_TASKS,
+    TEXT_VALIDATION_PREVIEW_BYTES,
 )
 from content_moderator import ContentModerator, screen_bot_response
 from database import Database
@@ -303,24 +304,18 @@ class DocumentService:
 
 
 def validate_pdf_file(temp_path: Path) -> None:
-    try:
-        pypdf_module = importlib.import_module("pypdf")
-    except ImportError:
-        pypdf_module = importlib.import_module("PyPDF2")
-
-    reader_class = getattr(pypdf_module, "PdfReader")
-    reader = reader_class(str(temp_path))
+    reader = PdfReader(str(temp_path))
     if reader.is_encrypted:
         raise ValueError("PDFが暗号化されています。")
 
 
 def validate_text_file(temp_path: Path) -> None:
     with open(temp_path, "rb") as file:
-        preview_bytes = file.read(4096)
-    # 4096バイト目がマルチバイト文字（日本語は3バイト）の途中になり得るため、
+        preview_bytes = file.read(TEXT_VALIDATION_PREVIEW_BYTES)
+    # プレビューの末尾がマルチバイト文字（日本語は3バイト）の途中になり得るため、
     # 途中で切れた場合は末尾の不完全な文字を許容してデコード検証する。
     # 単純な decode() だと正常な日本語ファイルが境界位置次第で拒否される。
-    truncated = len(preview_bytes) >= 4096
+    truncated = len(preview_bytes) >= TEXT_VALIDATION_PREVIEW_BYTES
     decoder = codecs.getincrementaldecoder("utf-8-sig")()
     decoder.decode(preview_bytes, final=not truncated)
 

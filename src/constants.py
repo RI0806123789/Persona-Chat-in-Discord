@@ -125,7 +125,9 @@ MAX_USAGE_HISTORY = 500
 
 # matplotlib で日本語ラベルを描くためのフォント候補（先頭から見つかったものを使う）。
 # 利用トークングラフと会話統計グラフで同じ見た目にするため、ここを唯一の情報源にする。
-GRAPH_FONT_FAMILY = ["Yu Gothic", "Meiryo", "sans-serif"]
+GRAPH_FONT_FAMILY = [
+    "Yu Gothic", "Meiryo", "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "sans-serif",
+]
 
 # ── UI（View / セレクトメニュー）共通 ──
 # 各パネル（View）の操作待ち時間（秒）。これを過ぎると UI を取り除いて時間切れ表示にする。
@@ -317,6 +319,7 @@ STATS_TIMEZONE = "Asia/Tokyo"
 # 発言回数ランキング（管理者用の全体比較）に載せる人数の上限。
 STATS_RANKING_TOP_N = 15
 # 時間帯ヒストグラムの区切り数（0時〜23時の24区分）。
+# 1時間単位の保存形式なので、区間数変更には記録処理と既存データの移行も必要。
 STATS_HOURLY_BUCKETS = 24
 # 新しく統計に載るユーザーの既定値。False = 収集する（従来どおり）。
 # 「原則収集しない（オプトイン）」運用に切り替えたい場合はここを True にする。
@@ -359,7 +362,7 @@ FEEDBACK_PRUNE_MINUTES = 60.0
 # /functions → ❓ 使い方 からいつでも読める。
 WELCOME_MESSAGE_ENABLED = True
 
-# ボイスチャンネルの読み上げ (/join 中のみ動作) 用
+# ボイスチャンネルの読み上げ（/join・自律行動での接続中）用
 # 退避先の gTTS に渡す言語コード（主エンジンの edge-tts は話者名で言語が決まる）。
 TTS_LANG = "ja"
 # 読み上げる最大文字数。超過分は切り捨てて末尾に TTS_TRUNCATION_NOTICE を付ける。
@@ -407,7 +410,7 @@ TTS_EQ_DEFAULT_Q = 0.707
 # Q 値の下限。0 に近づくと係数が発散するため、これ以下は切り上げる。
 TTS_EQ_MIN_Q = 0.1
 # ペルソナに eq が指定されていない / 未知の EQ 名だったときに使う既定の音色名
-# （VOICE_EQ_PROFILES のキー。加工なしを意味する）。
+# （VOICE_EQ_PROFILES のキー。既定は加工なし）。
 DEFAULT_VOICE_EQ_NAME = "flat"
 # int16 で表せる範囲。EQ のブーストでこれを超えたまま変換すると音が割れるため、
 # 必ずこの範囲へクリップしてから int16 に丸める。
