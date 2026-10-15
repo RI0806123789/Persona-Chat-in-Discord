@@ -50,6 +50,15 @@ class AutonomousSession:
     turn_count: int = 0
 
 
+@dataclass(frozen=True)
+class ResponseSettings:
+    """1つの応答の生成・評価・読み上げで共用する、変更されない設定。"""
+
+    prompt_file: str
+    model_name: str
+    grounding_enabled: bool
+
+
 @dataclass
 class GuildSettings:
     """1つの Discord サーバー（ギルド）に紐づく可変設定。
@@ -109,6 +118,14 @@ class GuildSettings:
     # 同じ記念日に同じサーバーで二重投稿しないための記録。DB にも保存され、
     # 起動時に復元される（当日に再起動しても同じお祝いを繰り返さないため）。
     anniversary_posted_dates: dict[str, str] = field(default_factory=dict)
+
+    def snapshot_response(self) -> ResponseSettings:
+        """非同期の処理を始める前に、今回の応答に使う設定を確定する。"""
+        return ResponseSettings(
+            prompt_file=self.current_prompt_file,
+            model_name=self.current_model_name,
+            grounding_enabled=self.grounding_enabled,
+        )
 
     def attach(self, db: Any, guild_id: int | None) -> None:
         """永続化先の Database と自分のギルドIDを紐づける（BotState が生成時に呼ぶ）。"""

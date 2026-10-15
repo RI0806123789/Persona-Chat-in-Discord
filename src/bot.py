@@ -17,7 +17,7 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception as _error:  # 出力設定の失敗でボットを止めない
             print(f"標準出力のエンコーディング設定に失敗しました: {_error}")
 
-from app_state import BotState
+from app_state import BotState, ResponseSettings
 from affinity_service import AffinityService, extract_affinity_changes
 from auto_topic_service import AutoTopicService
 from autonomous_service import AutonomousService
@@ -364,9 +364,14 @@ async def on_message(message: discord.Message) -> None:
     # 回らないまま発言が黙って捨てられる（メンション付きの発言まで無視されてしまう）。
     if autonomous.is_comment_channel(message.channel.id, guild_id):
         response_text = await autonomous.handle_comment(message, question, guild_settings)
+        tts_prompt_file = guild_settings.current_prompt_file
     elif accepts_normally:
         # 配信が終わっていても、通常のチャットとして受け付けられる発言なら普通に答える。
-        response_text = await handle_chat_message(message, question, memory_category)
+        response_settings = guild_settings.snapshot_response()
+        response_text = await handle_chat_message(
+            message, question, memory_category, response_settings=response_settings
+        )
+        tts_prompt_file = response_settings.prompt_file
     else:
         # 配信の終了と入れ違いに届いた、メンションの無い発言。配信が続いていれば
         # コメントとして拾えたが、終わった今は通常経路の条件も満たさないので何もしない。
@@ -374,18 +379,26 @@ async def on_message(message: discord.Message) -> None:
         return
     if response_text:
         # ボットが /join でボイスチャンネルに接続中のときだけ読み上げる（それ以外は no-op）。
-        # 声の高さ・速さ・音色をキャラクターに合わせるため、そのサーバーで選ばれている
-        # ペルソナを渡す（サービス層に BotState を読ませない規約に沿って値だけを渡す）。
-        await play_tts_response(message, response_text, guild_settings.current_prompt_file)
+        # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
+        await play_tts_response(message, response_text, tts_prompt_file)
 
 
-async def handle_chat_message(message: discord.Message, question: str, memory_category: str = "none") -> str | None:
+async def handle_chat_message(
+    message: discord.Message,
+    question: str,
+    memory_category: str = "none",
+    *,
+    response_settings: ResponseSettings | None = None,
+) -> str | None:
+    guild_id = message.guild.id if message.guild is not None else None
+    guild_settings = state.get_guild(guild_id)
+    # typing() の開始も待機を伴うため、その前に今回の値を確定する。
+    if response_settings is None:
+        response_settings = guild_settings.snapshot_response()
     async with message.channel.typing():
         memory.ensure_storage()
 
         user_id = str(message.author.id)
-        guild_id = message.guild.id if message.guild is not None else None
-        guild_settings = state.get_guild(guild_id)
         image_objects = await load_image_attachments(message.attachments)
         if not question:
             question = "この画像について説明・反応してください。"
@@ -402,10 +415,10 @@ async def handle_chat_message(message: discord.Message, question: str, memory_ca
         document_context = memory.build_document_memory_context(user_id)
 
         try:
-            prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            prompt = load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
         except FileNotFoundError:
-            print(f"エラー: {guild_settings.current_prompt_file} が見つかりません。")
-            await message.reply(f"エラー: プロンプトファイル({guild_settings.current_prompt_file})が見つかりませんでした。")
+            print(f"エラー: {response_settings.prompt_file} が見つかりません。")
+            await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")
             return None
 
         full_prompt = build_full_prompt(
@@ -417,10 +430,10 @@ async def handle_chat_message(message: discord.Message, question: str, memory_ca
         )
         response_text, usage_info, grounding_sources = await gemini.generate(
             full_prompt,
-            guild_settings.current_model_name,
+            response_settings.model_name,
             image_objects,
             timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-            grounding=guild_settings.grounding_enabled,
+            grounding=response_settings.grounding_enabled,
         )
 
         if response_text is None:
@@ -453,12 +466,12 @@ async def handle_chat_message(message: discord.Message, question: str, memory_ca
 
         sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
         # 送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
-        # どのモデル・ペルソナの返信だったかは後から辿れないため、この時点の値を渡す。
+        # 生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。
         feedback.track_reply(
             sent,
             target_user_id=user_id,
-            model_name=guild_settings.current_model_name,
-            prompt_file=guild_settings.current_prompt_file,
+            model_name=response_settings.model_name,
+            prompt_file=response_settings.prompt_file,
         )
         await memory.append_pending_log(user_id, question, response_text)
         spawn(memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
