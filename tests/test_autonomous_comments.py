@@ -170,6 +170,57 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.gemini.generate.assert_not_awaited()
         self.sent.assert_not_awaited()
 
+    async def test_repeated_unsafe_inputs_keep_the_admission_slot(self) -> None:
+        self.moderator.check_and_route.return_value = (False, "架空の判定", "none", None)
+        for _ in range(5):
+            await self.on_message(self.message)
+        self.moderator.check_and_route.assert_awaited_once()
+        self.notify.assert_awaited_once()
+        self.gemini.generate.assert_not_awaited()
+        self.moderator.check.assert_not_awaited()
+        self.sent.assert_not_awaited()
+
+        # AIで拒否された入力もAPI枠を消費し、直後の入力で判定をやり直さない。
+        self.moderator.check_and_route.return_value = (True, "", "none", None)
+        await self.on_message(self.message)
+        self.moderator.check_and_route.assert_awaited_once()
+        self.now += timedelta(seconds=AUTONOMOUS_COMMENT_COOLDOWN_SECONDS)
+        await self.on_message(self.message)
+        self.assertEqual(self.moderator.check_and_route.await_count, 2)
+        self.gemini.generate.assert_awaited_once()
+
+    async def test_local_ng_rejections_do_not_consume_the_admission_slot(self) -> None:
+        self.ng_filter.contains_ng_word.return_value = True
+        self.ng_filter.find_ng_words = Mock(return_value=["架空のNG対象"])
+        for _ in range(5):
+            await self.on_message(self.message)
+        self.assertEqual(self.ng_filter.contains_ng_word.call_count, 5)
+        self.assertEqual(self.notify.await_count, 5)
+        self.moderator.check_and_route.assert_not_awaited()
+        self.gemini.generate.assert_not_awaited()
+        self.assertIsNone(self.session.last_comment_reply_at)
+
+        # ローカル判定ではAPIを使わないため、直後の安全な入力は受け付ける。
+        self.ng_filter.contains_ng_word.return_value = False
+        await self.on_message(self.message)
+        self.moderator.check_and_route.assert_awaited_once()
+        self.gemini.generate.assert_awaited_once()
+
+    async def test_cooldown_accepts_at_the_exact_admission_boundary(self) -> None:
+        await self.on_message(self.message)
+        accepted_at = self.session.last_comment_reply_at
+        boundary = accepted_at + timedelta(seconds=AUTONOMOUS_COMMENT_COOLDOWN_SECONDS)
+        self.now = boundary - timedelta(microseconds=1)
+        await self.on_message(self.message)
+        self.moderator.check_and_route.assert_awaited_once()
+        self.assertEqual(self.session.last_comment_reply_at, accepted_at)
+
+        self.now = boundary
+        await self.on_message(self.message)
+        self.assertEqual(self.moderator.check_and_route.await_count, 2)
+        self.assertEqual(self.gemini.generate.await_count, 2)
+        self.assertEqual(self.session.last_comment_reply_at, boundary)
+
     async def test_admitted_unsafe_output_is_still_screened(self) -> None:
         self.moderator.check.return_value = (False, "架空の判定")
         await self.on_message(self.message)
