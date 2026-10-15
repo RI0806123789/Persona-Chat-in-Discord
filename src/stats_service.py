@@ -21,6 +21,8 @@ from constants import (
     STATS_TIMEZONE,
     STATS_TOPIC_COUNT,
 )
+from background import run_in_thread
+from graph_rendering import serialized_plot
 from database import Database
 from prompting import build_stats_analysis_prompt
 from storage import extract_json_object
@@ -140,7 +142,7 @@ class StatsService:
         if entry is None:
             return True
         try:
-            await asyncio.to_thread(self._db.stats_save_user, user_id, deepcopy(entry))
+            await run_in_thread(self._db.stats_save_user, user_id, deepcopy(entry))
         except Exception as error:
             print(f"会話統計の保存に失敗: {error}")
             return False
@@ -304,11 +306,17 @@ class StatsService:
     @staticmethod
     def _save_figure(figure: "plt.Figure") -> io.BytesIO:
         buffer = io.BytesIO()
-        figure.savefig(buffer, format="png", bbox_inches="tight")
-        plt.close(figure)
-        buffer.seek(0)
-        return buffer
+        try:
+            figure.savefig(buffer, format="png", bbox_inches="tight")
+            buffer.seek(0)
+            return buffer
+        except BaseException:
+            buffer.close()
+            raise
+        finally:
+            plt.close(figure)
 
+    @serialized_plot
     def build_hourly_graph(self, entry: dict) -> io.BytesIO:
         """時間帯別の発言回数ヒストグラム（24時間）。"""
         hourly = entry.get("hourly") or [0] * 24
@@ -325,6 +333,7 @@ class StatsService:
             axis.grid(True, axis="y", alpha=0.3)
             return self._save_figure(figure)
 
+    @serialized_plot
     def build_topic_graph(self, topics: list[dict]) -> io.BytesIO | None:
         """話題（トピック）の重み付き横棒グラフ。"""
         cleaned = [
@@ -348,6 +357,7 @@ class StatsService:
             axis.grid(True, axis="x", alpha=0.3)
             return self._save_figure(figure)
 
+    @serialized_plot
     def build_bigfive_radar(self, big_five: dict) -> io.BytesIO | None:
         """ビッグファイブ性格推定のレーダーチャート（5軸・0〜100）。"""
         keys = list(BIG_FIVE_LABELS.keys())
@@ -369,19 +379,31 @@ class StatsService:
             axis.set_title("性格推定（ビッグファイブ）", pad=20)
             return self._save_figure(figure)
 
-    def build_ranking_graph(self, top_n: int = 15) -> io.BytesIO | None:
+    async def build_ranking_graph(self, top_n: int = 15) -> io.BytesIO | None:
         """発言回数のユーザー別ランキング横棒グラフ（管理者用の全体比較）。
 
         収集停止中のユーザーは、データが残っていてもランキングに出さない
         （get_user_options と同じ理由）。
         """
-        items = [
-            (data.get("user_name") or uid, int(data.get("total_count", 0)))
+        snapshot = {
+            uid: (data.get("user_name") or uid, int(data.get("total_count", 0)))
             for uid, data in self.cache.items()
             if int(data.get("total_count", 0)) > 0 and not self._entry_opted_out(data)
-        ]
-        if not items:
+        }
+        if not snapshot:
             return None
+        versions = {uid: self._analysis_versions.get(uid, 0) for uid in snapshot}
+        graph = await run_in_thread(self._render_ranking_graph, list(snapshot.values()), top_n)
+        # 描画中に停止・削除したユーザーの情報を、管理者へ後から送信しない。
+        if any(uid not in self.cache or self._entry_opted_out(self.cache[uid])
+               or not self.cache[uid].get("total_count")
+               or versions[uid] != self._analysis_versions.get(uid, 0) for uid in snapshot):
+            graph.close()
+            return None
+        return graph
+
+    @serialized_plot
+    def _render_ranking_graph(self, items: list[tuple[str, int]], top_n: int) -> io.BytesIO:
         items.sort(key=lambda t: t[1], reverse=True)
         items = items[:top_n][::-1]  # 横棒は下から上へ並ぶため反転
         names = [i[0] for i in items]
@@ -409,13 +431,11 @@ class StatsService:
 
         viewer_id は「誰が見ているか」。収集停止中のユーザーのデータは、本人には
         注記つきで見せるが、他人（管理者）には「まだありません」と同じ文言を返して
-        停止していること自体を露見させない。**省略時（None）は本人が見ているものと
-        して扱う** — 現在の唯一の呼び出し元（stats_view.RunStatsButton）が閲覧者を
-        渡さないため。管理者は停止中のユーザーをセレクトから選べない
-        （get_user_options が除外する）ので実害は無いが、stats_view を次に触る
-        ときに viewer_id を渡すようにすれば、その経路も厳密に閉じられる。
+        停止していること自体を露見させない。省略時（None）は本人とみなす。
+        UIからは必ずviewer_idを渡す。描画中の削除や収集設定変更も世代で検出する。
         """
-        entry = self.cache.get(user_id)
+        entry = deepcopy(self.cache.get(user_id))
+        version = self._analysis_versions.get(user_id, 0)
         name = self.display_name(user_id)
         opted_out = bool(entry) and self._entry_opted_out(entry)
         # 他人が停止中のユーザーを指定した場合は、データの有無にかかわらず
@@ -426,48 +446,60 @@ class StatsService:
             return (f"{name} さんの会話データはまだありません。", [])
 
         images: list[tuple[str, io.BytesIO]] = []
-        lines = [
-            f"📈 **会話統計 — {name} さん**",
-            f"・累計発言回数: {int(entry.get('total_count', 0))} 回",
-        ]
-        if opted_out:
-            # 本人向けの注記。停止後も残っているデータを見ていることが分かるようにする。
-            lines.insert(1, "🔕 現在、統計収集を停止しています。（表示中のデータは停止前の記録です）")
+        try:
+            lines = [
+                f"📈 **会話統計 — {name} さん**",
+                f"・累計発言回数: {int(entry.get('total_count', 0))} 回",
+            ]
+            if opted_out:
+                # 本人向けの注記。停止後も残っているデータを見ていることが分かるようにする。
+                lines.insert(1, "🔕 現在、統計収集を停止しています。（表示中のデータは停止前の記録です）")
 
-        want_time = item in ("all", "time")
-        want_topic = item in ("all", "topic")
-        want_personality = item in ("all", "personality")
+            want_time = item in ("all", "time")
+            want_topic = item in ("all", "topic")
+            want_personality = item in ("all", "personality")
 
-        if want_time:
-            images.append(("stats_hourly.png", self.build_hourly_graph(entry)))
+            if want_time:
+                images.append(("stats_hourly.png", await run_in_thread(self.build_hourly_graph, entry)))
 
-        analysis = None
-        if want_topic or want_personality:
-            analysis = await self.ensure_analysis(user_id)
+            analysis = None
+            if want_topic or want_personality:
+                analysis = await self.ensure_analysis(user_id)
 
-        if want_topic:
-            topic_graph = self.build_topic_graph(analysis.get("topics", [])) if analysis else None
-            if topic_graph is not None:
-                images.append(("stats_topics.png", topic_graph))
-            else:
-                lines.append("・話題: 解析できるデータがありませんでした。")
-
-        if want_personality:
-            samples = entry.get("recent_samples") or []
-            if len(samples) < STATS_PERSONALITY_MIN_SAMPLES:
-                lines.append(
-                    f"・性格推定: データ不足のため表示できません"
-                    f"（発言 {len(samples)} 件 / 必要 {STATS_PERSONALITY_MIN_SAMPLES} 件）。"
-                )
-            else:
-                radar = self.build_bigfive_radar(analysis.get("big_five", {})) if analysis else None
-                if radar is not None:
-                    images.append(("stats_personality.png", radar))
-                    summary = analysis.get("personality") if analysis else ""
-                    if summary:
-                        lines.append(f"・性格推定: {summary}")
-                    lines.append("※ これは発言からの推定であり、確定的な性格診断ではありません。")
+            if want_topic:
+                topic_graph = await run_in_thread(self.build_topic_graph, deepcopy(analysis.get("topics", []))) if analysis else None
+                if topic_graph is not None:
+                    images.append(("stats_topics.png", topic_graph))
                 else:
-                    lines.append("・性格推定: 解析に失敗しました。時間をおいて再度お試しください。")
+                    lines.append("・話題: 解析できるデータがありませんでした。")
 
-        return ("\n".join(lines), images)
+            if want_personality:
+                samples = entry.get("recent_samples") or []
+                if len(samples) < STATS_PERSONALITY_MIN_SAMPLES:
+                    lines.append(
+                        f"・性格推定: データ不足のため表示できません"
+                        f"（発言 {len(samples)} 件 / 必要 {STATS_PERSONALITY_MIN_SAMPLES} 件）。"
+                    )
+                else:
+                    radar = await run_in_thread(self.build_bigfive_radar, deepcopy(analysis.get("big_five", {}))) if analysis else None
+                    if radar is not None:
+                        images.append(("stats_personality.png", radar))
+                        summary = analysis.get("personality") if analysis else ""
+                        if summary:
+                            lines.append(f"・性格推定: {summary}")
+                        lines.append("※ これは発言からの推定であり、確定的な性格診断ではありません。")
+                    else:
+                        lines.append("・性格推定: 解析に失敗しました。時間をおいて再度お試しください。")
+
+            current = self.cache.get(user_id)
+            if (not current or not current.get("total_count")
+                    or version != self._analysis_versions.get(user_id, 0)
+                    or (viewer_id is not None and viewer_id != user_id and self._entry_opted_out(current))):
+                for _, buffer in images:
+                    buffer.close()
+                return (f"{name} さんの会話データはまだありません。", [])
+            return ("\n".join(lines), images)
+        except BaseException:
+            for _, buffer in images:
+                buffer.close()
+            raise

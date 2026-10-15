@@ -1,0 +1,42 @@
+name: 回帰テスト
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.13']
+    env:
+      PYTHONIOENCODING: utf-8
+      MPLBACKEND: Agg
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Pythonを準備
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: 既存の依存関係をインストール
+        run: python -m pip install -r requirements.txt
+      - name: 依存関係の整合性を確認
+        run: python -m pip check
+      - name: Pythonソースの構文を確認
+        run: python -m compileall -q src deploy tests
+      - name: 外部通信・シークレット不要の回帰テスト
+        run: python -B -m unittest discover -s tests -v

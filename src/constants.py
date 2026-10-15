@@ -113,14 +113,11 @@ TEXT_VALIDATION_PREVIEW_BYTES = 4096
 QUEUE_MAX_FINISHED_TASKS = 50
 MAX_GROUNDING_SOURCES = 5
 GROUNDING_MODEL_NAME = "gemini-2.5-flash"
-# グラウンディングの REST 直接呼び出し（httpx）のタイムアウト（秒）。
-# 呼び出し側から timeout が渡されなかった場合の既定値として使う。
+# timeout未指定時の検索付き生成全体の期限（秒）。REST・SDKの全段で共有する。
 GROUNDING_REQUEST_TIMEOUT_SECONDS = 60.0
-# グラウンディング失敗時に GROUNDING_MODEL_NAME でもう一度リトライするか。
-# True: REST 失敗 → サブモデルで再試行 → それでもダメなら SDK（最悪3回呼び出し）。
-# False: REST 失敗 → 即 SDK フォールバック（最悪2回）。API 呼び出し回数を抑えたい
-# 場合は False にする。ただし選択モデルが REST グラウンディング非対応のとき、
-# 検索結果の質が下がる（グラウンディング無しへ早く落ちる）ことがある。
+# 検索ツール非対応を示す4xxの場合だけ、GROUNDING_MODEL_NAMEで再試行するか。
+# True: 選択モデルREST → サブモデルREST → 選択モデルSDKの順で非対応を回避する。
+# False: サブモデルを省いてSDKへ進む。期限切れ・5xx・認証・利用枠エラーは再試行しない。
 GROUNDING_SUBMODEL_RETRY_ENABLED = True
 
 # UsageTracker が保持するトークン履歴の上限（リングバッファ）

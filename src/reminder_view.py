@@ -1,6 +1,7 @@
 import discord
 from discord import ui
 
+from constants import DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
 from reminder_service import ReminderService
 from view_parts import BackButton, HubFactory, PanelView
 
@@ -14,16 +15,25 @@ def _build_status_text(records: list[dict], service: ReminderService) -> str:
             "※ 「毎朝7時に薬って知らせて」のように頼むと、繰り返しで登録されます。"
         )
 
-    lines = ["⏰ **リマインダーパネル** — 予定されているリマインダーです。"]
-    # Discord のセレクトは最大25件のため、一覧の表示もそれに揃える。
-    for record in records[:25]:
-        lines.append(f"・{service.describe(record)}")
-    if len(records) > 25:
-        lines.append(f"…ほか {len(records) - 25} 件")
-    lines.append("※ 取り消したいものはセレクトメニューから選んでください。")
+    header = "⏰ **リマインダーパネル** — 予定されているリマインダーです。"
+    # 本文の省略は表示だけに適用し、取り消し用の選択肢は減らさない。
+    lines = [
+        f"・{service.describe(record)}"
+        for record in records[:DISCORD_SELECT_MAX_OPTIONS]
+    ]
     # 繰り返しは通知しても消えず登録枠を占め続けるため、その点をここで案内する。
-    lines.append("※ （毎日）などの繰り返しは、取り消すまでこの一覧に残り続けます。")
-    return "\n".join(lines)
+    notes = [
+        "※ 取り消したいものはセレクトメニューから選んでください。",
+        "※ （毎日）などの繰り返しは、取り消すまでこの一覧に残り続けます。",
+    ]
+    while True:
+        omitted = len(records) - len(lines)
+        notice = [f"…ほか {omitted} 件"] if omitted else []
+        text = "\n".join([header, *lines, *notice, *notes])
+        # 注記・省略件数・改行も含めて上限を確認し、日時や本文の途中で切らない。
+        if len(text) <= REMINDER_PANEL_MAX_LENGTH or not lines:
+            return text
+        lines.pop()
 
 
 class ReminderCancelSelect(ui.Select):
@@ -32,7 +42,7 @@ class ReminderCancelSelect(ui.Select):
     def __init__(self, records: list[dict], service: ReminderService) -> None:
         options = []
         # Discord のセレクトは最大25件まで
-        for record in records[:25]:
+        for record in records[:DISCORD_SELECT_MAX_OPTIONS]:
             message = str(record.get("message", ""))
             options.append(
                 discord.SelectOption(

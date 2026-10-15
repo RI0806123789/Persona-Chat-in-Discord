@@ -159,8 +159,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.memory = SimpleNamespace(
             route_category=AsyncMock(return_value="none"),
-            build_context=Mock(return_value=""),
-            build_document_memory_context=Mock(return_value=""),
+            build_contexts=AsyncMock(return_value=("", "")),
             append_pending_log=AsyncMock(),
             flush_if_needed=AsyncMock(),
         )

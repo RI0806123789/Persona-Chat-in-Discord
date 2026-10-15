@@ -74,20 +74,29 @@ class GraphButton(ui.Button):
             await interaction.response.send_message("まだ利用データがありません。", ephemeral=True)
             return
 
-        buffer = hub.usage.build_graph_buffer()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        buffer = None
+        try:
+            buffer = await hub.usage.build_graph_buffer()
+        except Exception as error:
+            print(f"グラフ生成中にエラー: {error}")
+            await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
+            return
+        picture = None
         try:
             picture = discord.File(buffer, filename="usage_graph.png")
             # ハブは残したまま、グラフを新しいエフェメラルメッセージとして送る
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "📊 これまでの利用結果のグラフです。", file=picture, ephemeral=True
             )
         except Exception as error:
             print(f"グラフ送信中に予期せぬエラー: {error}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True
-                )
+            await interaction.followup.send(
+                "エラー: グラフの送信に失敗しました。", ephemeral=True
+            )
         finally:
+            if picture is not None:
+                picture.close()
             buffer.close()
 
 
@@ -291,10 +300,11 @@ class UnblockSelect(ui.Select):
         user_id = int(self.values[0])
         # 選択肢のラベルから表示名を拾う（通知メッセージ用）
         name = next((o.label for o in self.options if o.value == self.values[0]), str(user_id))
-        if view.blacklist.unblock(user_id):
-            await interaction.response.edit_message(content=f"✅ {name} のブロックを解除しました。", view=None)
+        await interaction.response.defer()
+        if await view.blacklist.unblock(user_id):
+            await interaction.edit_original_response(content=f"✅ {name} のブロックを解除しました。", view=None)
         else:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"{name} はブラックリストに登録されていませんでした。", view=None
             )
         view.stop()

@@ -10,7 +10,7 @@ import discord
 
 from affinity_service import strip_affinity_tag
 from app_state import BotState
-from background import spawn
+from background import run_in_thread, spawn
 from constants import (
     DOCUMENT_WORKER_IDLE_SECONDS,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
@@ -153,10 +153,10 @@ class DocumentService:
             for attachment in attachments:
                 await self._process_attachment(attachment, author_id, guild_settings.current_model_name)
 
-            prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            prompt_file = guild_settings.current_prompt_file
+            prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(prompt_file)))
             memory_category = await self._memory.route_category(question)
-            memory_context = self._memory.build_context(memory_category, author_id)
-            document_context = self._memory.build_document_memory_context(author_id)
+            memory_context, document_context = await self._memory.build_contexts(memory_category, author_id)
             history_text = await fetch_channel_history_text(
                 message.channel,
                 guild_settings.channel_reset_points.get(message.channel.id),

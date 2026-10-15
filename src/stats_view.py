@@ -110,25 +110,34 @@ class RankingButton(ui.Button):
             )
             return
 
-        buffer = view.stats.build_ranking_graph()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        buffer = None
+        try:
+            buffer = await view.stats.build_ranking_graph()
+        except Exception as error:
+            print(f"グラフ生成中にエラー: {error}")
+            await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
+            return
         if buffer is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "ランキングを表示できるデータがありません。", ephemeral=True
             )
             return
+        picture = None
         try:
             picture = discord.File(buffer, filename="stats_ranking.png")
             # パネルは残したまま、ランキングを新しいエフェメラルメッセージで送る。
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "📊 発言回数ランキング（全体比較）です。", file=picture, ephemeral=True
             )
         except Exception as error:
             print(f"ランキング送信中にエラー: {error}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"エラー: ランキングの送信に失敗しました。（{error}）", ephemeral=True
-                )
+            await interaction.followup.send(
+                "エラー: ランキングの送信に失敗しました。", ephemeral=True
+            )
         finally:
+            if picture is not None:
+                picture.close()
             buffer.close()
 
 

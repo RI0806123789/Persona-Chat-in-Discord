@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app_state import BotState
+from background import run_in_thread
 from constants import (
     ANNIVERSARY_PROFILE_KEY,
     DOCUMENT_SUMMARY_LIMIT,
@@ -114,39 +115,44 @@ class MemoryService:
 
     # ---- プロンプトへ差し込む記憶コンテキスト --------------------------------
 
-    def build_context(self, category: str, user_id: str) -> str:
-        self.ensure_storage()
-        if category == "profile":
-            profile = self._db.profile_load(str(user_id))
-            return json.dumps(profile, ensure_ascii=False, indent=2)
-        if category == "projects":
-            wrapper = self._load_projects_wrapper()
-            projects = self._user_projects(wrapper, user_id)
-            return json.dumps(projects, ensure_ascii=False, indent=2)
-        return ""
+    async def build_contexts(self, category: str, user_id: str, limit: int = 3) -> tuple[str, str]:
+        """同じスナップショットから通常記憶と文書記憶を作り、JSONを1回だけ読む。"""
+        async with self.io_lock:
+            return await run_in_thread(self._build_contexts, category, str(user_id), limit)
 
-    def build_document_memory_context(self, user_id: str, limit: int = 3) -> str:
+    def _build_contexts(self, category: str, user_id: str, limit: int) -> tuple[str, str]:
         self.ensure_storage()
         wrapper = self._load_projects_wrapper()
         projects = self._user_projects(wrapper, user_id)
+        context = ""
+        if category == "profile":
+            context = json.dumps(self._db.profile_load(user_id), ensure_ascii=False, indent=2)
+        elif category == "projects":
+            context = json.dumps(projects, ensure_ascii=False, indent=2)
         summaries = projects.get("document_summaries", [])
-        if not isinstance(summaries, list) or not summaries:
-            return ""
+        lines = []
+        if isinstance(summaries, list):
+            for summary in summaries[-limit:]:
+                if not isinstance(summary, dict):
+                    continue
+                name = str(summary.get("document_name", "unknown"))
+                text = str(summary.get("summary", "")).strip()
+                if text:
+                    lines.append(f"- {name}: {text}")
+        return context, "\n".join(lines)
 
-        lines: list[str] = []
-        for summary in summaries[-limit:]:
-            if not isinstance(summary, dict):
-                continue
-            document_name = str(summary.get("document_name", "unknown"))
-            summary_text = str(summary.get("summary", "")).strip()
-            if summary_text:
-                lines.append(f"- {document_name}: {summary_text}")
-        return "\n".join(lines)
+    async def build_context(self, category: str, user_id: str) -> str:
+        context, _ = await self.build_contexts(category, user_id)
+        return context
+
+    async def build_document_memory_context(self, user_id: str, limit: int = 3) -> str:
+        _, documents = await self.build_contexts("none", user_id, limit)
+        return documents
 
     async def append_pending_log(self, user_id: str, question: str, response_text: str) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         async with self.io_lock:
-            await asyncio.to_thread(
+            await run_in_thread(
                 self._db.pending_append, str(user_id), timestamp, question, response_text
             )
 
@@ -192,23 +198,24 @@ class MemoryService:
         return "none"
 
     async def store_document_summary(self, user_id: str, summary_data: dict[str, Any]) -> None:
-        self.ensure_storage()
         summary_data = {**summary_data, "created_at": datetime.now(timezone.utc).isoformat()}
         async with self.io_lock:
-            wrapper = self._load_projects_wrapper()
-            user_projects = wrapper["users"].setdefault(str(user_id), {})
-            if not isinstance(user_projects, dict):
-                user_projects = {}
-                wrapper["users"][str(user_id)] = user_projects
-            summaries = user_projects.get("document_summaries", [])
-            if not isinstance(summaries, list):
-                summaries = []
-            summaries.append(summary_data)
-            user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
-            await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
-            self._document_summary_versions[str(user_id)] = (
-                self._document_summary_versions.get(str(user_id), 0) + 1
-            )
+            await run_in_thread(self._store_document_summary, str(user_id), summary_data)
+
+    def _store_document_summary(self, user_id: str, summary_data: dict[str, Any]) -> None:
+        self.ensure_storage()
+        wrapper = self._load_projects_wrapper()
+        user_projects = wrapper["users"].setdefault(user_id, {})
+        if not isinstance(user_projects, dict):
+            user_projects = {}
+            wrapper["users"][user_id] = user_projects
+        summaries = user_projects.get("document_summaries", [])
+        if not isinstance(summaries, list):
+            summaries = []
+        summaries.append(summary_data)
+        user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
+        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
+        self._document_summary_versions[user_id] = self._document_summary_versions.get(user_id, 0) + 1
 
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
@@ -225,8 +232,8 @@ class MemoryService:
         # 取得順序は必ず flush_lock → io_lock（逆順で取る箇所を作らないこと）。
         async with self.flush_lock:
             async with self.io_lock:
-                self.ensure_storage()
-                user_ids = await asyncio.to_thread(self._db.pending_distinct_user_ids)
+                await run_in_thread(self.ensure_storage)
+                user_ids = await run_in_thread(self._db.pending_distinct_user_ids)
             if not user_ids:
                 return
 
@@ -238,7 +245,7 @@ class MemoryService:
                 if processed >= MEMORY_FLUSH_MAX_USERS_PER_RUN:
                     break
                 async with self.io_lock:
-                    entries = await asyncio.to_thread(self._db.pending_fetch_entries, str(user_id))
+                    entries = await run_in_thread(self._db.pending_fetch_entries, str(user_id))
                 if not entries:
                     continue
                 # _is_flush_required は同期の純粋判定なのでロックは要らない。
@@ -267,8 +274,8 @@ class MemoryService:
         max_entry_id = self._max_entry_id(entries)
 
         async with self.io_lock:
-            profile_snapshot = await asyncio.to_thread(self._db.profile_load, user_id)
-            wrapper = self._load_projects_wrapper()
+            profile_snapshot = await run_in_thread(self._db.profile_load, user_id)
+            wrapper = await run_in_thread(self._load_projects_wrapper)
             # スナップショットと同じロック区間で世代を記録する。
             # 圧縮中に上限から押し出された要約があっても、追加件数を失わない。
             document_summary_version = self._document_summary_versions.get(user_id, 0)
@@ -288,7 +295,7 @@ class MemoryService:
             print(f"記憶圧縮: プロンプトがブロックされました (user_id={user_id}, {error})")
             print(f"記憶圧縮: 処理不能な pending_log をクリアします (user_id={user_id})。")
             async with self.io_lock:
-                await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+                await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             return
         except Exception as error:
             await self._register_compact_failure(
@@ -306,15 +313,20 @@ class MemoryService:
 
         self._compact_fail_count[user_id] = 0
         async with self.io_lock:
-            await asyncio.to_thread(self._db.profile_replace_all, user_id, profile_data)
+            await run_in_thread(self._db.profile_replace_all, user_id, profile_data)
             # projects.json はこのユーザーのスライスだけ差し替える（他ユーザーの分は保持）。
             # 圧縮前のスナップショットではなく読み直すのは、待っている間に別経路
             # （文書要約の保存）が同じファイルを更新している可能性があるため。
-            wrapper = self._load_projects_wrapper()
-            self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_version)
-            wrapper["users"][user_id] = projects_data
-            await asyncio.to_thread(write_json_file, PROJECTS_MEMORY_PATH, wrapper)
-            await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+            wrapper = await run_in_thread(self._load_projects_wrapper)
+            await run_in_thread(
+                self._save_compacted_projects, wrapper, user_id, projects_data, document_summary_version,
+            )
+            await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+
+    def _save_compacted_projects(self, wrapper, user_id, projects_data, document_summary_version) -> None:
+        self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_version)
+        wrapper["users"][user_id] = projects_data
+        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
 
     @staticmethod
     def _max_entry_id(entries: list[dict[str, Any]]) -> int:
@@ -383,7 +395,7 @@ class MemoryService:
         if count >= MEMORY_COMPACT_MAX_FAILURES:
             print(f"記憶圧縮: 連続失敗のため pending_log をクリアします (user_id={user_id})。")
             async with self.io_lock:
-                await asyncio.to_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+                await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             self._compact_fail_count[user_id] = 0
 
     def _is_flush_required(self, entry_count: int) -> bool:

@@ -73,10 +73,12 @@ python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import
 文書処理・記憶圧縮・会話リセット・自律行動・会話統計などの回帰テストは標準ライブラリの `unittest` で実行できます。
 
 ```bash
-python -m unittest discover -s tests -v
+python -B -m unittest discover -s tests -v
 ```
 
-テスト全般とCIの整備は [Issue #10](https://github.com/RI0806123789/Persona-Chat-in-Discord/issues/10) で扱います。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。外部サービスの呼び出しはモックに置き換え、DBの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため、完全ローカルの確認では避けてください。
+APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
+
+[回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.10／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
 
 ## Discord・Geminiを使う確認
 

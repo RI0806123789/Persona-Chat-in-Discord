@@ -59,6 +59,35 @@ def _on_task_done(task: asyncio.Task[Any], label: str) -> None:
         print(f"バックグラウンド処理エラー ({label}): {type(error).__name__}: {error}")
 
 
+async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """同期処理を別スレッドで実行し、キャンセル時も完了まで呼出元のロックを保つ。"""
+    async def invoke():
+        try:
+            return await asyncio.to_thread(function, *args, **kwargs), None
+        except Exception as error:
+            return None, error
+
+    worker = spawn(invoke(), label="同期I/O・描画処理")
+    canceled = False
+    while True:
+        try:
+            result, error = await asyncio.shield(worker)
+            break
+        except asyncio.CancelledError:
+            if worker.cancelled():
+                raise
+            # スレッド自体はキャンセルできない。繰り返しのキャンセルでも待機を続ける。
+            canceled = True
+    if canceled:
+        # 生成済みの画像バッファは受け取る側が無いので、この場で回収する。
+        if hasattr(result, "close"):
+            result.close()
+        raise asyncio.CancelledError
+    if error is not None:
+        raise error
+    return result
+
+
 def make_guarded_loop(
     coro_factory: Callable[[], Coroutine[Any, Any, Any]],
     *,

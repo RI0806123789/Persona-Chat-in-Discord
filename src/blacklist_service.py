@@ -7,11 +7,14 @@ ng/blacklist.json を使って、不適切な発言を繰り返すユーザー�
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from constants import BLACKLIST_PATH, BLACKLIST_MAX_VIOLATIONS
+from background import run_in_thread
 from storage import load_json_file, write_json_file
 
 
@@ -21,15 +24,16 @@ class BlacklistService:
     def __init__(self, path: Path = BLACKLIST_PATH) -> None:
         self._path = path
         self._data: dict[str, Any] = {}
+        self._io_lock = asyncio.Lock()
         self.reload()
 
     def reload(self) -> None:
         """ng/blacklist.json からデータを読み込む。"""
         self._data = load_json_file(self._path, {})
 
-    def _save(self) -> None:
+    def _save(self, data: dict[str, Any]) -> None:
         """現在のデータを ng/blacklist.json に書き込む。"""
-        write_json_file(self._path, self._data)
+        write_json_file(self._path, data)
 
     # ------------------------------------------------------------------
     # 参照系
@@ -61,13 +65,18 @@ class BlacklistService:
     # 更新系
     # ------------------------------------------------------------------
 
-    def record_violation(self, user_id: int, user_name: str) -> tuple[int, bool]:
+    async def record_violation(self, user_id: int, user_name: str) -> tuple[int, bool]:
+        async with self._io_lock:
+            return await run_in_thread(self._record_violation, user_id, user_name)
+
+    def _record_violation(self, user_id: int, user_name: str) -> tuple[int, bool]:
         """違反を1回記録し、(新しい違反回数, ブロックされたか) を返す。
 
         3回目の違反でブロック状態に移行する。
         """
         key = str(user_id)
-        record = self._data.get(key, {"count": 0, "blocked": False})
+        data = deepcopy(self._data)
+        record = data.get(key, {"count": 0, "blocked": False})
 
         # 既にブロック済みの場合はカウントを増やさずに現在の状態を返す
         if record.get("blocked", False):
@@ -82,12 +91,17 @@ class BlacklistService:
             record["blocked_at"] = datetime.now(timezone.utc).isoformat()
             just_blocked = True
 
-        self._data[key] = record
-        self._save()
+        data[key] = record
+        self._save(data)
+        self._data = data
 
         return record["count"], just_blocked
 
-    def unblock(self, user_id: int) -> bool:
+    async def unblock(self, user_id: int) -> bool:
+        async with self._io_lock:
+            return await run_in_thread(self._unblock, user_id)
+
+    def _unblock(self, user_id: int) -> bool:
         """指定ユーザーのブロックを解除し、違反カウントをリセットする。
 
         Returns:
@@ -98,6 +112,8 @@ class BlacklistService:
         if key not in self._data:
             return False
 
-        del self._data[key]
-        self._save()
+        data = deepcopy(self._data)
+        del data[key]
+        self._save(data)
+        self._data = data
         return True

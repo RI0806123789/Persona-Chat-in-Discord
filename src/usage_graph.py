@@ -8,6 +8,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from background import run_in_thread
+from graph_rendering import serialized_plot
 from constants import MAX_USAGE_HISTORY
 
 
@@ -55,13 +57,19 @@ class UsageTracker:
         print(f"AI：{response_text}")
         print("-" * 124)
 
-    def build_graph_buffer(self) -> io.BytesIO:
+    async def build_graph_buffer(self) -> io.BytesIO:
+        # 3列を同じ時点でコピーする。描画待機中のrecordで系列の長さが食い違わない。
+        snapshot = (list(self.input_tokens), list(self.output_tokens), list(self.total_tokens))
+        return await run_in_thread(self._render_graph_buffer, *snapshot)
+
+    @serialized_plot
+    def _render_graph_buffer(self, input_tokens, output_tokens, total_tokens) -> io.BytesIO:
         with plt.rc_context({"font.family": ["Yu Gothic", "Meiryo", "sans-serif"]}):
             figure, axis = plt.subplots(figsize=(10, 6))
-            x = np.arange(1, len(self.total_tokens) + 1)
-            axis.plot(x, list(self.input_tokens), label="入力トークン数", marker="o", color="red")
-            axis.plot(x, list(self.output_tokens), label="出力トークン数", marker="o", color="blue")
-            axis.plot(x, list(self.total_tokens), label="合計トークン数", marker="o", color="green")
+            x = np.arange(1, len(total_tokens) + 1)
+            axis.plot(x, input_tokens, label="入力トークン数", marker="o", color="red")
+            axis.plot(x, output_tokens, label="出力トークン数", marker="o", color="blue")
+            axis.plot(x, total_tokens, label="合計トークン数", marker="o", color="green")
             axis.set_xlabel("利用回数")
             axis.set_ylabel("トークン数")
             axis.set_title("Gemini API 利用結果のトークン数推移")
@@ -69,8 +77,13 @@ class UsageTracker:
             axis.grid(True)
 
             buffer = io.BytesIO()
-            figure.savefig(buffer, format="png")
-            plt.close(figure)
-            buffer.seek(0)
-            return buffer
+            try:
+                figure.savefig(buffer, format="png")
+                buffer.seek(0)
+                return buffer
+            except BaseException:
+                buffer.close()
+                raise
+            finally:
+                plt.close(figure)
 

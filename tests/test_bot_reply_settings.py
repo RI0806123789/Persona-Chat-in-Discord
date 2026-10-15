@@ -1,10 +1,8 @@
 """設定変更を挟んでも、生成・評価・読み上げで同じ応答設定を使うことを検証する。"""
 
-import ast
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import __future__
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -17,6 +15,7 @@ import discord
 from affinity_service import extract_affinity_changes
 from app_state import BotState
 from background import spawn
+from message_handler_helpers import make_message_handler
 from constants import GEMINI_RESPONSE_TIMEOUT_SECONDS, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES
 from content_moderator import screen_bot_response
 from discord_helpers import (
@@ -24,22 +23,6 @@ from discord_helpers import (
     is_supported_document_attachment, is_supported_message_channel,
 )
 from prompting import build_full_prompt, build_memory_sections
-
-
-def load_message_handlers(namespace):
-    # bot.py は import しない。設定読込・DB初期化・イベント登録を実行せず、
-    # 対象の実関数だけを AST から取り出し、外部依存をモックへ差し替えて実行する。
-    path = Path(__file__).resolve().parents[1] / "src" / "bot.py"
-    parsed = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-    handlers = [node for node in parsed.body if isinstance(node, ast.AsyncFunctionDef)
-                and node.name in {"on_message", "handle_chat_message"}]
-    if len(handlers) != 2:
-        raise AssertionError("メッセージ処理の対象関数が見つかりません")
-    for handler in handlers:
-        handler.decorator_list = []
-    module = ast.Module(body=handlers, type_ignores=[])
-    exec(compile(module, str(path), "exec", flags=__future__.annotations.compiler_flag), namespace)
-    return namespace["on_message"]
 
 
 class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
@@ -91,7 +74,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.feedback = SimpleNamespace(track_reply=Mock())
         self.voice = AsyncMock()
-        self.loader = Mock(side_effect=lambda path: f"ペルソナ: {path}")
+        self.loader = Mock(side_effect=lambda path: f"ペルソナ: {path.as_posix()}")
         self.namespace = {
             "discord": discord, "state": self.state,
             "client": SimpleNamespace(user=SimpleNamespace(id=99)),
@@ -108,8 +91,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             ),
             "stats": SimpleNamespace(record=AsyncMock()),
             "memory": SimpleNamespace(
-                ensure_storage=Mock(), build_context=Mock(return_value=""),
-                build_document_memory_context=Mock(return_value=""),
+                build_contexts=AsyncMock(return_value=("", "")),
                 append_pending_log=AsyncMock(), flush_if_needed=AsyncMock(),
             ),
             "affinity": SimpleNamespace(build_dynamic_prompt=Mock(return_value="架空の親密度")),
@@ -131,7 +113,8 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             "HISTORY_LIMIT": HISTORY_LIMIT, "MAX_DOCUMENT_SIZE_BYTES": MAX_DOCUMENT_SIZE_BYTES,
             "GEMINI_RESPONSE_TIMEOUT_SECONDS": GEMINI_RESPONSE_TIMEOUT_SECONDS,
         }
-        self.on_message = load_message_handlers(self.namespace)
+        self.handler = make_message_handler(self.namespace, self)
+        self.on_message = self.handler.on_message
 
     async def asyncTearDown(self) -> None:
         await asyncio.gather(*self.tasks)
