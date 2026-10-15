@@ -160,6 +160,28 @@ def _build_env_text(values: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _write_secret_file(path: Path, text: str) -> None:
+    """秘密情報を含むファイルを、**最初から**本人だけが読める権限（600）で書き出す。
+
+    以前は「既定の権限で書いてから chmod 600」だったため、作成から chmod までの間は
+    umask 次第（Ubuntu の既定は 022 → 644）で他のユーザーからキーが読めた。chmod に
+    失敗するとその権限のまま残り、--force の上書きでも元の権限のまま書き込まれていた。
+    そこで os.open の作成時の mode で 600 を指定し、既存ファイルを上書きする場合
+    （O_CREAT の mode は新規作成時にしか効かない）も、中身を書く前に 600 へ揃える。
+    Windows ではこの権限モデルが無く実質的に無視されるが、エラーにはならない。
+
+    改行は LF に固定する（Windows で生成して Linux へ持って行っても崩れないように）。
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(handle.fileno(), 0o600)
+            except OSError as exc:
+                print(f"注意: パーミッションを 600 に変更できませんでした: {exc}")
+        handle.write(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="旧 config_private.py / config.py から .env を生成します。"
@@ -214,15 +236,7 @@ def main() -> int:
             print(f"  {line}")
         return 0
 
-    # 改行は LF に固定する（Windows で生成して Linux へ持って行っても崩れないように）。
-    ENV_PATH.write_text(env_text, encoding="utf-8", newline="\n")
-
-    # 秘密情報のファイルなので本人だけが読める権限にする。
-    # Windows ではこの権限モデルが無く実質的に無視されるが、エラーにはならない。
-    try:
-        os.chmod(ENV_PATH, 0o600)
-    except OSError as exc:
-        print(f"注意: パーミッションを 600 に変更できませんでした: {exc}")
+    _write_secret_file(ENV_PATH, env_text)
 
     print(f".env を作成しました: {ENV_PATH}")
     print("")
