@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-このファイルは、このリポジトリで作業する際の Claude Code (claude.ai/code) 向けガイダンスです。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 概要
 
@@ -55,7 +55,19 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 
 ## ボットの起動
 
-このリポジトリにはビルド手順・リンター設定・テストスイートは存在しない。開発は「実行して挙動を観察する」スタイル。
+このリポジトリにはビルド手順・リンター設定・テストスイートは存在しない（自動テストと CI の整備は #10）。開発は「実行して挙動を観察する」スタイル。
+
+**ローカル確認**（リポジトリルートで実行。`.env`・実際の DB・Discord・Gemini を使わない。`CONTRIBUTING.md` と同じもの）:
+
+```bash
+python -m pip check
+# src/ と deploy/ の全 .py の構文確認（モジュールは起動しない）
+python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+# 個別モジュールの動作確認の例（src を import パスに足す）
+python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; assert [len(p) for p in split_message('あ' * 4001)] == [2000, 2000, 1]; print('メッセージ分割: OK')"
+```
+
+確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。それ以外のモジュールは `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
 
 ```bash
 # 1. 依存関係のインストール (Python 3.10+)
@@ -93,6 +105,8 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## アーキテクチャ
 
+全体像の図は `docs/フロー図.drawio`（draw.io 形式。起動フロー・メッセージ受信〜応答・`on_message` パイプライン・自律行動の 4 ページ）にある。図はコードを書き写したものなので、構成を変えたら図も直すこと。
+
 ### 配線 (`bot.py`)
 
 `bot.py` がコンポジションルート（合成の起点）。設定を読み込み、`genai` を構成し、`Database`（`database.py`、後述）を最初に初期化してから、各サービスのインスタンスを1つずつ生成して、DI フレームワークを使わず手作業で相互に注入する。共有される可変ランタイム状態はすべて単一の `BotState` データクラス（`app_state.py`）にまとめられ、必要なサービスに渡される。**ただしペルソナ・モデル・応答モードなど「サーバーごとに変わる設定」は `BotState` 直下ではなく `GuildSettings` に入っている**（「ギルド単位の設定」の項を参照）。`register_commands`（`commands.py`）がスラッシュコマンドを `CommandTree` に登録する。`on_ready` でコマンドを同期し、各種の見回りループ（`memory_maintenance_loop` / `auto_topic_loop` / `autonomous_loop` / `anniversary_loop` / `reminder_loop` / `feedback_prune_loop`。いずれも `background.make_guarded_loop` で作る）を開始し、文書ワーカーのコルーチンを起動する。ループの二重起動は `BotState` の `*_background_started` フラグで防ぐ（`on_ready` は再接続のたびに発火するため）。
@@ -116,8 +130,9 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 2. **ブラックリスト**（`blacklist_service`）— ブロック中のユーザーは黙って破棄される。
 3. **NG ワードフィルタ**（`ng_word_service`）— クリーニング済みテキストへの正規表現マッチ → `notify_violation`。
 4. **ユーザー入力の AI モデレーション＋記憶ルーティング＋リマインダー抽出**（`content_moderator.check_and_route`）→ 不適切なら `notify_violation`。安全なら記憶カテゴリ（`profile`/`projects`/`none`）と、リマインダー依頼なら日時＋本文も同時に得る。**対象テキストが同一なので3つの判定を1回の Gemini 呼び出しに統合して API コストを抑えている**（個別に呼べば3回）。戻り値は `(is_safe, reason, category, reminder)` の4つ。
-5. **リマインダー**（`reminder_service.create_from_request`）— 依頼が抽出されていれば登録し、確認だけ返して以降の処理は行わない（同じ発言にチャット返信も返すと二重投稿になるため）。日時が過去・解釈不能などで登録を見送った場合は `None` が返るので、通常の会話へ流す。
-6. **ルーティング**: 文書添付（`pdf/txt/csv/md`）は非同期の `DocumentService` ワーカーへキュー登録され、後で回答される（ワーカー側で別途 `route_category` する）。それ以外は、自律行動の配信中のチャンネルなら `autonomous.handle_comment`（配信者としての応答）、それ以外は `handle_chat_message` が同期的に実行される。同期チャット返信の後は、必ず `play_tts_response`（`voice.py`）が呼ばれて読み上げを試みる — ボットがボイスチャンネルに接続中でない限り no-op（何もしない）。再生中に届いた返信はキューに積まれ、順番に読み上げられる。
+5. **添付の振り分け** — 未対応の拡張子が混ざっていれば断って終了する。文書添付（`pdf/txt/csv/md`）はサイズ（`MAX_DOCUMENT_SIZE_BYTES`）を確かめてから非同期の `DocumentService` ワーカーへキュー登録し、受付の返信だけ返して終了する（後でワーカーが回答する。ワーカー側で別途 `route_category` する）。画像だけの添付は通常のチャットへ進む。
+6. **会話統計の記録とリマインダー** — `stats.record` を fire-and-forget で呼んでから、リマインダー依頼が抽出されていれば `reminder_service.create_from_request` で登録し、確認だけ返して以降の処理は行わない（同じ発言にチャット返信も返すと二重投稿になるため）。日時が過去・解釈不能などで登録を見送った場合は `None` が返るので、通常の会話へ流す。文書を添えた依頼は 5 で終わるため、リマインダーより文書処理が優先される。
+7. **ルーティング** — 自律行動の配信中のチャンネルなら `autonomous.handle_comment`（配信者としての応答）、それ以外は `handle_chat_message` が同期的に実行される。配信中かどうかは**ここで取り直す**（4 の Gemini 呼び出しの間に配信が終わることがあるため）。同期チャット返信の後は、必ず `play_tts_response`（`voice.py`）が呼ばれて読み上げを試みる — ボットがボイスチャンネルに接続中でない限り no-op（何もしない）。再生中に届いた返信はキューに積まれ、順番に読み上げられる。
 
 `notify_violation` は違反を1回記録し、3回目でユーザーをブラックリスト登録する（`BLACKLIST_MAX_VIOLATIONS`）。NG ワードとモデレーションは、送信前に**ボット自身の応答に対しても再度**適用される（応答中の NG ワードは ● でマスクされ、不適切な応答は定型の謝罪文に差し替えられる）。
 
@@ -201,7 +216,7 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
 
-`/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間に `BotState.grounding_enabled` を反転する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。
+`/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間にそのサーバーの `GuildSettings.grounding_enabled` を反転して保存する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。
 
 ### 自発的な会話 (`auto_topic_service.py`, `auto_topic_view.py`)
 
@@ -217,7 +232,7 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ### 自律行動（ボイス/ステージでの「配信」） (`autonomous_service.py`, `auto_topic_view.py`)
 
-**ボットが自分の意志でボイス/ステージチャンネルへ入り、独り言を続けながら、聞きに来た人のコメントへ配信者のように応答する機能。** 自発的な会話が「テキストへ話題を1つ投稿する」だけなのに対し、こちらは通話に居座って会話の場そのものを作る。デフォルトは**無効**で、`/functions` → **💬 自発会話** の 🎙️ 自律行動 トグルから有効化する（前項参照）。
+**ボットが自分の意志でボイス/ステージチャンネルへ入り、独り言を続けながら、聞きに来た人のコメントへ配信者のように応答する機能。** 自発的な会話が「テキストへ話題を1つ投稿する」だけなのに対し、こちらは通話に居座って会話の場そのものを作る。デフォルトは**無効**で、`/functions` → **💬 自発会話** の 🎙️ 自律行動 トグルから有効化する（前項参照）。ver0.1.7(BETA) の機能。この節で「idea.md」と書いているのは、この機能の要件をまとめた利用者のメモのこと。**リポジトリには含まれていない**ので探さなくてよい（参照している要件は、この節にすべて書き写してある）。
 
 - **話したいゲージ**（`compute_talk_desire`。モジュール関数なのでパネル表示からも呼べる）: 0〜100。基礎値は無会話時間に比例し、`auto_topic_interval_hours` で 100 に届く。そこへ「直近 `AUTONOMOUS_ACTIVITY_WINDOW_MINUTES` の人間の発言数 × `AUTONOMOUS_ACTIVITY_BONUS_PER_MESSAGE`」を `AUTONOMOUS_ACTIVITY_BONUS_MAX` を上限に加点する（人が集まっているサーバーほど早く話したくなる）。**人間の発言をまだ一度も観測していないサーバーでは 0 を返す** — 招待されただけのサーバーや再起動直後に、いきなりボイスへ入り込まないための歯止め。観測は `on_message` から呼ばれる `mark_activity` が行う。
 - **【重要】開始に失敗したら必ず `_record_start_failure` を通すこと**: ゲージは開始に失敗しても下がらない（時間が経つほど増えるだけ）ため、記録しないと次の見回り＝1分後に同じ判定が通り、**接続→失敗→切断を永久に繰り返す**（権限設定が中途半端なサーバーが1つあるだけで1日1440回）。待ち時間は `AUTONOMOUS_START_RETRY_COOLDOWN_MINUTES × 連続失敗回数`（`AUTONOMOUS_START_RETRY_MAX_MULTIPLIER` 倍で頭打ち。既定 30分〜最長4時間）。**ゲージ自体はリセットしない** — リセットすると権限を直したあともしきい値時間ぶん待たされる。代わりに `/functions` のパネルで確定するとこの待ち時間が即座に解除される。開始に成功したら `autonomous_start_failures` / `autonomous_start_retry_at` を消すこと。行き先が無い（`_pick_channel` が None）場合だけは API を1回も叩いていないので待ち時間を入れない。
@@ -268,18 +283,18 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
 
-`/functions` の **📈 会話統計** から開く、ユーザー別の会話ダッシュボード。**すべてエフェメラル（非公開）で表示される。** 集計対象は「ボットへの発言のみ」で、`on_message` パイプラインの `handle_chat_message` 直前に `stats.record(...)` を fire-and-forget で呼んで蓄積する（失敗してもチャット本体は止めないフェイルオープン）。データは DB の `user_stats` テーブルに永続化され、`asyncio.Lock` で保存を直列化する（単一プロセス前提）。
+`/functions` の **📈 会話統計** から開く、ユーザー別の会話ダッシュボード。**すべてエフェメラル（非公開）で表示される。** 集計対象は「ボットへの発言のみ」で、`on_message` パイプラインの添付の振り分けの後（リマインダー判定の前。配信中のコメントも含む）に `stats.record(...)` を fire-and-forget で呼んで蓄積する（失敗してもチャット本体は止めないフェイルオープン）。データは DB の `user_stats` テーブルに永続化され、`asyncio.Lock` で保存を直列化する（単一プロセス前提）。
 
 - **集計データ**: ユーザーごとに累計発言回数・時間帯別ヒストグラム（`hourly[24]`、`STATS_TIMEZONE`＝`Asia/Tokyo` の「時」に変換）・直近発言サンプル（`STATS_RECENT_SAMPLES_MAX` 件のリングバッファ）を記録する。
 - **話題・性格の LLM 解析** (`ensure_analysis`): 直近サンプルを Gemini に渡し、「よく話す話題」と「ビッグファイブ性格特性」を JSON で推定する。結果は `STATS_ANALYSIS_TTL_HOURS` の間キャッシュし、TTL 内なら再計算しない。LLM 呼び出し・パース失敗時は既存キャッシュにフォールバックする。性格推定は `STATS_PERSONALITY_MIN_SAMPLES` 件未満のとき「データ不足」として描画をスキップする。
 - **項目別グラフ** (matplotlib、`usage_graph.py` と同じ日本語フォント作法): 時間帯＝棒グラフ / 話題＝重み付き横棒 / 性格＝ビッグファイブのレーダーチャート。項目セレクトで「全部 / 時間帯 / 話題 / 性格推定」を切り替えられる。
 - **権限**: 一般ユーザーは**自分の統計のみ**閲覧できる（対象は `viewer_id` に固定）。**管理者のみ**、ユーザー選択メニューで他メンバーの統計を見られ、発言回数ランキング（全体比較）ボタンも使える。権限判定は `interaction.user.guild_permissions.administrator` によるサーバー側判定で、`RankingButton` 側でも二重にチェックする。
-- **再起動でリセットされない**: `user_stats.json`（`memory/` 配下）に永続化される。調整値（TTL・上限・タイムアウト・タイムゾーン）は `constants.py` の `STATS_*` に集約。
+- **再起動でリセットされない**: DB の `user_stats` テーブルに永続化される。調整値（TTL・上限・タイムアウト・タイムゾーン）は `constants.py` の `STATS_*` に集約。
 - **収集の停止（opt-out）** (`stats_privacy_view.py`): 本人が `/functions` → **🔒 統計プライバシー** から統計収集そのものを止められる。設定はユーザー単位で**全サーバー横断**（統計データ自体が `user_id` 単位でサーバーをまたぐため）、`user_stats.stats_opt_out` 列（スキーマ バージョン8）に永続化される。既定値は `STATS_OPT_OUT_DEFAULT`（`False` ＝従来どおり収集する。`True` にすると「原則収集しない」オプトイン運用になる）。
   - **判定は `StatsService` の内部で行う**（`record()` の冒頭＝エントリ生成より前、と `ensure_analysis()` の入口）。呼び出し側（`bot.py`）ではチェックしない — `record` の呼び出し箇所が増えたときのチェック漏れを防ぎ、fire-and-forget の主経路に `await` を足さないため。判定は `is_opted_out()` の**キャッシュ参照のみ**で DB へは行かない。
   - **【最重要】`Database.stats_save_all` は DELETE → 全行 INSERT の総入れ替え**。INSERT の列に `stats_opt_out` を書き漏らすと、**誰かが発言するたびに全員の opt-out が既定値へ黙って戻る**。`user_stats` に列を足すときは `stats_load_all` と対で直し、必ず「保存→読み込み→保存」の往復を実測すること。
   - **停止と削除は別操作**: 停止（opt-out）は以降の収集を止めるだけで既存データは残る。🗑️ 蓄積データを削除（2回押しの確認つき）が集計値・発言サンプル・解析キャッシュを消す。**削除で行ごと消さないこと**（`del cache[user_id]` は禁止 — opt-out の設定まで消える）。
-  - **他人からは見えない**: opt-out 中のユーザーは管理者のユーザー選択（`get_user_options`）と発言回数ランキング（`build_ranking_graph`）から除外される。他人が opt-out 中のユーザーを指定した場合は、既存の「◯◯ さんの会話データはまだありません。」と**同一の文言**を返す（専用の文言を出すと停止していること自体が露見する）。明示的な注記 `🔕 現在、統計収集を停止しています。` は**本人が自分のダッシュボードを見たときだけ**。`build_dashboard(user_id, item, viewer_id=None)` の `viewer_id` は「誰が見ているか」で、**省略時は本人扱い**（現在の呼び出し元 `stats_view.RunStatsButton` が渡さないため）。`stats_view.py` を次に触るときに `viewer_id=view.viewer_id` を渡すと、その経路も厳密になる。
+  - **他人からは見えない**: opt-out 中のユーザーは管理者のユーザー選択（`get_user_options`）と発言回数ランキング（`build_ranking_graph`）から除外される。他人が opt-out 中のユーザーを指定した場合は、既存の「◯◯ さんの会話データはまだありません。」と**同一の文言**を返す（専用の文言を出すと停止していること自体が露見する）。明示的な注記 `🔕 現在、統計収集を停止しています。` は**本人が自分のダッシュボードを見たときだけ**。`build_dashboard(user_id, item, viewer_id=None)` の `viewer_id` は「誰が見ているか」で、**省略時は本人扱い**。呼び出し元の `stats_view.RunStatsButton` は `viewer_id=view.viewer_id` を渡している（省略すると、管理者が他人の統計を開いたときに相手の opt-out の注記まで見えてしまう）。
   - **対象は統計だけ**: 長期記憶（`profile` / `projects` / `pending_log`）は opt-out の対象外。パネルの説明文でその旨を明示している（誤解させると透明性の目的を損なうため、文言を削らないこと）。
   - **フェイルオープンの例外**: 設定の保存・データ削除に失敗したときは、UI に「保存できませんでした」「削除できませんでした」と伝える（`save_background()` が成否を `bool` で返す）。プライバシー操作の失敗は黙って成功に見せない。
 
@@ -329,7 +344,7 @@ Gemini のテキストは必ず `storage.safe_response_text` 経由で読むこ�
 - **モデレーションはフェイルオープン**: タイムアウト/例外時、`content_moderator.check` は *safe* を返してボットを動かし続ける。Gemini のプロンプトブロックは *unsafe* として扱う。この挙動を維持すること — 一時的な API エラーでユーザーをブロックしないこと。**`check` / `check_and_route` の本体で例外を外へ漏らさないこと**: これらは `on_message` の主経路から呼ばれるため、抜けた例外はそのメッセージの処理ごと落とす。準備処理（タイムゾーンの解決など）を `try` の外に置くと、環境依存の失敗が全メッセージの無応答に直結する（実際に `ZoneInfo` の組み立てで起きた）。
 - **タイムゾーンは `timeutil.resolve_timezone(name, purpose=...)` で解決する**: `ZoneInfo` を直接呼ばないこと。タイムゾーンデータベースの無い環境（`tzdata` を含まないスリムな Linux イメージなど）では例外になるため、この関数が UTC へのフォールバックと警告ログをまとめて引き受ける。タイムゾーン名そのもの（`STATS_TIMEZONE` / `ANNIVERSARY_TIMEZONE` / `REMINDER_TIMEZONE`）は用途ごとに `constants.py` で個別に調整できる形を保つ。
 - **再起動でリセットされる状態**（インメモリのみ）: 利用/トークン履歴（`usage_graph`、500件のリングバッファ）、`channel_reset_points`（`/functions` → ⚙️キャラ設定パネルの会話リセットのアンカー）、自発的な会話の**監視状態**（`auto_topic_channels` / `auto_topic_posted_at`）、自律行動の**配信状態と話したいゲージ**（`autonomous_session` / `autonomous_last_activity` / `autonomous_recent_activity`。ボイス接続自体が再起動をまたげないため復元しない）、フィードバックの**評価対象レジストリ**と**付与クールダウンの記録**（`FeedbackService._tracked` / `_last_reaction_at`。記録済みの評価そのものは DB に残る）、ウェルカム投稿済みのサーバーID（`welcomed_guild_ids`。`on_guild_join` は招待時にしか発火しないため、消えても再投稿は起きない）。一方、`GuildSettings` の**設定値**（ペルソナ/モデル/応答モード/グラウンディング/自発会話の ON・しきい値/自律行動の ON）・記念日の投稿記録・リマインダー・フィードバックの記録は DB に永続化され、再起動しても失われない。永続化される状態は `memory/bot.db`（SQLite: affinity / user_stats / queue_tasks / pending_log / profile / guild_settings / anniversary_posts / reminders / feedback）、`memory/projects.json`、`ng/blacklist.json`。`memory/profile.json` は手書き追加用の受け皿で、起動時に DB へ吸収され `{}` に戻る。
-- **単一プロセス前提**: DB は `database.py` 内部の `threading.Lock` + トランザクションで、JSON ファイル（profile/projects/blacklist）はプロセス内 `asyncio.Lock` で保護される。プロセス間ロックは存在しない。DB は WAL モードのため、稼働中でも `sqlite3` CLI 等からの**読み取り**は安全（外部からの書き込みはしないこと）。
+- **単一プロセス前提**: DB は `database.py` 内部の `threading.Lock` + トランザクションで、`projects.json` は `MemoryService.io_lock`（`asyncio.Lock`）で保護される。`blacklist.json` はロックを持たず、イベントループ上で同期的に書き込む（`profile.json` は起動時に DB へ吸収されるだけ）。プロセス間ロックは存在しない。DB は WAL モードのため、稼働中でも `sqlite3` CLI 等からの**読み取り**は安全（外部からの書き込みはしないこと）。
 - **ログ出力とエンコーディング**: Windows の既定コンソールは cp932 で、絵文字を `print` すると `UnicodeEncodeError` でそこの処理が止まる。`bot.py` の冒頭で標準出力を UTF-8（`errors="replace"`）へ再設定しているので通常は問題ないが、**`bot.py` を経由しない単体スクリプトから同じモジュールを動かすときは `PYTHONIOENCODING=utf-8` を付けること**。
 - **Discord の制限**: 2000文字を超える返信は `send_long_reply`/`split_message` を通す。`send_long_reply` は**1通目（元メッセージへの `reply`）**を返し、フィードバックのリアクション付与がそれを使う（戻り値を最後のチャンクに変えない。戻り値を無視する呼び出しはそのままでよい）。グラウンディング返信はリンクの埋め込みプレビューを抑制する。
 - **`ng/NG_WORD_private.txt`** は gitignore されており、読み込み時に `NG_WORD.txt` の上にマージされる。`/functions` の 🔄 NGワード再読込 で再起動なしに再読み込みできる。
