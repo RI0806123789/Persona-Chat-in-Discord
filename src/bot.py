@@ -288,7 +288,15 @@ async def on_message(message: discord.Message) -> None:
         await notify_violation(message, "NGワードが含まれているため、メッセージを処理できません。")
         return
 
-   # ここでの category は使わない（安全判定だけが効く）。
+    # コメントの受付枠はGeminiを呼ぶ前に、同期的に確保する。
+    # 見送る分も活動観測は上の mark_activity で済ませている。
+    claimed_comment_session = None
+    if is_autonomous_comment:
+        claimed_comment_session = autonomous.claim_comment_slot(message.channel.id, guild_id)
+        if claimed_comment_session is None:
+            return
+
+    # ここでの category は使わない（安全判定だけが効く）。
     memory_category = "none"
     reminder_request: dict[str, str] | None = None
     if question:
@@ -363,7 +371,9 @@ async def on_message(message: discord.Message) -> None:
     # まま handle_comment を呼ぶと、セッションが無いので None が返り、通常経路にも
     # 回らないまま発言が黙って捨てられる（メンション付きの発言まで無視されてしまう）。
     if autonomous.is_comment_channel(message.channel.id, guild_id):
-        response_text = await autonomous.handle_comment(message, question, guild_settings)
+        response_text = await autonomous.handle_comment(
+            message, question, guild_settings, claimed_session=claimed_comment_session
+        )
         tts_prompt_file = guild_settings.current_prompt_file
     elif accepts_normally:
         # 配信が終わっていても、通常のチャットとして受け付けられる発言なら普通に答える。

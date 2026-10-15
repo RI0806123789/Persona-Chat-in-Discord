@@ -971,34 +971,42 @@ class Database:
         return result
 
     def stats_save_all(self, cache: dict[str, dict[str, Any]]) -> None:
-        """キャッシュ全体で置き換える（旧「ファイル全体を書き直す」動作と等価）。
-
-        DELETE → 全行 INSERT の総入れ替えのため、**列を1つでも書き漏らすと
-        その値は誰かが発言するたびに DEFAULT へ黙って戻る**。列を増やしたときは
-        必ず stats_load_all と対にして往復（保存→読み込み→保存）を確認すること。
-        """
+        """初回移行など、明示的に全件置換する処理専用。通常更新には使わない。"""
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM user_stats")
             for user_id, entry in cache.items():
-                analysis = entry.get("analysis")
-                self._conn.execute(
-                    "INSERT INTO user_stats"
-                    " (user_id, user_name, total_count, hourly, first_seen, last_seen,"
-                    "  recent_samples, analysis, stats_opt_out)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        str(user_id),
-                        str(entry.get("user_name", "")),
-                        int(entry.get("total_count", 0)),
-                        json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
-                        str(entry.get("first_seen", "")),
-                        str(entry.get("last_seen", "")),
-                        json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
-                        json.dumps(analysis, ensure_ascii=False) if analysis else None,
-                        # キーが無い（旧形式の）エントリは既定値から引く。
-                        int(bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))),
-                    ),
-                )
+                self._stats_upsert_user(user_id, entry)
+
+    def stats_save_user(self, user_id: str, entry: dict[str, Any]) -> None:
+        """対象ユーザーの全項目だけを保存し、他ユーザーの行には触れない。"""
+        with self._lock, self._conn:
+            self._stats_upsert_user(user_id, entry)
+
+    def _stats_upsert_user(self, user_id: str, entry: dict[str, Any]) -> None:
+        """呼び出し側がDBロックとトランザクションを保持した状態で使う。"""
+        analysis = entry.get("analysis")
+        self._conn.execute(
+            "INSERT INTO user_stats"
+            " (user_id, user_name, total_count, hourly, first_seen, last_seen,"
+            "  recent_samples, analysis, stats_opt_out)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(user_id) DO UPDATE SET"
+            " user_name = excluded.user_name, total_count = excluded.total_count,"
+            " hourly = excluded.hourly, first_seen = excluded.first_seen,"
+            " last_seen = excluded.last_seen, recent_samples = excluded.recent_samples,"
+            " analysis = excluded.analysis, stats_opt_out = excluded.stats_opt_out",
+            (
+                str(user_id),
+                str(entry.get("user_name", "")),
+                int(entry.get("total_count", 0)),
+                json.dumps(entry.get("hourly") or [0] * 24, ensure_ascii=False),
+                str(entry.get("first_seen", "")),
+                str(entry.get("last_seen", "")),
+                json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
+                json.dumps(analysis, ensure_ascii=False) if analysis else None,
+                int(bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))),
+            ),
+        )
 
     # ---- queue_tasks（文書処理キュー） ----------------------------------------
 

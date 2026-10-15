@@ -96,7 +96,10 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             "discord": discord, "state": self.state,
             "client": SimpleNamespace(user=SimpleNamespace(id=99)),
             "auto_topic": SimpleNamespace(mark_activity=Mock(), watch_channel=Mock()),
-            "autonomous": SimpleNamespace(mark_activity=Mock(), is_comment_channel=Mock(return_value=False)),
+            "autonomous": SimpleNamespace(
+                mark_activity=Mock(), is_comment_channel=Mock(return_value=False),
+                claim_comment_slot=Mock(return_value=object()),
+            ),
             "blacklist": SimpleNamespace(is_blocked=Mock(return_value=False)),
             "ng_filter": SimpleNamespace(contains_ng_word=Mock(return_value=False)),
             "moderator": SimpleNamespace(
@@ -204,7 +207,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_autonomous_comment_keeps_existing_voice_routing(self) -> None:
         self.namespace["autonomous"].is_comment_channel.return_value = True
 
-        async def comment(*args):
+        async def comment(*args, **kwargs):
             await self.switch_at("generate")
             return self.response
 
