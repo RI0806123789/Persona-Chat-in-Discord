@@ -31,6 +31,31 @@ _MD_HEADING_PATTERN = r'(?m)^[ \t]{0,3}#{1,6}[ \t]*'
 # 期間選択のデフォルト（SUMMARY_PERIOD_CHOICES の「1日」）
 _DEFAULT_PERIOD = next(c for c in SUMMARY_PERIOD_CHOICES if c.value == 24)
 
+# 要約の途中で想定外の例外が起きたときにパネルへ出す案内
+_FAILURE_NOTICE = "⚠️ 要約の処理中にエラーが発生しました。時間をおいて再度お試しください。"
+_FORBIDDEN_NOTICE = (
+    "⚠️ このチャンネルへ要約を投稿する権限がありません。"
+    "表示範囲を「🔒 自分だけ」にして再度お試しください。"
+)
+
+
+async def _report_failure(interaction: discord.Interaction, notice: str, *, keep_result: bool) -> None:
+    """要約の失敗を本人だけに伝える。伝えられなくても例外は出さずログだけに留める。
+
+    パネルに要約の一部を表示済み（keep_result=True）なら、上書きして消さないよう
+    followup で伝える。パネルを書き換えられない場合も followup へ切り替える。
+    """
+    if not keep_result:
+        try:
+            await interaction.edit_original_response(content=notice)
+            return
+        except Exception as error:
+            print(f"要約: 失敗の案内をパネルに表示できませんでした: {error}")
+    try:
+        await interaction.followup.send(notice, ephemeral=True)
+    except Exception as error:
+        print(f"要約: 失敗の案内を送れませんでした: {error}")
+
 
 async def generate_channel_summary(
     channel: discord.abc.Messageable,
@@ -174,32 +199,48 @@ class RunSummaryButton(ui.Button):
         view.stop()
 
         bot_user = interaction.client.user
-        is_summary, text = await generate_channel_summary(
-            channel,
-            bot_user,
-            view.temp_period,
-            guild_settings=view.guild_settings,
-            gemini=view.gemini,
-            moderator=view.moderator,
-            ng_filter=view.ng_filter,
-            usage=view.usage,
-        )
+        # パネルに要約の1通目を表示済みか（失敗の案内でそれを上書きしないため）
+        result_shown = False
+        # 「要約中...」のまま残さないよう、生成から送信までの想定外の例外をパネルへ伝える。
+        # Gemini の通信エラーやタイムアウトは generate_channel_summary の中で案内文に
+        # 変わる。ここで拾うのは、投稿権限の無いチャンネルへの公開投稿や、プロンプトの
+        # 読み込み失敗などの例外。キャンセル（CancelledError）は Exception ではないので伝わる。
+        try:
+            is_summary, text = await generate_channel_summary(
+                channel,
+                bot_user,
+                view.temp_period,
+                guild_settings=view.guild_settings,
+                gemini=view.gemini,
+                moderator=view.moderator,
+                ng_filter=view.ng_filter,
+                usage=view.usage,
+            )
 
-        # 通知・エラーはパネル（本人だけに見える）にそのまま表示して終了。
-        if not is_summary:
-            await interaction.edit_original_response(content=text)
-            return
+            # 通知・エラーはパネル（本人だけに見える）にそのまま表示して終了。
+            if not is_summary:
+                await interaction.edit_original_response(content=text)
+                return
 
-        if view.temp_private:
-            # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
-            chunks = split_message(text)
-            await interaction.edit_original_response(content=chunks[0])
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk, ephemeral=True)
-        else:
-            # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
-            await send_long_message(channel, text)
-            await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
+            if view.temp_private:
+                # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
+                chunks = split_message(text)
+                await interaction.edit_original_response(content=chunks[0])
+                result_shown = True
+                for chunk in chunks[1:]:
+                    await interaction.followup.send(chunk, ephemeral=True)
+            else:
+                # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
+                await send_long_message(channel, text)
+                await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
+        except Exception as error:
+            print(f"要約: 生成・送信中にエラーが発生しました: {error}")
+            # 例外の文面には内部の情報が含まれうるため、利用者には定型文だけを見せる。
+            if isinstance(error, discord.Forbidden) and not view.temp_private:
+                notice = _FORBIDDEN_NOTICE
+            else:
+                notice = _FAILURE_NOTICE
+            await _report_failure(interaction, notice, keep_result=result_shown)
 
 
 class SummaryView(PanelView):

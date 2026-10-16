@@ -783,17 +783,15 @@ class Database:
                 reminder_id = int(record["reminder_id"])
                 recurrence = str(record.get("recurrence", "none") or "none")
                 # 暦の知識はサービス層に置き、DB 層は「何を書くか」だけを受け取る。
-                # 計算が例外で落ちても見回り全体を止めない（その行は単発と同じく done で終える）。
+                # 計算が例外で落ちても見回り全体を止めない（その行は次回時刻なしとして扱う）。
                 try:
                     next_iso = next_at(record)
-                    calculation_failed = False
                 except Exception as error:
                     print(
                         f"データベース: リマインダーの次回時刻を計算できませんでした"
                         f" (id={reminder_id}): {error}"
                     )
                     next_iso = None
-                    calculation_failed = True
 
                 if next_iso:
                     self._conn.execute(
@@ -806,11 +804,13 @@ class Database:
                     # にしておく — 呼び出し側の遅延判定（_is_stale）がここを見るため、
                     # 未来の時刻へ書き換えると遅れの抑制が永久に効かなくなる。
                 else:
-                    # 単発は done（従来どおり）。計算が例外で落ちた行も done で終える。
-                    # 繰り返しなのに次回時刻を作れなかった行（追い付き上限に達した・
-                    # 値が壊れているなど）は canceled にして系列を止める —
+                    # 単発は done（今回の通知で役目を終える）。繰り返しなのに次回時刻を
+                    # 作れなかった行（追い付き上限に達した・値が壊れている・計算が例外で
+                    # 落ちたなど）は、理由を問わず canceled にして系列を止める —
                     # 毎分再クレームされて通知が溢れるより「止まる」方を選ぶ。
-                    status = "done" if (recurrence == "none" or calculation_failed) else "canceled"
+                    # 例外の場合だけ done にすると、正常に完了したように見えて、
+                    # 繰り返しが途絶えた原因を DB から追えなくなる。
+                    status = "done" if recurrence == "none" else "canceled"
                     self._conn.execute(
                         "UPDATE reminders SET status = ? WHERE reminder_id = ?",
                         (status, reminder_id),

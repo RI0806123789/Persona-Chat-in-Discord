@@ -1,4 +1,4 @@
-"""サーバー参加時の案内が WELCOME_MESSAGE_ENABLED に従うことを、架空のサーバーで検証する。"""
+"""サーバー参加時の案内の投稿先と、WELCOME_MESSAGE_ENABLED に従うことを架空のサーバーで検証する。"""
 
 from pathlib import Path
 import sys
@@ -11,16 +11,41 @@ import discord
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.utils import discord_helpers
-from persona_bot.utils.discord_helpers import post_welcome_message
+from persona_bot.utils.discord_helpers import pick_announcement_channel, post_welcome_message
+
+
+def make_channel(channel_id: int, *, view: bool = True, send: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=channel_id,
+        permissions_for=lambda member: SimpleNamespace(view_channel=view, send_messages=send),
+        send=AsyncMock(),
+    )
 
 
 def make_guild() -> SimpleNamespace:
-    channel = SimpleNamespace(
-        id=2,
-        permissions_for=lambda member: SimpleNamespace(send_messages=True),
-        send=AsyncMock(),
-    )
+    channel = make_channel(2)
     return SimpleNamespace(id=1, me=object(), system_channel=channel, text_channels=[channel])
+
+
+class AnnouncementChannelTests(unittest.TestCase):
+    def test_channels_that_cannot_be_viewed_are_skipped(self) -> None:
+        # #78: 送信の許可だけでは選ばず、閲覧もできるチャンネルを選ぶ。
+        hidden_system = make_channel(2, view=False)
+        hidden_text = make_channel(3, view=False)
+        mute_text = make_channel(4, send=False)
+        usable = make_channel(5)
+        guild = SimpleNamespace(
+            id=1, me=object(), system_channel=hidden_system,
+            text_channels=[hidden_system, hidden_text, mute_text, usable],
+        )
+        self.assertIs(pick_announcement_channel(guild), usable)
+        guild.text_channels = [hidden_system, hidden_text, mute_text]
+        self.assertIsNone(pick_announcement_channel(guild))
+
+    def test_usable_system_channel_is_preferred(self) -> None:
+        system = make_channel(2)
+        guild = SimpleNamespace(id=1, me=object(), system_channel=system, text_channels=[make_channel(3), system])
+        self.assertIs(pick_announcement_channel(guild), system)
 
 
 class WelcomeMessageSettingTests(unittest.IsolatedAsyncioTestCase):
