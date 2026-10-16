@@ -16,11 +16,15 @@ from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_affinity_prompt
 
 # モデルが返答の末尾に付ける感情タグ `[V:X, A:Y]`。
-# `[V: +5, A: -10]` のように空白を挟むことがあるため各要素の前後に \s* を許容する
-# （これを緩めないとタグが除去されずユーザーへそのまま露出する）。
+# `[V: +5, A: -10]` のように空白を挟むことがあるため各要素の前後に \s* を許容する。
+# `[v:+5, a:-10]` のような小文字のゆらぎも出るため大文字・小文字を区別しない
+# （どちらも緩めないとタグが除去されずユーザーへそのまま露出し、感情も更新されない）。
 # チャット返信・自発的な会話・会話要約のいずれでも同じ形を扱うため、
 # 正規表現とその操作はここに集約している。
-_AFFINITY_TAG_PATTERN = re.compile(r"\[V:\s*([+-]?\d+)\s*,\s*A:\s*([+-]?\d+)\s*\]")
+_AFFINITY_TAG_PATTERN = re.compile(
+    r"\[V:\s*([+-]?\d+)\s*,\s*A:\s*([+-]?\d+)\s*\]",
+    re.IGNORECASE,
+)
 
 
 def extract_affinity_changes(text: str) -> tuple[str, tuple[int, int] | None]:

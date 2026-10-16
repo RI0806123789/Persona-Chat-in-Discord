@@ -204,7 +204,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 通常の保存は `AffinityService.save_background(user_id)` → `Database.affinity_upsert(user_id, entry)` で対象1行だけを更新する。`affinity_save_all` は明示的な全件置換用で、返信ごとの保存には使わない。ロック内で対象の現在値だけをコピーし、キャンセル時も `run_in_thread` の完了までロックを保持する。親密度・機嫌・テンション・`last_interaction` の4項目を保存・復元し、半減期・中立値・上下限・親密度の増減しきい値は `AFFINITY_*` から参照する。
 
-**感情タグを扱うコードはこのモジュールに集約すること。** タグの正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置き、外からは次の2つの関数を使う — `extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
+**感情タグを扱うコードはこのモジュールに集約すること。** タグの正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置き（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）、外からは次の2つの関数を使う — `extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
 
@@ -402,6 +402,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **ログ出力とエンコーディング**: Windows の既定コンソールは cp932 で、絵文字を `print` すると `UnicodeEncodeError` でそこの処理が止まる。`bot.py` の冒頭で標準出力を UTF-8（`errors="replace"`）へ再設定しているので通常は問題ないが、**`bot.py` を経由しない単体スクリプトから同じモジュールを動かすときは `PYTHONIOENCODING=utf-8` を付けること**。
 - **Discord の制限**: 2000文字を超える返信は `send_long_reply`/`split_message` を通す。`send_long_reply` は**1通目（元メッセージへの `reply`）**を返し、フィードバックのリアクション付与がそれを使う（戻り値を最後のチャンクに変えない。戻り値を無視する呼び出しはそのままでよい）。グラウンディング返信はリンクの埋め込みプレビューを抑制する。
 - **`ng/NG_WORD_private.txt`** は gitignore されており、読み込み時に `NG_WORD.txt` の上にマージされる。`/functions` の 🔄 NGワード再読込 で再起動なしに再読み込みできる。
+- **手書きのテキストは `utf-8-sig` で読む**: NGワード（`ng_word_service._load_words_from_file`）とペルソナ（`paths.load_prompt_template`）は、メモ帳の「UTF-8 (BOM 付き)」保存でも先頭に U+FEFF を残さない。`utf-8` に戻さないこと — BOM は `strip()` で消えないため、1行目のコメントがNGワードとして登録され、1行目のNGワードは検知できなくなる。`find_ng_words` は `dict.fromkeys` で重複を除き、文中に最初に現れた順を保つ（`set` だと順序が実行ごとに変わる）。
 
 ## 作業完了時の手順（PR 作成とプライバシーチェック）
 
