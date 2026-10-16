@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from pypdf import PdfWriter
+try:
+    from pypdf import PdfWriter
+except ImportError:
+    PdfWriter = None
 from persona_bot.core.app_state import BotState
 from persona_bot.core.database import Database
 from persona_bot.services import document_service, memory_service
@@ -73,7 +76,7 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await self.service._process_task(self.task)
         self.sent.assert_awaited_once()
         self.message.reply.assert_not_awaited()
-        # 公開の取得APIがないため、状態だけを一時DBの別接続から確認する。
+        # 公開の取得APIがないため、状態だけを一時DBから確認する。
         with self.db._lock:
             row = self.db._conn.execute("SELECT status FROM queue_tasks WHERE task_id = ?", (self.task["task_id"],)).fetchone()
         self.assertEqual(row["status"], "completed")
@@ -115,7 +118,7 @@ class PdfStreamTests(unittest.TestCase):
                         raise ValueError("架空のPDF検証エラー")
                     return SimpleNamespace(is_encrypted=outcome == "encrypted")
 
-                with patch.object(document_service, "PdfReader", side_effect=reader):
+                with patch.dict(sys.modules, {"pypdf": SimpleNamespace(PdfReader=reader)}):
                     if outcome == "success":
                         validate_pdf_file(path)
                     else:
@@ -124,6 +127,7 @@ class PdfStreamTests(unittest.TestCase):
                 self.assertTrue(streams[0].closed)
                 path.unlink()
 
+    @unittest.skipIf(PdfWriter is None, "pypdf が未導入のため、実際のPDFの検証は省略します。")
     def test_real_valid_and_encrypted_pdfs_can_be_removed_after_validation(self) -> None:
         for encrypted in (False, True):
             with self.subTest(encrypted=encrypted), tempfile.TemporaryDirectory() as directory:

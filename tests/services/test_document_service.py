@@ -1,6 +1,7 @@
-"""文書応答の感情タグ除去と、一時ファイルの回収を検証する。"""
+"""文書応答の感情タグ除去と、一時ファイルの回収、pypdf が無い環境での読み込みを検証する。"""
 
 import asyncio
+import importlib.util
 from pathlib import Path
 import sys
 import tempfile
@@ -168,7 +169,7 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
                 raise TimeoutError("PDF検証の待機が終了しませんでした")
             return SimpleNamespace(is_encrypted=False)
 
-        with patch.object(document_service, "PdfReader", side_effect=read_pdf):
+        with patch.dict(sys.modules, {"pypdf": SimpleNamespace(PdfReader=read_pdf)}):
             task = spawn(self.process(), label="PDF検証キャンセルの確認")
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -297,6 +298,42 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         self.moderator.check.return_value = (False, "架空の判定理由")
         await self.process_response("架空の応答。[V:1, A:2]")
         self.assert_clean_response("申し訳ありませんが、適切な応答を生成できませんでした。")
+
+
+class OptionalPdfDependencyTests(unittest.TestCase):
+    """pypdf が無くても文書処理を読み込め、PDF だけが理由の分かる形で失敗する（#57）。"""
+
+    # sys.modules の値を None にすると、その名前の import は ModuleNotFoundError になる
+    WITHOUT_PYPDF = {"pypdf": None, "pypdf.errors": None}
+
+    def load_without_pypdf(self):
+        # import 済みのモジュールを壊さないよう、同じソースから別名の複製を作って読み込む
+        spec = importlib.util.spec_from_file_location("document_service_without_pypdf", document_service.__file__)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, self.WITHOUT_PYPDF):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_module_is_importable_without_pypdf(self) -> None:
+        module = self.load_without_pypdf()
+        self.assertTrue(callable(module.DocumentService))
+
+    def test_pdf_validation_reports_missing_pypdf(self) -> None:
+        module = self.load_without_pypdf()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fictional.pdf"
+            path.write_bytes(b"%PDF-1.4 fictional")
+            with patch.dict(sys.modules, self.WITHOUT_PYPDF):
+                with self.assertRaisesRegex(ValueError, "pypdf"):
+                    module.validate_pdf_file(path)
+
+    def test_text_validation_does_not_need_pypdf(self) -> None:
+        module = self.load_without_pypdf()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fictional.txt"
+            path.write_text("架空の文書です。", encoding="utf-8")
+            with patch.dict(sys.modules, self.WITHOUT_PYPDF):
+                module.validate_text_file(path)
 
 
 if __name__ == "__main__":

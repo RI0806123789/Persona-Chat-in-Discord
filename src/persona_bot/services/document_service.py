@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import discord
-from pypdf import PdfReader
 
 from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import BotState
@@ -312,6 +311,13 @@ class DocumentService:
 
 
 def validate_pdf_file(temp_path: Path) -> None:
+    # pypdf は PDF の検証にしか使わないため、ここで読み込む。モジュールの先頭で import すると、
+    # pypdf の無い環境では起動・通常のチャット・回帰テストの検出まで ImportError で止まる。
+    try:
+        from pypdf import PdfReader
+    except ImportError as error:
+        # 失敗の詳細はユーザーへの返信にも載るため、英語の例外ではなく原因が分かる文にする
+        raise ValueError("PDFの検証に必要な pypdf がインストールされていません。") from error
     with temp_path.open("rb") as file:
         reader = PdfReader(file)
         if reader.is_encrypted:
