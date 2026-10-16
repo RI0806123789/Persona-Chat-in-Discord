@@ -10,6 +10,7 @@ from persona_bot.config.constants import (
     DEFAULT_RESPOND_MODE,
     DM_SETTINGS_GUILD_KEY,
 )
+from persona_bot.core.background import run_in_thread
 
 
 @dataclass
@@ -83,6 +84,9 @@ class GuildSettings:
     # DB が未接続（None）のときは保存を試みない（DB を使わないテスト等で動くように）。
     guild_id: int | None = None
     _db: Any = field(default=None, repr=False, compare=False)
+    # persist() の直列化用。並行した保存の書き込み順が入れ替わって、
+    # 古い値で新しい値を上書きしないようにする（persist の説明を参照）。
+    _persist_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     # --- 自発的な会話 ---
     # 機能の有効/無効と無会話しきい値（時間）。/functions → 💬 自発会話 で変更する。
@@ -163,31 +167,44 @@ class GuildSettings:
 
         保存に失敗してもチャットや UI 操作は止めない（フェイルオープン）。その場合、
         変更はインメモリには残るため、次回の再起動まではそのまま使える。
+
+        保存は `_persist_lock` で直列化し、**保存する値はロックを取ってから読む**。
+        保存は行の総入れ替えなので、2つの保存が別スレッドで並ぶと、先に呼ばれた
+        古い値が後から書かれて新しい値を上書きしうる。ロックの中で読めば、後から
+        書く側が常にその時点の最新の値を書く。`run_in_thread` はキャンセルされても
+        書き込みの完了までロックを保つ（素の `asyncio.to_thread` だとキャンセルの
+        瞬間にロックが外れ、書き込み中の古い値が次の保存を追い越して残りうる）。
         """
         if self._db is None:
             return
-        try:
-            await asyncio.to_thread(
-                self._db.guild_settings_save,
-                self.persist_key,
-                prompt_file=self.current_prompt_file,
-                model_name=self.current_model_name,
-                respond_mode=self.current_respond_mode,
-                grounding_enabled=self.grounding_enabled,
-                auto_topic_enabled=self.auto_topic_enabled,
-                auto_topic_interval_hours=self.auto_topic_interval_hours,
-                autonomous_enabled=self.autonomous_enabled,
-            )
-        except Exception as error:
-            print(f"ギルド設定の保存に失敗しました (guild_id={self.guild_id}): {error}")
+        async with self._persist_lock:
+            try:
+                await run_in_thread(
+                    self._db.guild_settings_save,
+                    self.persist_key,
+                    prompt_file=self.current_prompt_file,
+                    model_name=self.current_model_name,
+                    respond_mode=self.current_respond_mode,
+                    grounding_enabled=self.grounding_enabled,
+                    auto_topic_enabled=self.auto_topic_enabled,
+                    auto_topic_interval_hours=self.auto_topic_interval_hours,
+                    autonomous_enabled=self.autonomous_enabled,
+                )
+            except Exception as error:
+                print(f"ギルド設定の保存に失敗しました (guild_id={self.guild_id}): {error}")
 
     async def record_anniversary_post(self, user_id: str, label: str, posted_date: str) -> None:
-        """記念日のお祝いを投稿したことを、メモリと DB の両方へ記録する。"""
+        """記念日のお祝いを投稿したことを、メモリと DB の両方へ記録する。
+
+        見回りがキャンセルされても、書き込みの完了を待ってからキャンセルを伝える
+        （`run_in_thread`）。記録は (サーバー, ユーザー, 記念日) ごとの上書きで、
+        同じ記念日を同じ日に2回書くことはないため、ロックは持たない。
+        """
         self.anniversary_posted_dates[f"{user_id}:{label}"] = posted_date
         if self._db is None:
             return
         try:
-            await asyncio.to_thread(
+            await run_in_thread(
                 self._db.anniversary_post_record, self.persist_key, user_id, label, posted_date
             )
         except Exception as error:

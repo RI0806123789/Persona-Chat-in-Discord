@@ -314,6 +314,57 @@ class LegacyDataEdgeCaseTests(unittest.TestCase):
         db.close()
 
 
+class ReminderClaimStatusTests(unittest.TestCase):
+    """次回時刻を作れなかった繰り返しの終わり方を確認する（#76）。"""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db = Database(Path(directory.name) / "bot.db")
+        self.addCleanup(lambda: self.db.close())
+        self.db.initialize()
+
+    def add(self, recurrence: str) -> int:
+        return self.db.reminder_add(
+            user_id="test-user", user_name="架空の利用者", guild_id=1, channel_id=10,
+            message=f"架空の予定-{recurrence}", remind_at="2026-01-01T00:00:00+00:00",
+            created_at="2025-12-31T00:00:00+00:00", recurrence=recurrence,
+            recurrence_anchor="" if recurrence == "none" else "2026-01-01T00:00:00+00:00",
+        )
+
+    def stored(self, reminder_id: int) -> dict:
+        return dict(self.db._conn.execute(
+            "SELECT status, remind_at FROM reminders WHERE reminder_id = ?", (reminder_id,)
+        ).fetchone())
+
+    def claim(self, next_at) -> dict[int, dict]:
+        with patch("builtins.print"):
+            claimed = self.db.reminder_claim_due("2026-01-01T00:00:00+00:00", next_at)
+        return {record["reminder_id"]: record for record in claimed}
+
+    def test_failed_calculation_cancels_recurrences_and_finishes_single(self) -> None:
+        def fail(record):
+            raise ValueError("架空の計算失敗")
+
+        for next_at in (fail, lambda record: None):
+            with self.subTest(next_at="例外" if next_at is fail else "None"):
+                single, daily, monthly = self.add("none"), self.add("daily"), self.add("monthly")
+                claimed = self.claim(next_at)
+                # 単発は通知で役目を終える。繰り返しは理由を問わず系列を止める。
+                for reminder_id, status in ((single, "done"), (daily, "canceled"), (monthly, "canceled")):
+                    self.assertEqual(claimed[reminder_id]["status"], status)
+                    self.assertIsNone(claimed[reminder_id]["next_remind_at"])
+                    self.assertEqual(self.stored(reminder_id)["status"], status)
+
+    def test_successful_calculation_keeps_recurrence_pending(self) -> None:
+        daily = self.add("daily")
+        claimed = self.claim(lambda record: "2026-01-02T00:00:00+00:00")
+        self.assertEqual(claimed[daily]["next_remind_at"], "2026-01-02T00:00:00+00:00")
+        # 返す記録の remind_at は進める前の予定時刻のまま（遅延判定が使う）。
+        self.assertEqual(claimed[daily]["remind_at"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(self.stored(daily), {"status": "pending", "remind_at": "2026-01-02T00:00:00+00:00"})
+
+
 class ReminderUserIndexTests(unittest.TestCase):
     """リマインダーのユーザー別の操作が専用の索引を使うことを確認する（#58）。"""
 

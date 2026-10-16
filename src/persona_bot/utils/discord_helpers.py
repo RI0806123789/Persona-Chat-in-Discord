@@ -321,7 +321,11 @@ def pick_announcement_channel(guild: discord.Guild) -> Any:
         return None
 
     def can_send(channel: Any) -> bool:
-        return bool(channel.permissions_for(bot_member).send_messages)
+        # 閲覧と送信の両方を確かめる（自発会話・自律行動の権限確認と同じ条件）。
+        # discord.py は閲覧できないチャンネルの send_messages も False にするが、
+        # その内部の挙動に頼らずに判定する。
+        permissions = channel.permissions_for(bot_member)
+        return bool(permissions.view_channel and permissions.send_messages)
 
     system_channel = guild.system_channel
     if system_channel is not None and can_send(system_channel):

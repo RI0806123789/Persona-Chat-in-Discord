@@ -32,6 +32,36 @@ _MD_HEADING_PATTERN = r'(?m)^[ \t]{0,3}#{1,6}[ \t]*'
 # 期間選択のデフォルト（SUMMARY_PERIOD_CHOICES の「1日」）
 _DEFAULT_PERIOD = next(c for c in SUMMARY_PERIOD_CHOICES if c.value == 24)
 
+# 要約の途中で例外が起きたときにパネルへ出す案内
+_FAILURE_NOTICE = "⚠️ 要約の処理中にエラーが発生しました。時間をおいて再度お試しください。"
+# 「全員に表示」でチャンネルへの投稿を拒否された（権限不足）
+_FORBIDDEN_NOTICE = (
+    "⚠️ このチャンネルへ要約を投稿する権限がありません。"
+    "ボットの権限設定を確認するか、表示範囲を「🔒 自分だけ」にして再度お試しください。"
+)
+# 「全員に表示」の投稿が途中で失敗した（分割した一部だけが投稿されていることがある）
+_PARTIAL_POST_NOTICE = (
+    "⚠️ 要約の投稿に失敗しました。一部が投稿されている可能性があります。チャンネルを確認してください。"
+)
+
+
+async def _report_failure(interaction: discord.Interaction, notice: str, *, keep_result: bool) -> None:
+    """要約の失敗を本人だけに伝える。伝えられなくても例外は出さずログだけに留める。
+
+    パネルに要約の一部を表示済み（keep_result=True）なら、上書きして消さないよう
+    followup で伝える。パネルを書き換えられない場合も followup へ切り替える。
+    """
+    if not keep_result:
+        try:
+            await interaction.edit_original_response(content=notice)
+            return
+        except Exception as error:
+            print(f"要約: 失敗の案内をパネルに表示できませんでした: {error}")
+    try:
+        await interaction.followup.send(notice, ephemeral=True)
+    except Exception as error:
+        print(f"要約: 失敗の案内を送れませんでした: {error}")
+
 
 async def generate_channel_summary(
     channel: discord.abc.Messageable,
@@ -177,43 +207,56 @@ class RunSummaryButton(ui.Button):
         view.stop()
 
         bot_user = interaction.client.user
-        is_summary, text = await generate_channel_summary(
-            channel,
-            bot_user,
-            view.temp_period,
-            guild_settings=view.guild_settings,
-            gemini=view.gemini,
-            moderator=view.moderator,
-            ng_filter=view.ng_filter,
-            usage=view.usage,
-        )
+        # パネルに要約の1通目を表示済みか（失敗の案内でそれを上書きしないため）
+        result_shown = False
+        # 「要約中...」のまま残さないよう、生成から送信までの想定外の例外をパネルへ伝える。
+        # Gemini の通信エラーやタイムアウトは generate_channel_summary の中で案内文に
+        # 変わり、全員表示の投稿の失敗は下で個別に案内する。ここで拾うのは、それ以外の
+        # 例外（プロンプトの読み込み失敗・パネルの更新失敗など）。
+        # キャンセル（CancelledError）は Exception ではないので伝わる。
+        try:
+            is_summary, text = await generate_channel_summary(
+                channel,
+                bot_user,
+                view.temp_period,
+                guild_settings=view.guild_settings,
+                gemini=view.gemini,
+                moderator=view.moderator,
+                ng_filter=view.ng_filter,
+                usage=view.usage,
+            )
 
-        # 通知・エラーはパネル（本人だけに見える）にそのまま表示して終了。
-        if not is_summary:
-            await interaction.edit_original_response(content=text)
-            return
+            # 通知・エラーはパネル（本人だけに見える）にそのまま表示して終了。
+            if not is_summary:
+                await interaction.edit_original_response(content=text)
+                return
 
-        if view.temp_private:
-            # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
-            chunks = split_message(text)
-            await interaction.edit_original_response(content=chunks[0])
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk, ephemeral=True)
-        else:
-            # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
-            try:
-                await send_long_message(channel, text)
-            except discord.Forbidden:
-                await interaction.edit_original_response(
-                    content="⚠️ 要約を投稿する権限がありません。ボットの権限設定を確認してください。"
-                )
-                return
-            except discord.HTTPException:
-                await interaction.edit_original_response(
-                    content="⚠️ 要約の投稿に失敗しました。一部が投稿されている可能性があります。チャンネルを確認してください。"
-                )
-                return
-            await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
+            if view.temp_private:
+                # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
+                chunks = split_message(text)
+                await interaction.edit_original_response(content=chunks[0])
+                result_shown = True
+                for chunk in chunks[1:]:
+                    await interaction.followup.send(chunk, ephemeral=True)
+            else:
+                # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
+                # 投稿の失敗だけは原因に合わせて案内する（権限不足か、途中まで投稿されたか）。
+                try:
+                    await send_long_message(channel, text)
+                # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること。
+                except discord.Forbidden as error:
+                    print(f"要約: チャンネルへの投稿を拒否されました: {error}")
+                    await _report_failure(interaction, _FORBIDDEN_NOTICE, keep_result=False)
+                    return
+                except discord.HTTPException as error:
+                    print(f"要約: チャンネルへの投稿に失敗しました: {error}")
+                    await _report_failure(interaction, _PARTIAL_POST_NOTICE, keep_result=False)
+                    return
+                await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
+        except Exception as error:
+            print(f"要約: 生成・送信中にエラーが発生しました: {error}")
+            # 例外の文面には内部の情報が含まれうるため、利用者には定型文だけを見せる。
+            await _report_failure(interaction, _FAILURE_NOTICE, keep_result=result_shown)
 
 
 class SummaryView(PanelView):

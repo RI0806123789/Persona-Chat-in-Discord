@@ -1,0 +1,97 @@
+"""要約の途中で例外が起きても、パネルが「要約中...」のまま残らないことを確かめる（#77）。"""
+
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+import discord
+from persona_bot.core.app_state import GuildSettings
+from persona_bot.views import summary_view
+from persona_bot.views.summary_view import RunSummaryButton, SummaryView
+
+
+def forbidden() -> discord.Forbidden:
+    return discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "架空の権限エラー")
+
+
+class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        quiet = patch("builtins.print")
+        quiet.start()
+        self.addCleanup(quiet.stop)
+        supported = patch.object(summary_view, "is_supported_message_channel", return_value=True)
+        supported.start()
+        self.addCleanup(supported.stop)
+        self.generate = AsyncMock(return_value=(True, "📋 架空の要約"))
+        generator = patch.object(summary_view, "generate_channel_summary", self.generate)
+        generator.start()
+        self.addCleanup(generator.stop)
+        self.send_long = AsyncMock()
+        sender = patch.object(summary_view, "send_long_message", self.send_long)
+        sender.start()
+        self.addCleanup(sender.stop)
+
+        self.view = SummaryView(GuildSettings(), None, None, None, None)
+        self.addCleanup(self.view.stop)
+        self.button = next(item for item in self.view.children if isinstance(item, RunSummaryButton))
+        self.interaction = SimpleNamespace(
+            channel=object(), client=SimpleNamespace(user=object()),
+            response=SimpleNamespace(edit_message=AsyncMock()),
+            edit_original_response=AsyncMock(), followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+    def last_panel(self) -> str:
+        return self.interaction.edit_original_response.await_args.kwargs["content"]
+
+    async def test_unexpected_generation_error_replaces_busy_panel(self) -> None:
+        self.generate.side_effect = RuntimeError("架空の内部エラー")
+        await self.button.callback(self.interaction)
+        self.assertTrue(self.view.is_finished())
+        self.assertEqual(self.last_panel(), summary_view._FAILURE_NOTICE)
+        # 例外の文面（内部の情報）は利用者へ見せない。
+        self.assertNotIn("架空の内部エラー", self.last_panel())
+        self.send_long.assert_not_awaited()
+
+    async def test_public_post_without_permission_suggests_private_display(self) -> None:
+        self.send_long.side_effect = forbidden()
+        await self.button.callback(self.interaction)
+        self.assertEqual(self.last_panel(), summary_view._FORBIDDEN_NOTICE)
+
+    async def test_private_display_keeps_shown_summary_and_reports_by_followup(self) -> None:
+        self.view.temp_private = True
+        self.generate.return_value = (True, "あ" * 2500)
+        self.interaction.followup.send.side_effect = [RuntimeError("架空の送信失敗"), None]
+        await self.button.callback(self.interaction)
+        # 表示済みの1通目は上書きせず、失敗は本人だけの followup で伝える。
+        self.interaction.edit_original_response.assert_awaited_once()
+        self.assertEqual(len(self.last_panel()), 2000)
+        self.assertEqual(self.interaction.followup.send.await_args.args, (summary_view._FAILURE_NOTICE,))
+        self.assertTrue(self.interaction.followup.send.await_args.kwargs["ephemeral"])
+
+    async def test_notice_falls_back_to_followup_when_panel_cannot_be_edited(self) -> None:
+        self.generate.side_effect = RuntimeError("架空の内部エラー")
+        self.interaction.edit_original_response.side_effect = forbidden()
+        await self.button.callback(self.interaction)
+        self.interaction.followup.send.assert_awaited_once_with(summary_view._FAILURE_NOTICE, ephemeral=True)
+
+    async def test_notice_failure_does_not_escape(self) -> None:
+        self.generate.side_effect = RuntimeError("架空の内部エラー")
+        self.interaction.edit_original_response.side_effect = forbidden()
+        self.interaction.followup.send.side_effect = forbidden()
+        await self.button.callback(self.interaction)
+
+    async def test_successful_paths_are_unchanged(self) -> None:
+        await self.button.callback(self.interaction)
+        self.send_long.assert_awaited_once()
+        self.assertEqual(self.last_panel(), "✅ 要約をチャンネルに投稿しました。")
+        self.generate.return_value = (False, "架空の案内")
+        await self.button.callback(self.interaction)
+        self.assertEqual(self.last_panel(), "架空の案内")
+
+
+if __name__ == "__main__":
+    unittest.main()
