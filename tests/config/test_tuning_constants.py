@@ -41,6 +41,20 @@ class DocumentTuningTests(unittest.TestCase):
                         module.validate_text_file(path)
 
 
+class ModerationAndChoiceTuningTests(unittest.TestCase):
+    def test_moderation_defaults_use_configured_model_and_timeout(self) -> None:
+        module = load_with_tuning("persona_bot.services.content_moderator",
+                                 MODERATION_MODEL_NAME="test-moderation-model", MODERATION_TIMEOUT_SECONDS=23.0)
+        moderator = module.ContentModerator(None, SimpleNamespace(words=[]))
+        self.assertEqual((moderator._model_name, moderator._timeout), ("test-moderation-model", 23.0))
+
+    def test_default_choices_follow_configured_prompt_and_mode(self) -> None:
+        module = load_with_tuning("persona_bot.config.choices",
+                                 DEFAULT_PROMPT_FILE="fictional-default.txt", DEFAULT_RESPOND_MODE="test-mode")
+        self.assertIn("fictional-default.txt", [choice.value for choice in module.PERSONA_CHOICES])
+        self.assertIn("test-mode", [choice.value for choice in module.RESPOND_MODE_CHOICES])
+
+
 class MemoryAndStatsTuningTests(unittest.IsolatedAsyncioTestCase):
     async def test_document_context_default_uses_configured_count(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

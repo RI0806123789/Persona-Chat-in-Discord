@@ -170,7 +170,7 @@ class GeminiService:
             temperature=0,
             response_mime_type="application/json",
         )
-        parsed = extract_json_object(safe_response_text(response) or "")
+        parsed = extract_json_object(safe_response_text(response) or "", required_keys=("summary",))
         if not parsed:
             raise ValueError("要約JSONを取得できませんでした。")
         summary_text = str(parsed.get("summary", "")).strip()

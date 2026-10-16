@@ -277,24 +277,8 @@ class DocumentService:
         try:
             temp_file.close()
             temp_bytes = await attachment.read()
-            write_task = spawn(
-                asyncio.to_thread(temp_path.write_bytes, temp_bytes), label="文書の一時ファイル書き込み"
-            )
-            try:
-                await asyncio.shield(write_task)
-            except asyncio.CancelledError:
-                # to_thread の書き込みはキャンセルしても止まらない。
-                # 完了前に削除すると、遅れて write_bytes がファイルを再作成し得る。
-                while not write_task.done():
-                    try:
-                        await asyncio.shield(write_task)
-                    except asyncio.CancelledError:
-                        # 停止要求が重なっても、書き込みの終了までは回収を待つ。
-                        continue
-                    except Exception:
-                        # キャンセルを優先し、書き込みエラーは spawn のログに残す。
-                        break
-                raise
+            # 書き込み完了まで待ち、キャンセル時も回収後の再作成を防ぐ。
+            await run_in_thread(temp_path.write_bytes, temp_bytes)
             downloaded = True
             return temp_path
         finally:

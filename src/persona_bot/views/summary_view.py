@@ -6,6 +6,7 @@ from discord import ui
 
 from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import GuildSettings
+from persona_bot.core.background import run_in_thread
 from persona_bot.config.choices import SUMMARY_PERIOD_CHOICES
 from persona_bot.config.constants import SUMMARY_MAX_MESSAGES, SUMMARY_TIMEOUT_SECONDS
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
@@ -31,11 +32,16 @@ _MD_HEADING_PATTERN = r'(?m)^[ \t]{0,3}#{1,6}[ \t]*'
 # 期間選択のデフォルト（SUMMARY_PERIOD_CHOICES の「1日」）
 _DEFAULT_PERIOD = next(c for c in SUMMARY_PERIOD_CHOICES if c.value == 24)
 
-# 要約の途中で想定外の例外が起きたときにパネルへ出す案内
+# 要約の途中で例外が起きたときにパネルへ出す案内
 _FAILURE_NOTICE = "⚠️ 要約の処理中にエラーが発生しました。時間をおいて再度お試しください。"
+# 「全員に表示」でチャンネルへの投稿を拒否された（権限不足）
 _FORBIDDEN_NOTICE = (
     "⚠️ このチャンネルへ要約を投稿する権限がありません。"
-    "表示範囲を「🔒 自分だけ」にして再度お試しください。"
+    "ボットの権限設定を確認するか、表示範囲を「🔒 自分だけ」にして再度お試しください。"
+)
+# 「全員に表示」の投稿が途中で失敗した（分割した一部だけが投稿されていることがある）
+_PARTIAL_POST_NOTICE = (
+    "⚠️ 要約の投稿に失敗しました。一部が投稿されている可能性があります。チャンネルを確認してください。"
 )
 
 
@@ -99,7 +105,9 @@ async def generate_channel_summary(
 
     # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
-        persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+        persona_prompt = await run_in_thread(
+            lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+        )
     except FileNotFoundError:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
         print(f"要約: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。口調なしで続行します。")
@@ -203,8 +211,9 @@ class RunSummaryButton(ui.Button):
         result_shown = False
         # 「要約中...」のまま残さないよう、生成から送信までの想定外の例外をパネルへ伝える。
         # Gemini の通信エラーやタイムアウトは generate_channel_summary の中で案内文に
-        # 変わる。ここで拾うのは、投稿権限の無いチャンネルへの公開投稿や、プロンプトの
-        # 読み込み失敗などの例外。キャンセル（CancelledError）は Exception ではないので伝わる。
+        # 変わり、全員表示の投稿の失敗は下で個別に案内する。ここで拾うのは、それ以外の
+        # 例外（プロンプトの読み込み失敗・パネルの更新失敗など）。
+        # キャンセル（CancelledError）は Exception ではないので伝わる。
         try:
             is_summary, text = await generate_channel_summary(
                 channel,
@@ -231,16 +240,23 @@ class RunSummaryButton(ui.Button):
                     await interaction.followup.send(chunk, ephemeral=True)
             else:
                 # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
-                await send_long_message(channel, text)
+                # 投稿の失敗だけは原因に合わせて案内する（権限不足か、途中まで投稿されたか）。
+                try:
+                    await send_long_message(channel, text)
+                # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること。
+                except discord.Forbidden as error:
+                    print(f"要約: チャンネルへの投稿を拒否されました: {error}")
+                    await _report_failure(interaction, _FORBIDDEN_NOTICE, keep_result=False)
+                    return
+                except discord.HTTPException as error:
+                    print(f"要約: チャンネルへの投稿に失敗しました: {error}")
+                    await _report_failure(interaction, _PARTIAL_POST_NOTICE, keep_result=False)
+                    return
                 await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
         except Exception as error:
             print(f"要約: 生成・送信中にエラーが発生しました: {error}")
             # 例外の文面には内部の情報が含まれうるため、利用者には定型文だけを見せる。
-            if isinstance(error, discord.Forbidden) and not view.temp_private:
-                notice = _FORBIDDEN_NOTICE
-            else:
-                notice = _FAILURE_NOTICE
-            await _report_failure(interaction, notice, keep_result=result_shown)
+            await _report_failure(interaction, _FAILURE_NOTICE, keep_result=result_shown)
 
 
 class SummaryView(PanelView):

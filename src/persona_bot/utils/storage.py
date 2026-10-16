@@ -11,12 +11,6 @@ from typing import Any
 from uuid import uuid4
 
 
-def read_text_file(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
 def load_json_file(path: Path, default_value: dict[str, Any]) -> dict[str, Any]:
     """未作成なら初期値、破損時は原本の退避に成功した場合だけ初期値を返す。"""
     try:

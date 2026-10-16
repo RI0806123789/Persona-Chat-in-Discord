@@ -29,7 +29,6 @@ from persona_bot.config.constants import (
     REMINDER_MAX_PENDING_PER_USER,
     REMINDER_RECURRENCE_LABELS,
     REMINDER_RECURRENCE_MAX_CATCHUP_STEPS,
-    REMINDER_RECURRENCE_VALUES,
     REMINDER_STALE_HOURS,
     REMINDER_TIMEZONE,
 )
@@ -37,6 +36,7 @@ from persona_bot.core.database import Database
 from persona_bot.utils.discord_helpers import send_long_message
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.utils.timeutil import format_weekday, resolve_timezone
+from persona_bot.utils.normalization import normalize_recurrence
 
 # LLM が返す日時のゆらぎを吸収するため、複数の形式を順に試す。
 _AT_FORMATS = (
@@ -73,16 +73,6 @@ def _format_local(iso_utc: str, tz: Any) -> str:
         f"{local.year}年{local.month}月{local.day}日"
         f"（{format_weekday(local)}）{local:%H:%M}"
     )
-
-
-def normalize_recurrence(value: Any) -> str:
-    """繰り返し種別を検証して正規化する。未知の値・欠落は none（単発）に倒す。
-
-    LLM の抽出結果と DB の値の両方を同じ関数で通し、許容値の唯一の情報源を
-    REMINDER_RECURRENCE_VALUES に保つ（安全側＝従来どおりの単発へフォールバック）。
-    """
-    recurrence = str(value or "none").strip().lower()
-    return recurrence if recurrence in REMINDER_RECURRENCE_VALUES else "none"
 
 
 def recurrence_label(value: Any) -> str:
