@@ -12,5 +12,6 @@ def resolve_prompt_path(relative_path: str) -> Path:
 
 
 def load_prompt_template(file_path: str | Path) -> str:
-    return Path(file_path).read_text(encoding="utf-8")
+    # メモ帳などで「UTF-8 (BOM 付き)」保存されたペルソナも、先頭に U+FEFF を残さず読む
+    return Path(file_path).read_text(encoding="utf-8-sig")
 

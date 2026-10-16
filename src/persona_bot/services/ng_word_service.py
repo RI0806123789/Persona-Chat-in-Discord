@@ -11,11 +11,16 @@ from persona_bot.config.constants import NG_WORD_PATH, NG_WORD_PRIVATE_PATH
 
 
 def _load_words_from_file(file_path: Path) -> list[str]:
-    """ファイルからNGワードを1行ずつ読み込む。空行・コメント行(#)はスキップする。"""
+    """ファイルからNGワードを1行ずつ読み込む。空行・コメント行(#)はスキップする。
+
+    メモ帳などで「UTF-8 (BOM 付き)」保存されたファイルも読めるよう utf-8-sig で読む。
+    BOM (U+FEFF) は strip() でも消えないため、残すと1行目のコメントがNGワードとして
+    登録されたり、1行目のNGワードが検知できなくなったりする。
+    """
     if not file_path.exists():
         return []
     try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
+        lines = file_path.read_text(encoding="utf-8-sig").splitlines()
         return [
             line.strip()
             for line in lines
@@ -85,10 +90,14 @@ class NgWordFilter:
         return bool(self._pattern.search(text))
 
     def find_ng_words(self, text: str) -> list[str]:
-        """テキスト中に含まれるNGワードの一覧を返す。"""
+        """テキスト中に含まれるNGワードの一覧を、重複を除いて最初に現れた順で返す。
+
+        set で重複を除くと順序が実行ごとに変わり、ログの比較やテストが不安定になるため
+        dict.fromkeys で出現順を保つ。
+        """
         if self._pattern is None:
             return []
-        return list({match.group() for match in self._pattern.finditer(text)})
+        return list(dict.fromkeys(match.group() for match in self._pattern.finditer(text)))
 
     def mask_ng_words(self, text: str) -> str:
         """テキスト中のNGワードを伏字(●)に置換して返す。"""

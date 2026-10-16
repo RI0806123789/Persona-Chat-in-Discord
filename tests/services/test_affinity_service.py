@@ -225,5 +225,31 @@ class AffinityTuningTests(unittest.TestCase):
         self.assertEqual((lower["affinity"], lower["valence"], lower["arousal"]), (20, 20, 80))
 
 
+class AffinityTagTests(unittest.TestCase):
+    """感情タグの大文字・小文字のゆらぎを抽出・除去できることを確認する（#54）。"""
+
+    BODY = "架空の応答です。"
+
+    def test_lowercase_and_mixed_case_tags_are_extracted_and_removed(self) -> None:
+        cases = {
+            "[v:+5, a:-10]": (5, -10),
+            "[v:0, A:+2]": (0, 2),
+            "[V:3, a:4]": (3, 4),
+            "[v: +5 , a: -10 ]": (5, -10),
+            "[V:+5, A:-10]": (5, -10),
+        }
+        for tag, changes in cases.items():
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    affinity_service.extract_affinity_changes(self.BODY + tag),
+                    (self.BODY, changes),
+                )
+                self.assertEqual(affinity_service.strip_affinity_tag(tag + self.BODY), self.BODY)
+
+    def test_text_without_tag_is_returned_unchanged(self) -> None:
+        text = f" {self.BODY}[x:1, y:2] "
+        self.assertEqual(affinity_service.extract_affinity_changes(text), (text, None))
+
+
 if __name__ == "__main__":
     unittest.main()
