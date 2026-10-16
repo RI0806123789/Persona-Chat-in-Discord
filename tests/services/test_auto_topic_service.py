@@ -111,3 +111,108 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.settings.autonomous_session = object()
         await self.service.run_pending_checks()
         self.gemini.generate.assert_not_awaited()
+
+
+class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
+    """記念日の投稿先の選び直しと、送信拒否後の再生成抑止を確認する（#56）。"""
+
+    TODAY = "2026-10-16"
+
+    def setUp(self):
+        self.state = BotState()
+        self.settings = self.state.get_guild(1)
+        now = datetime.now(timezone.utc)
+        # 10 が最新、20、30 の順に古い監視チャンネル
+        for hours, channel_id in enumerate((10, 20, 30), start=1):
+            self.settings.auto_topic_channels[channel_id] = now - timedelta(hours=hours)
+            self.settings.auto_topic_posted_at[channel_id] = now - timedelta(days=1)
+        self.channels = {channel_id: self.make_channel(channel_id) for channel_id in (10, 20, 30)}
+        self.member = SimpleNamespace(id=11, display_name="架空の利用者", mention="<@11>")
+        guild = SimpleNamespace(id=1, get_member=Mock(return_value=self.member))
+        self.client = SimpleNamespace(
+            user=None,
+            get_channel=Mock(side_effect=self.channels.get),
+            get_guild=Mock(return_value=guild),
+        )
+        self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("架空のお祝い", None, [])))
+        self.service = AutoTopicService(
+            self.client, self.state, None, self.gemini,
+            SimpleNamespace(check=AsyncMock(return_value=(True, ""))),
+            SimpleNamespace(mask_with_log=Mock(side_effect=lambda text, **kwargs: text)),
+            SimpleNamespace(log_snapshot=Mock()), None,
+        )
+        patch.object(auto_topic_service, "load_prompt_template", return_value="架空のペルソナ").start()
+        patch.object(
+            auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="架空の履歴"),
+        ).start()
+        patch("builtins.print").start()
+        self.addCleanup(patch.stopall)
+
+    @staticmethod
+    def make_channel(channel_id: int) -> SimpleNamespace:
+        permissions = SimpleNamespace(view_channel=True, send_messages=True, send_messages_in_threads=True)
+        return SimpleNamespace(
+            id=channel_id, name=f"架空のチャンネル{channel_id}", guild=SimpleNamespace(me=object()),
+            send=AsyncMock(), permissions_for=Mock(return_value=permissions), permissions=permissions,
+        )
+
+    async def celebrate(self) -> None:
+        await self.service._celebrate_user("11", "誕生日", self.TODAY)
+
+    def assert_recorded(self, recorded: bool) -> None:
+        self.assertEqual(self.settings.anniversary_posted_dates.get("11:誕生日") == self.TODAY, recorded)
+
+    async def test_deleted_newest_channel_is_unwatched_and_next_channel_is_used(self):
+        del self.channels[10]
+        await self.celebrate()
+        self.assertNotIn(10, self.settings.auto_topic_channels)
+        self.assertNotIn(10, self.settings.auto_topic_posted_at)
+        self.channels[20].send.assert_awaited_once()
+        self.channels[30].send.assert_not_awaited()
+        self.gemini.generate.assert_awaited_once()
+        self.assert_recorded(True)
+
+    async def test_unsendable_channels_are_skipped_without_api_calls(self):
+        self.channels[10].permissions.send_messages = False
+        self.channels[20].permissions.view_channel = False
+        await self.celebrate()
+        self.channels[30].send.assert_awaited_once()
+        self.gemini.generate.assert_awaited_once()
+        # 削除されたわけではないため、監視は続ける
+        self.assertEqual(set(self.settings.auto_topic_channels), {10, 20, 30})
+        self.assert_recorded(True)
+
+    async def test_no_sendable_channel_retries_after_permission_is_restored(self):
+        for channel in self.channels.values():
+            channel.permissions.send_messages = False
+        await self.celebrate()
+        await self.celebrate()
+        self.gemini.generate.assert_not_awaited()
+        self.assert_recorded(False)
+        self.channels[20].permissions.send_messages = True
+        await self.celebrate()
+        await self.celebrate()
+        self.gemini.generate.assert_awaited_once()
+        self.channels[20].send.assert_awaited_once()
+        self.assert_recorded(True)
+
+    async def test_forbidden_after_generation_stops_hourly_regeneration(self):
+        self.channels[10].send.side_effect = discord.Forbidden(
+            SimpleNamespace(status=403, reason="禁止"), "架空の権限変更",
+        )
+        for _ in range(3):
+            await self.celebrate()
+        self.gemini.generate.assert_awaited_once()
+        self.channels[10].send.assert_awaited_once()
+        # 生成文は送信を拒否されたチャンネルの履歴から作ったため、他へ流用しない
+        self.channels[20].send.assert_not_awaited()
+        self.assert_recorded(True)
+
+    async def test_temporary_generation_failure_retries_on_next_check(self):
+        self.gemini.generate.side_effect = [(None, None, []), ("架空のお祝い", None, [])]
+        await self.celebrate()
+        self.assert_recorded(False)
+        await self.celebrate()
+        self.assertEqual(self.gemini.generate.await_count, 2)
+        self.channels[10].send.assert_awaited_once()
+        self.assert_recorded(True)

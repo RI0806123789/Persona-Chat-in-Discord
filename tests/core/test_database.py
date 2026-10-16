@@ -210,5 +210,80 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(getattr(again.get_guild(guild_id), name), value)
 
 
+class ReminderUserIndexTests(unittest.TestCase):
+    """リマインダーのユーザー別の操作が専用の索引を使うことを確認する（#58）。"""
+
+    INDEX = "idx_reminders_user_status"
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "bot.db"
+        self.db = Database(self.path)
+        self.addCleanup(lambda: self.db.close())
+
+    def add(self, user_id: str, remind_at: str) -> int | None:
+        return self.db.reminder_add(
+            user_id=user_id, user_name="架空の利用者", guild_id=1, channel_id=10,
+            message="架空の予定", remind_at=remind_at, created_at="2026-01-01T00:00:00+00:00",
+        )
+
+    def reminder_indexes(self) -> set[str]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            return {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='reminders'"
+            )}
+
+    def query_plans(self, operation) -> list[str]:
+        """操作が実際に発行した SQL（値は展開済み）を集め、ユーザー別の検索の実行計画を返す。"""
+        statements: list[str] = []
+        self.db._conn.set_trace_callback(statements.append)
+        try:
+            operation()
+        finally:
+            self.db._conn.set_trace_callback(None)
+        targets = [statement for statement in statements
+                   if "FROM reminders" in statement and "user_id = " in statement]
+        self.assertTrue(targets, statements)
+        with closing(sqlite3.connect(self.path)) as connection:
+            return [" / ".join(row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}"))
+                    for statement in targets]
+
+    def test_user_operations_use_user_index_without_temporary_sort(self) -> None:
+        self.db.initialize()
+        for user in range(30):
+            for hour in range(3):
+                self.add(f"user-{user}", f"2026-01-02T{hour:02d}:00:00+00:00")
+        target = "user-7"
+        operations = {
+            "登録時の上限確認": lambda: self.add(target, "2026-01-02T01:00:00+00:00"),
+            "一覧": lambda: self.db.reminder_list_pending(target),
+            "件数": lambda: self.db.reminder_count_pending(target),
+        }
+        for name, operation in operations.items():
+            with self.subTest(operation=name):
+                for plan in self.query_plans(operation):
+                    self.assertIn(self.INDEX, plan)
+                    self.assertNotIn("TEMP B-TREE", plan)
+        # 同じ時刻の予定は登録順（reminder_id）で並ぶ
+        listed = [(row["remind_at"][11:13], row["reminder_id"]) for row in self.db.reminder_list_pending(target)]
+        self.assertEqual(listed, sorted(listed))
+        self.assertEqual([hour for hour, _ in listed], ["00", "01", "01", "02"])
+        self.assertEqual(self.db.reminder_count_pending(target), 4)
+
+    def test_version_nine_database_gains_index_and_keeps_reminders(self) -> None:
+        with patch.object(database, "SCHEMA_VERSION", 9):
+            self.db.initialize()
+        reminder_id = self.add("test-user", "2026-01-02T00:00:00+00:00")
+        self.assertNotIn(self.INDEX, self.reminder_indexes())
+        self.db.close()
+        self.db = Database(self.path)
+        self.db.initialize()
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        self.assertEqual(self.reminder_indexes(), {"idx_reminders_due", self.INDEX})
+        self.assertEqual([row["reminder_id"] for row in self.db.reminder_list_pending("test-user")], [reminder_id])
+
+
 if __name__ == "__main__":
     unittest.main()

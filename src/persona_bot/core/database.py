@@ -53,7 +53,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -170,6 +170,14 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   （ボイス接続自体が再起動をまたげないため、復元しても意味がない）。
     9: [
         "ALTER TABLE guild_settings ADD COLUMN autonomous_enabled INTEGER NOT NULL DEFAULT 0",
+    ],
+    # バージョン10: リマインダーのユーザー別の操作（登録時の上限確認・一覧・件数）用の索引。
+    #   これらは WHERE user_id = ? AND status = 'pending'（一覧は ORDER BY remind_at, reminder_id）
+    #   で引くが、既存の idx_reminders_due は status が先頭のため、全ユーザーの pending 行を
+    #   走査していた。索引の末尾には rowid（= reminder_id）が暗黙に並ぶため、一覧の並び替えも
+    #   索引の順序だけで済む。見回り（reminder_claim_due）は引き続き idx_reminders_due を使う。
+    10: [
+        "CREATE INDEX IF NOT EXISTS idx_reminders_user_status ON reminders (user_id, status, remind_at)",
     ],
 }
 
