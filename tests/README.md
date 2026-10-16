@@ -32,6 +32,18 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## 記念日の投稿先・PDF依存・リマインダー索引の確認（#56〜#58）
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #56 | `services/test_auto_topic_service.AnniversaryChannelTests` | 最新の監視チャンネルが削除済みなら監視から外して次へ、送信不可なら生成せずに次へ進む。送信先が無い間は生成も記録もせず、権限の復旧後に1回だけ投稿する。生成後の `Forbidden` はその日を記録して再生成せず、別のチャンネルへ流用しない。一時的な生成失敗は次回に再試行する |
+| #57 | `services/test_document_service.OptionalPdfDependencyTests` / `integration/test_sdk_migration.PdfMigrationTests` | `pypdf` を読み込めない状態でも文書処理モジュールを読み込める。PDFの検証だけが `pypdf` を名指しした `ValueError` になり、テキストの検証は動く。PDFの回帰テストは `pypdf` が無ければ省略する |
+| #58 | `core/test_database.ReminderUserIndexTests` | 登録時の上限確認・一覧・件数が実際に発行するSQLを `EXPLAIN QUERY PLAN` にかけ、`idx_reminders_user_status` を使い一時的な並べ替えが無いことを確認。版9のDBが予定を保ったまま版10へ移行することも確認 |
+
+2026-10-16、Windows・Python 3.13で修正前の `src/` に対して追加10件と既存のPDF検証1件を実行した。記念日4件と索引2件（3操作のsubTestと移行）が失敗し、`pypdf` を塞いだ読み込みの3件がエラーになった（一時的な生成失敗の再試行と、既存のPDF検証は修正前から成功）。修正前は、版9の一覧SQLが `idx_reminders_due (status=?)` で全員の未通知の予定を走査していた。修正後は全件成功し、全309テストが省略なしで成功した。
+
+`pypdf` の欠落は `sys.modules` を使って再現した。テスト全体の検出・実行は、修正前は2モジュールが読み込みで失敗して274件しか実行されず3件がエラーになった。修正後は全309件を検出し、PDFの1件だけを省略して成功した。依存関係・全ソースの構文・Python 3.10文法・メッセージ分割・`compileall`・構成図のXMLも確認した。Linux・Python 3.10での実行と、実際のDiscord・Geminiでの再現は未確認。
+
 ## 感情タグの小文字とBOM付きファイルの確認（#54・#55）
 
 | Issue | テスト | 確認内容 |

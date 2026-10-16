@@ -375,21 +375,24 @@ class AutoTopicService:
             guild = self._client.get_guild(guild_id)
             if guild is None:
                 continue
+            channel = self._pick_anniversary_channel(guild_settings)
+            if channel is None:
+                # 送信できる監視チャンネルが無い。API は呼んでいないため記録はせず、
+                # 権限が戻れば次回の見回りで投稿される。
+                continue
             member = await self._resolve_member(guild, user_id)
             if member is None:
                 continue  # このサーバーのメンバーではない
 
-            # 直近アクティビティが最も新しい監視チャンネルへ投稿する。
-            channel_id = max(
-                guild_settings.auto_topic_channels,
-                key=lambda cid: guild_settings.auto_topic_channels[cid],
-            )
-            channel = self._client.get_channel(channel_id)
-            if channel is None:
-                continue
-
             try:
                 done = await self._post_anniversary(channel, guild_settings, member, label)
+            except discord.Forbidden:
+                # 生成中に権限が変わった場合も、同じ日に毎時間 API を呼び続けない
+                # （自発的な会話の Forbidden と同じ扱い）。今日の分は処理済みとして記録する。
+                # 生成文はこのチャンネルの履歴から作ったため、別のチャンネルへは流用しない。
+                print(f"記念日: 送信権限がなくなったため今日のお祝いを見送ります "
+                      f"(guild={guild_id}, channel={channel.id})。")
+                done = True
             except Exception as error:
                 print(f"記念日: 投稿エラー (guild={guild_id}, user={user_id}): {error}")
                 continue
@@ -397,6 +400,30 @@ class AutoTopicService:
             if done:
                 # メモリと DB の両方に記録する（当日に再起動しても再投稿しないため）
                 await guild_settings.record_anniversary_post(user_id, label, today_str)
+
+    def _pick_anniversary_channel(self, guild_settings: GuildSettings) -> Any | None:
+        """お祝いの投稿先を、直近アクティビティが新しい監視チャンネルから順に選ぶ。
+
+        最新のチャンネルが削除された・送信できなくなっただけで、そのサーバーでの
+        お祝いが永久に止まらないよう、送信できるチャンネルが見つかるまで順に試す。
+        削除済み（get_channel が None）のチャンネルは自発的な会話の見回りと同じく
+        監視から外す。ここでは Gemini を呼ばないため、何度試しても API を消費しない。
+        """
+        candidates = sorted(
+            guild_settings.auto_topic_channels,
+            key=guild_settings.auto_topic_channels.__getitem__,
+            reverse=True,
+        )
+        for channel_id in candidates:
+            channel = self._client.get_channel(channel_id)
+            if channel is None:
+                print(f"記念日: チャンネル {channel_id} が見つからないため監視を解除します。")
+                guild_settings.auto_topic_channels.pop(channel_id, None)
+                guild_settings.auto_topic_posted_at.pop(channel_id, None)
+                continue
+            if self._can_send(channel):
+                return channel
+        return None
 
     async def _post_anniversary(
         self,
