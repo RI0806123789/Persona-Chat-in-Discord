@@ -131,6 +131,10 @@ class AutoTopicService:
 
             try:
                 done = await self._post_topic(channel, guild_settings)
+            except discord.Forbidden:
+                # 生成中に権限が変わった場合も、同じ沈黙期間にAPIを呼び続けない。
+                print(f"自発的な会話: 送信権限がなくなったため話題提供を見送ります (channel={channel_id})。")
+                done = True
             except Exception as error:
                 print(f"自発的な会話: 話題提供エラー (channel={channel_id}): {error}")
                 continue
@@ -147,6 +151,9 @@ class AutoTopicService:
         リトライしても同じ結果になる場合）。False は一時的な失敗で、次回の
         見回りでリトライされる。
         """
+        if not self._can_send(channel):
+            return False
+
         try:
             persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
         except FileNotFoundError:
@@ -192,12 +199,24 @@ class AutoTopicService:
             "自発的な会話", f"{channel_label} への話題提供", "自動実行", full_prompt, response_text, usage_info
         )
 
-        await send_long_message(channel, response_text)
+        await send_long_message(channel, response_text, allowed_mentions=discord.AllowedMentions.none())
         return True
 
     # ==========================================================================
     # 自動投稿の共通処理
     # ==========================================================================
+
+    @staticmethod
+    def _can_send(channel: Any) -> bool:
+        """生成前にチャンネル単位の閲覧・送信権限を確認する。DMは対象外。"""
+        guild = getattr(channel, "guild", None)
+        bot_member = guild.me if guild is not None else None
+        if bot_member is None:
+            return False
+        permissions = channel.permissions_for(bot_member)
+        can_send = (permissions.send_messages_in_threads if isinstance(channel, discord.Thread)
+                    else permissions.send_messages)
+        return permissions.view_channel and can_send
 
     async def _screen_auto_post(self, response_text: str, label: str) -> tuple[str | None, bool]:
         """ボットが自分から投稿するテキストへの共通の後処理。
@@ -387,6 +406,9 @@ class AutoTopicService:
         label: str,
     ) -> bool:
         """お祝いメッセージを生成し、チャンネルへ投稿する。戻り値の意味は _post_topic と同様。"""
+        if not self._can_send(channel):
+            return False
+
         try:
             persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
         except FileNotFoundError:
@@ -428,5 +450,10 @@ class AutoTopicService:
             usage_info,
         )
 
-        await send_long_message(channel, f"{member.mention} {response_text}")
+        await send_long_message(
+            channel, f"{member.mention} {response_text}",
+            allowed_mentions=discord.AllowedMentions(
+                users=[member], everyone=False, roles=False, replied_user=False,
+            ),
+        )
         return True

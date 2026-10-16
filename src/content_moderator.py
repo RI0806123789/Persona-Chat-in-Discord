@@ -220,7 +220,7 @@ class ContentModerator:
                 print(f"[モデレーション] テキスト取得失敗 ({direction}) — unsafe 扱い")
                 return False, "AIモデレーション応答の取得に失敗", None
 
-            parsed = extract_json_object(result_text)
+            parsed = extract_json_object(result_text, required_keys=("safe",))
             if parsed is None:
                 # パース失敗は通過扱い（fail-open）。
                 print(f"[モデレーション] 応答パース失敗 — 通過扱い: {result_text!r}")

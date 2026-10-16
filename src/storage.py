@@ -1,4 +1,5 @@
 from copy import deepcopy
+from collections.abc import Iterator
 from datetime import datetime, timezone
 import json
 import os
@@ -73,75 +74,36 @@ def write_json_file(path: Path, data: dict[str, Any]) -> None:
                 print(f"JSON一時ファイルの削除に失敗しました ({temporary_path})。")
 
 
-def _find_balanced_json_object(text: str) -> str | None:
-    """テキスト中の最初の `{` から、波括弧の対応が取れる位置までを切り出す。
-
-    文字列リテラル内の波括弧・エスケープを正しく無視するため、単純な
-    正規表現（非貪欲マッチ）ではネストしたJSONを取りこぼす問題を回避する。
-    """
+def _iter_json_objects(text: str) -> Iterator[dict[str, Any]]:
+    """不正な候補の後も走査し、文字列内の括弧やネストは標準パーサーで扱う。"""
+    decoder = json.JSONDecoder()
     start = text.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
+    while start != -1:
+        try:
+            parsed, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            start = text.find("{", start + 1)
             continue
-
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : index + 1]
-    return None
+        if isinstance(parsed, dict):
+            yield parsed
+        # 正常なオブジェクトの内部を別のトップレベル候補として採用しない。
+        start = text.find("{", end)
 
 
-def extract_json_object(text: str) -> dict[str, Any] | None:
+def extract_json_object(text: str, *, required_keys: tuple[str, ...] = ()) -> dict[str, Any] | None:
+    """コードブロックを優先し、必要なキーを持つ最初のJSONオブジェクトを返す。"""
     if not text:
         return None
 
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
+    # 説明文のJSON例より、明示された出力ブロックを先に確認する。
+    blocks = re.finditer(r"```(?:json)?[ \t]*\r?\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    for block in blocks:
+        for parsed in _iter_json_objects(block.group(1)):
+            if all(key in parsed for key in required_keys):
+                return parsed
+    for parsed in _iter_json_objects(text):
+        if all(key in parsed for key in required_keys):
             return parsed
-    except Exception:
-        pass
-
-    # Markdownのコードブロックを除去
-    text = re.sub(r"^```(?:json)?\n", "", text.strip())
-    text = re.sub(r"\n```$", "", text)
-
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    # 前後に説明文などが付いた場合のフォールバック:
-    # 波括弧のバランスを取ってネストしたJSONオブジェクトを丸ごと抽出する。
-    candidate = _find_balanced_json_object(text)
-    if candidate is None:
-        return None
-
-    try:
-        parsed = json.loads(candidate)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        return None
     return None
 
 

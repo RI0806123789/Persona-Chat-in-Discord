@@ -15,9 +15,46 @@ import httpx
 
 import genai_client
 from genai_client import close_genai_client, create_genai_client, generate_content
+from gemini_service import GeminiService
 
 
 class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_grounding_factory_keeps_key_out_of_urls_and_error_logs(self) -> None:
+        # 本番と同じfactory・SDKを使い、HTTP境界だけを差し替える。
+        for failure in (None, "connection", "timeout", "http_status", 400, 503):
+            with self.subTest(failure=failure):
+                requests = []
+
+                async def handle(request):
+                    requests.append(request)
+                    if failure == "connection":
+                        raise httpx.ConnectError(f"架空の接続障害: {request.url}", request=request)
+                    if failure == "timeout":
+                        raise httpx.ReadTimeout(f"架空のタイムアウト: {request.url}", request=request)
+                    if failure == "http_status":
+                        response = httpx.Response(502, request=request)
+                        response.raise_for_status()
+                    if failure is not None:
+                        return httpx.Response(failure, json={"error": {"code": failure, "message": "架空のAPI障害"}})
+                    return httpx.Response(200, json={"candidates": [{
+                        "content": {"parts": [{"text": "架空の検索結果"}]}, "finishReason": "STOP",
+                    }]})
+
+                with patch.object(genai_client.httpx, "AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
+                    client = create_genai_client("YOUR_GEMINI_API_KEY")
+                try:
+                    with patch("builtins.print") as logging:
+                        result = await GeminiService(client).generate("架空の質問", "selected-model", grounding=True, timeout=2)
+                    self.assertEqual(len(requests), 1)
+                    self.assertEqual(requests[0].headers["x-goog-api-key"], "YOUR_GEMINI_API_KEY")
+                    self.assertNotIn("key", requests[0].url.params)
+                    self.assertNotIn("YOUR_GEMINI_API_KEY", str(requests[0].url))
+                    self.assertNotIn("YOUR_GEMINI_API_KEY", str(logging.call_args_list))
+                    self.assertIn(b"googleSearch", requests[0].content)
+                    self.assertEqual(result[0], "架空の検索結果" if failure is None else None)
+                finally:
+                    await close_genai_client(client)
+
     def setUp(self) -> None:
         self.response = object()
         self.request = AsyncMock(return_value=self.response)
