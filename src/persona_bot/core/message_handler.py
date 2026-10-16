@@ -206,10 +206,19 @@ class MessageHandler:
         # まま handle_comment を呼ぶと、セッションが無いので None が返り、通常経路にも
         # 回らないまま発言が黙って捨てられる（メンション付きの発言まで無視されてしまう）。
         if self.autonomous.is_comment_channel(message.channel.id, guild_id):
+            comment_session = guild_settings.autonomous_session
+            response_settings = guild_settings.snapshot_response()
             response_text = await self.autonomous.handle_comment(
-                message, question, guild_settings, claimed_session=claimed_comment_session
+                message, question, guild_settings, claimed_session=claimed_comment_session,
+                response_settings=response_settings,
             )
-            tts_prompt_file = guild_settings.current_prompt_file
+            # コメント返信の送信待機中に終了・移動した配信は、別通話へ読み上げない。
+            if response_text and self.autonomous.can_speak_session(message.guild, guild_settings, comment_session):
+                await play_tts_response(
+                    message, response_text, response_settings.prompt_file,
+                    is_valid=lambda: self.autonomous.can_speak_session(message.guild, guild_settings, comment_session),
+                )
+            return
         elif accepts_normally:
             # 配信が終わっていても、通常のチャットとして受け付けられる発言なら普通に答える。
             response_settings = guild_settings.snapshot_response()

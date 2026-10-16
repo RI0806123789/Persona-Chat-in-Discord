@@ -24,7 +24,7 @@ CPU 1コア / メモリ 1GB 級の小さなサーバーでも動かせるよう�
 import asyncio
 import io
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import discord
 import edge_tts
@@ -256,10 +256,10 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
 # ワーカーは最初の依頼で起動し、キューが空になったら自分を片付けて終了するので、
 # 参加していないサーバーの分までタスクが常駐することはない。
 #
-# 積むのは「読み上げるテキスト」と「そのときのボイスプロファイル」の組。
+# 積むのはテキスト・そのときのボイスプロファイル・任意の有効性判定の組。
 # プロファイルを積む時点で確定させておくと、待っている間に /functions でペルソナを
 # 切り替えられても、既に積まれた分は依頼時のキャラクターの声のまま読み上げられる。
-_speech_queues: dict[int, asyncio.Queue[tuple[str, Mapping[str, Any]]]] = {}
+_speech_queues: dict[int, asyncio.Queue[tuple[str, Mapping[str, Any], Callable[[], bool] | None]]] = {}
 
 
 async def _run_speech_worker(guild: discord.Guild) -> None:
@@ -268,7 +268,7 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
     try:
         while True:
             try:
-                text, profile = queue.get_nowait()
+                text, profile, is_valid = queue.get_nowait()
             except asyncio.QueueEmpty:
                 # ここから return までに await を挟まないこと。挟むと、キューが空だと
                 # 判断した後・登録を消す前に新しい依頼が積まれ、その分が
@@ -283,10 +283,17 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
                 return
 
             try:
+                # 配信が終了した依頼は、キュー待機後にも捨てる。
+                if is_valid is not None and not is_valid():
+                    continue
                 pcm = await asyncio.wait_for(
                     _synthesize_pcm(text, profile),
                     timeout=TTS_TIMEOUT_SECONDS,
                 )
+                # 合成待機中の終了・移動・接続差し替えも、再生の直前に確かめる。
+                if (guild.voice_client is not voice_client or not voice_client.is_connected()
+                        or (is_valid is not None and not is_valid())):
+                    continue
                 await _play_pcm(voice_client, pcm)
             except asyncio.TimeoutError:
                 print(f"TTS: 音声合成が {TTS_TIMEOUT_SECONDS} 秒で完了しなかったため、この返信の読み上げを見送ります。")
@@ -302,6 +309,8 @@ async def play_tts_response(
     message: discord.Message,
     response_text: str | None,
     prompt_file: str | None = None,
+    *,
+    is_valid: Callable[[], bool] | None = None,
 ) -> None:
     """AI の返信をボイスチャンネルで読み上げる。
 
@@ -316,13 +325,15 @@ async def play_tts_response(
     DM にはギルドが無く、ボットが参加できるボイスチャンネルも存在しないため、
     `message.guild` が None のときは `speak_text` 側で no-op になる。
     """
-    await speak_text(message.guild, response_text, prompt_file)
+    await speak_text(message.guild, response_text, prompt_file, is_valid=is_valid)
 
 
 async def speak_text(
     guild: discord.Guild | None,
     response_text: str | None,
     prompt_file: str | None = None,
+    *,
+    is_valid: Callable[[], bool] | None = None,
 ) -> None:
     """テキストを、そのサーバーのボイスチャンネルで読み上げる。
 
@@ -330,6 +341,7 @@ async def speak_text(
     独り言のように、どの発言への返信でもないテキストを読み上げるために使う。
     接続していない・本文が空・整形後に読み上げる中身が残らない場合は
     黙って何もしない（no-op）。
+    `is_valid` は自律配信の有効性判定。投入前・合成前・再生直前に照合する。
     """
     if not response_text or response_text.isspace():
         return
@@ -340,6 +352,8 @@ async def speak_text(
     voice_client = guild.voice_client
     if not isinstance(voice_client, discord.VoiceClient) or not voice_client.is_connected():
         return
+    if is_valid is not None and not is_valid():
+        return
 
     speech_text = build_speech_text(response_text)
     if not speech_text:
@@ -347,7 +361,7 @@ async def speak_text(
         return
 
     # 待ち行列に並ぶ前に、いま選ばれているキャラクターの声を確定させておく。
-    request = (speech_text, resolve_profile(prompt_file))
+    request = (speech_text, resolve_profile(prompt_file), is_valid)
 
     queue = _speech_queues.get(guild.id)
     if queue is None:

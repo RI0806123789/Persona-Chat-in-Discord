@@ -37,7 +37,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.message = SimpleNamespace(
             content="架空のコメントです。", attachments=[], mentions=[],
             author=SimpleNamespace(id=11, bot=False, display_name="架空の視聴者"),
-            guild=SimpleNamespace(id=1), channel=Mock(spec=discord.VoiceChannel, id=10),
+            guild=SimpleNamespace(id=1, voice_client=None), channel=Mock(spec=discord.VoiceChannel, id=10),
             created_at=self.now, reply=AsyncMock(),
         )
 
