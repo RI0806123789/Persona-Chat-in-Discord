@@ -11,23 +11,23 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import discord
-import auto_topic_service
-from auto_topic_service import AutoTopicService
-from autonomous_service import AutonomousService
-import commands
-import content_moderator
-from discord_helpers import is_administrator, send_long_message, send_long_reply, split_message
-import functions_view
-import help_view
-from message_handler import MessageHandler
-import ng_word_service
-from ng_word_service import NgWordFilter
-import reminder_service
-from reminder_service import ReminderService
-import reminder_view
-import stats_view
-import summary_view
-import view_parts
+from persona_bot.services import auto_topic_service
+from persona_bot.services.auto_topic_service import AutoTopicService
+from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.core import commands
+from persona_bot.services import content_moderator
+from persona_bot.utils.discord_helpers import is_administrator, send_long_message, send_long_reply, split_message
+from persona_bot.views import functions_view
+from persona_bot.views import help_view
+from persona_bot.core.message_handler import MessageHandler
+from persona_bot.services import ng_word_service
+from persona_bot.services.ng_word_service import NgWordFilter
+from persona_bot.services import reminder_service
+from persona_bot.services.reminder_service import ReminderService
+from persona_bot.views import reminder_view
+from persona_bot.views import stats_view
+from persona_bot.views import summary_view
+from persona_bot.views import view_parts
 
 
 def make_filter() -> NgWordFilter:
@@ -339,7 +339,7 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
         handler = MessageHandler.__new__(MessageHandler)
         handler.blacklist = SimpleNamespace(record_violation=AsyncMock(return_value=(5, True)))
         message = SimpleNamespace(author=SimpleNamespace(id=11), reply=AsyncMock())
-        with patch("message_handler.BLACKLIST_MAX_VIOLATIONS", 5):
+        with patch("persona_bot.core.message_handler.BLACKLIST_MAX_VIOLATIONS", 5):
             await handler.notify_violation(message, "架空の警告")
         self.assertIn("違反が5回に達したため", message.reply.call_args.args[0])
 

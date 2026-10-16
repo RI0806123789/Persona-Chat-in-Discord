@@ -43,42 +43,15 @@ Google Gemini を使い、ペルソナ（キャラクター）になりきって
 Persona Chat in Discord/
 ├── .venv/                                      # Python 仮想環境（Git 管理対象外。python -m venv で作成）
 ├── src/
-│   ├── __pycache__/                            # Python キャッシュ（Git 管理対象外）
-│   ├── affinity_service.py                     # 親密度・感情（Valence/Arousal）の管理
-│   ├── app_state.py                            # 実行中設定の状態管理
-│   ├── auto_topic_service.py                   # 自発的な会話（無会話チャンネルへの話題提供）
-│   ├── auto_topic_view.py                      # 自発会話パネル UI（自発的な会話・自律行動の ON/OFF）
-│   ├── autonomous_service.py                   # 自律行動（ボイス/ステージへ自分から出て配信する）
-│   ├── blacklist_service.py                     # ブラックリスト（三審制）管理
-│   ├── bot.py                                  # ボットのエントリポイント
-│   ├── choices.py                              # Discord コマンド選択肢
-│   ├── commands.py                             # スラッシュコマンド登録
-│   ├── functions_view.py                       # 機能ハブ UI（各パネルへの分岐）
-│   ├── reminder_service.py                     # リマインダーの登録・通知
-│   ├── reminder_view.py                        # リマインダーパネル UI（一覧・取り消し）
-│   ├── settings_view.py                        # 設定パネル UI（Select / Button）
-│   ├── summary_view.py                         # 会話要約パネル UI
-│   ├── stats_service.py                        # ユーザー別会話統計の集計・グラフ生成
-│   ├── stats_view.py                           # 会話統計パネル UI
-│   ├── constants.py                            # パス・モデル・上限値などの定数
-│   ├── content_moderator.py                    # AIベースのコンテンツモデレーション
-│   ├── database.py                             # SQLite データベース層（memory/bot.db）
-│   ├── discord_helpers.py                      # Discord メッセージ/添付処理
-│   ├── document_service.py                     # 文書添付キューと要約処理
-│   ├── gemini_service.py                       # Gemini API 呼び出し
-│   ├── graph_rendering.py                      # グラフ描画の共有ロック
-│   ├── memory_service.py                       # 長期記憶の読込・圧縮・永続化
-│   ├── message_handler.py                      # 起動処理から分離したメッセージ受信・応答処理
-│   ├── ng_word_service.py                      # NGワード判定・マスク処理
-│   ├── paths.py                                # パス解決とプロンプト読込
-│   ├── prompting.py                            # Gemini に渡すプロンプト構築
-│   ├── settings_loader.py                      # .env からのAPIキー読込（未設定なら起動を止める）
-│   ├── storage.py                              # JSON / テキストファイル入出力
-│   ├── timeutil.py                             # タイムゾーン解決（失敗時は UTC へフォールバック）
-│   ├── usage_graph.py                          # 利用トークングラフ生成
-│   ├── view_parts.py                           # パネル共通 UI 部品（戻るボタン）
-│   ├── voice.py                                # 読み上げ（edge-tts 主・gTTS 退避）
-│   └── voice_dsp.py                            # 読み上げ音声の音色づけ（numpy のみの軽量 EQ）
+│   ├── bot.py                                  # 起動・設定とサービスの配線（起動方法は従来どおり）
+│   └── persona_bot/                            # 用途別のPythonパッケージ
+│       ├── __init__.py
+│       ├── config/                             # 定数・選択肢・APIキー読込・パス解決
+│       ├── core/                               # 状態・クライアント・コマンド・メッセージ処理・SQLite
+│       ├── services/                           # 会話・記憶・モデレーションなどの各機能とプロンプト
+│       ├── views/                              # Discordのパネルと共通UI部品
+│       ├── audio/                              # 読み上げと音声の加工
+│       └── utils/                              # 送信・JSON入出力・時刻・グラフ描画
 ├── prompts/                                    # システムプロンプトファイル群（※すべて架空のキャラクター設定）
 │   ├── 00_prompt_format.txt                    # プロンプトフォーマット定義
 │   ├── prompt_default.txt
@@ -215,7 +188,7 @@ cd src
 python bot.py    # Ubuntu で仮想環境を使わない場合は python3
 ```
 
-`ログイン成功: BotName#0000` と表示されれば起動完了です。**必ず `src/` の中から実行してください**（モジュールとプロンプトのパスを `src/` 基準で解決するため）。
+`ログイン成功: BotName#0000` と表示されれば起動完了です。**必ず `src/` の中から実行してください**（`bot.py` は引き続き `src/` 直下にあります）。
 
 ### 7. 常時稼働の設定（systemd / Linux のみ）
 
@@ -255,7 +228,7 @@ sudo apt update
 sudo apt install -y fonts-noto-cjk
 ```
 
-候補の順序は `src/constants.py` の `GRAPH_FONT_FAMILY` が共通の設定です。Windows用のYu Gothic・Meiryoに続いて、Linuxでも使えるNoto Sans CJK JP・Noto Sans JP・IPAexGothicを選べます。導入済みの候補だけを描画へ渡すため、LinuxでWindows専用フォントを探す警告も抑えます。日本語フォントが1つも無い場合、汎用フォントでの描画は続きますが、日本語は欠落することがあります。
+候補の順序は `src/persona_bot/config/constants.py` の `GRAPH_FONT_FAMILY` が共通の設定です。Windows用のYu Gothic・Meiryoに続いて、Linuxでも使えるNoto Sans CJK JP・Noto Sans JP・IPAexGothicを選べます。導入済みの候補だけを描画へ渡すため、LinuxでWindows専用フォントを探す警告も抑えます。日本語フォントが1つも無い場合、汎用フォントでの描画は続きますが、日本語は欠落することがあります。
 
 ボットと同じユーザー・仮想環境で、リポジトリルートから解決と実描画を確認します。
 
@@ -284,7 +257,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 ## 💬 コマンド一覧
 
-> 各機能の説明は、ボット上の `/functions` → **❓ 使い方** が常に最新です（`src/help_view.py` が唯一の情報源）。ここでは要点と注意点だけを書いています。
+> 各機能の説明は、ボット上の `/functions` → **❓ 使い方** が常に最新です（`src/persona_bot/views/help_view.py` が唯一の情報源）。ここでは要点と注意点だけを書いています。
 
 ### `/functions`
 
@@ -347,7 +320,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 - コメントは、直前の応答から 10 秒以上空いていれば必ず応答し、立て込んだときだけ間引きます（`AUTONOMOUS_COMMENT_COOLDOWN_SECONDS`）。
 - `/join` で呼ばれている間は配信を始めません。別のチャンネルへ移動させられたら配信を終えます。開始に失敗したときは、30 分〜最長 4 時間待ってから再挑戦します（パネルで確定すると待ち時間を解除）。
 - コメントには従来どおりモデレーションが掛かります。独り言と第一声には AI モデレーションを掛けず、NG ワードの伏せ字化だけを行います。コメントへの応答に長期記憶は使いません。
-- 必要な権限: ステージは「メンバーをミュート」（配信枠を自分で開くにはさらに「チャンネルの管理」「メンバーの移動」）、ボイスは「表示」「接続」「発言」「メッセージを送信」。調整値は `src/constants.py` の `AUTONOMOUS_*` にあります。
+- 必要な権限: ステージは「メンバーをミュート」（配信枠を自分で開くにはさらに「チャンネルの管理」「メンバーの移動」）、ボイスは「表示」「接続」「発言」「メッセージを送信」。調整値は `src/persona_bot/config/constants.py` の `AUTONOMOUS_*` にあります。
 
 #### 🎂 記念日・誕生日の自動お祝い
 
@@ -396,6 +369,12 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 ## 📋 更新履歴
 
 ### ver0.1.7(BETA)
+
+#### ソースファイルを用途別のフォルダへ整理
+
+- `src/persona_bot/` を設定・中核処理・各機能・画面・音声・共通処理の6フォルダに分割し、importを更新
+- 起動は従来どおり `cd src` → `python bot.py`。既存のペルソナ相対パス、ルート直下の `.env`・`memory/`・`ng/` を引き続き使用
+- 回帰テストと構文確認の手順、構成図、systemdの見本の説明を新しい構成に対応
 
 #### 自動投稿・DB移行・パネルの不具合と自律行動の構成を改善
 
@@ -486,7 +465,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 - **既存の「自発的な会話」と統一**: ON/OFF の入口を `/functions` → 💬 自発会話 パネルに集約し、しきい値も共用する。両方 ON でも同時には発火せず、**配信中はテキストへの話題提供を止める**
 - **モデレーションの方針**: ユーザーのコメントには従来どおりフィルターを掛け、**ボットの自発発言（第一声・独り言）には AI モデレーションを掛けない**（NGワードのマスクのみ）。ペルソナの表現を損なわず、発言のたびの Gemini 呼び出しも増やさないための意図的な非対称
 - **プライバシーと安全性**: コメント応答に長期記憶を渡さない（共有の場である配信で個人の記憶を読み上げないため。親密度の更新と 👍👎 の登録も行わない）。ステージ開始時のサーバー全体通知（`send_start_notification`）は使わず、自発発言の投稿はメンション通知を無効化する。人間の発言をまだ観測していないサーバーでは動かない（招待直後・再起動直後にいきなり入り込まないため）
-- **新規ファイル**: `src/autonomous_service.py`。調整値は `constants.py` の `AUTONOMOUS_*` に集約
+- **新規ファイル**: `src/persona_bot/services/autonomous_service.py`。調整値は `constants.py` の `AUTONOMOUS_*` に集約
 
 #### 設定 UI の変更
 

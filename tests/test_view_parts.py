@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from view_parts import BackButton, PanelView, swap_panel
+from persona_bot.views.view_parts import BackButton, PanelView, swap_panel
 
 
 class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):

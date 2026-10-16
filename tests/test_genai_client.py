@@ -13,9 +13,9 @@ from google import genai
 from google.genai import errors, types
 import httpx
 
-import genai_client
-from genai_client import close_genai_client, create_genai_client, generate_content
-from gemini_service import GeminiService
+from persona_bot.services import genai_client
+from persona_bot.services.genai_client import close_genai_client, create_genai_client, generate_content
+from persona_bot.services.gemini_service import GeminiService
 
 
 class GenaiClientTests(unittest.IsolatedAsyncioTestCase):

@@ -12,17 +12,17 @@ from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import discord
-from affinity_service import extract_affinity_changes
-from app_state import BotState
-from background import spawn
+from persona_bot.services.affinity_service import extract_affinity_changes
+from persona_bot.core.app_state import BotState
+from persona_bot.core.background import spawn
 from message_handler_helpers import make_message_handler
-from constants import GEMINI_RESPONSE_TIMEOUT_SECONDS, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES
-from content_moderator import screen_bot_response
-from discord_helpers import (
+from persona_bot.config.constants import GEMINI_RESPONSE_TIMEOUT_SECONDS, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES
+from persona_bot.services.content_moderator import screen_bot_response
+from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, format_grounding_sources,
     is_supported_document_attachment, is_supported_message_channel,
 )
-from prompting import build_full_prompt, build_memory_sections
+from persona_bot.services.prompting import build_full_prompt, build_memory_sections
 
 
 class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):

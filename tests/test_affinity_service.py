@@ -11,11 +11,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import affinity_service
-from affinity_service import AffinityService
-from background import spawn
-import database
-from database import Database
+from persona_bot.services import affinity_service
+from persona_bot.services.affinity_service import AffinityService
+from persona_bot.core.background import spawn
+from persona_bot.core import database
+from persona_bot.core.database import Database
 
 
 class AffinityPersistenceTests(unittest.IsolatedAsyncioTestCase):

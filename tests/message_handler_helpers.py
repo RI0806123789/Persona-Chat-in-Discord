@@ -3,8 +3,8 @@
 from dataclasses import fields
 from unittest.mock import Mock, patch
 
-import message_handler
-from message_handler import MessageHandler
+from persona_bot.core import message_handler
+from persona_bot.core.message_handler import MessageHandler
 
 
 def make_message_handler(dependencies, test_case):

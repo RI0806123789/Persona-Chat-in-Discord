@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import discord
-from app_state import AutonomousSession, BotState
-import autonomous_service
-from autonomous_service import AutonomousService
-from background import spawn
-from constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES
-from discord_helpers import (
+from persona_bot.core.app_state import AutonomousSession, BotState
+from persona_bot.services import autonomous_service
+from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.core.background import spawn
+from persona_bot.config.constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES
+from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, is_supported_document_attachment,
     is_supported_message_channel,
 )

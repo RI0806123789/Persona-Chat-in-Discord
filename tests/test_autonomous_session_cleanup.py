@@ -12,11 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import discord
 
-from app_state import AutonomousSession, BotState
-import autonomous_service
-import autonomous_stage
-from autonomous_service import AutonomousService
-from background import spawn
+from persona_bot.core.app_state import AutonomousSession, BotState
+from persona_bot.services import autonomous_service
+from persona_bot.services import autonomous_stage
+from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.core.background import spawn
 
 
 class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):

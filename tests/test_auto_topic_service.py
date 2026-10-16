@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import discord
-import auto_topic_service
-from app_state import BotState
-from auto_topic_service import AutoTopicService
+from persona_bot.services import auto_topic_service
+from persona_bot.core.app_state import BotState
+from persona_bot.services.auto_topic_service import AutoTopicService
 
 
 class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):

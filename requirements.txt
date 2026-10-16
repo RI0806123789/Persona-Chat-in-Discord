@@ -23,7 +23,7 @@ google-genai==2.31.0
 edge-tts==7.3.1
 # 読み上げの退避先。edge-tts は公式に third-party 利用が認められた API ではなく、
 # 過去に Microsoft 側の仕様変更で一時的に使えなくなった経緯があるため、
-# 失敗したときに読み上げ機能ごと止まらないよう残してある（src/voice.py の _fetch_mp3）。
+# 失敗したときに読み上げ機能ごと止まらないよう残してある（src/persona_bot/audio/voice.py の _fetch_mp3）。
 gTTS==2.5.4
 # 音声エンジンが返す mp3 を、外部プロセス（ffmpeg.exe）を起動せずメモリ上で
 # 48kHz/ステレオ/16bit の生 PCM へデコードするために使う。
@@ -35,7 +35,7 @@ numpy==2.2.6
 Pillow==12.3.0
 pypdf==6.20.1
 # APIキー（Gemini / Discord）をプロジェクトルート直下の .env から読み込むために使う
-# （src/settings_loader.py）。以前は実キーを config_private.py という .py ファイルに
+# （src/persona_bot/config/settings_loader.py）。以前は実キーを config_private.py という .py ファイルに
 # 直接書いていたが、.env 方式なら systemd の EnvironmentFile= や Docker の --env-file で
 # OS の環境変数として渡す運用へ、コードを変えずにそのまま移行できる。
 # 未インストールでも settings_loader.py は警告を出して os.environ だけで続行するため、

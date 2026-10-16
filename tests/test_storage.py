@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from storage import load_json_file, write_json_file
+from persona_bot.utils.storage import load_json_file, write_json_file
 
 
 class JsonStorageTests(unittest.TestCase):

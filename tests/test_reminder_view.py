@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from constants import REMINDER_MAX_PENDING_PER_USER, REMINDER_PANEL_MAX_LENGTH
-from reminder_service import ReminderService
-import reminder_view
-from reminder_view import ReminderCancelSelect, ReminderView, _build_status_text
+from persona_bot.config.constants import REMINDER_MAX_PENDING_PER_USER, REMINDER_PANEL_MAX_LENGTH
+from persona_bot.services.reminder_service import ReminderService
+from persona_bot.views import reminder_view
+from persona_bot.views.reminder_view import ReminderCancelSelect, ReminderView, _build_status_text
 
 
 def make_records(count: int, *, body: str = "架空の予定") -> list[dict]:

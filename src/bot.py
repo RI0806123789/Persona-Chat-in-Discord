@@ -15,15 +15,15 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception as _error:  # 出力設定の失敗でボットを止めない
             print(f"標準出力のエンコーディング設定に失敗しました: {_error}")
 
-from app_state import BotState
-from affinity_service import AffinityService
-from auto_topic_service import AutoTopicService
-from autonomous_service import AutonomousService
-from background import make_guarded_loop, run_in_thread, spawn
-from blacklist_service import BlacklistService
-from bot_client import PersonaClient
-from commands import register_commands
-from constants import (
+from persona_bot.core.app_state import BotState
+from persona_bot.services.affinity_service import AffinityService
+from persona_bot.services.auto_topic_service import AutoTopicService
+from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.core.background import make_guarded_loop, run_in_thread, spawn
+from persona_bot.services.blacklist_service import BlacklistService
+from persona_bot.core.bot_client import PersonaClient
+from persona_bot.core.commands import register_commands
+from persona_bot.config.constants import (
     ANNIVERSARY_CHECK_MINUTES,
     AUTO_TOPIC_CHECK_MINUTES,
     AUTONOMOUS_CHECK_MINUTES,
@@ -35,21 +35,21 @@ from constants import (
     MODERATION_TIMEOUT_SECONDS,
     REMINDER_CHECK_SECONDS,
 )
-from content_moderator import ContentModerator
-from database import Database
-from discord_helpers import post_welcome_message
-from document_service import DocumentService
-from feedback_service import FeedbackService, set_default_service
-from gemini_service import GeminiService
-from genai_client import create_genai_client
-from help_view import build_welcome_text, resolve_bot_name
-from memory_service import MemoryService
-from message_handler import MessageHandler
-from ng_word_service import NgWordFilter
-from reminder_service import ReminderService
-from settings_loader import load_settings
-from stats_service import StatsService
-from usage_graph import UsageTracker
+from persona_bot.services.content_moderator import ContentModerator
+from persona_bot.core.database import Database
+from persona_bot.utils.discord_helpers import post_welcome_message
+from persona_bot.services.document_service import DocumentService
+from persona_bot.services.feedback_service import FeedbackService, set_default_service
+from persona_bot.services.gemini_service import GeminiService
+from persona_bot.services.genai_client import create_genai_client
+from persona_bot.views.help_view import build_welcome_text, resolve_bot_name
+from persona_bot.services.memory_service import MemoryService
+from persona_bot.core.message_handler import MessageHandler
+from persona_bot.services.ng_word_service import NgWordFilter
+from persona_bot.services.reminder_service import ReminderService
+from persona_bot.config.settings_loader import load_settings
+from persona_bot.services.stats_service import StatsService
+from persona_bot.utils.usage_graph import UsageTracker
 
 
 settings = load_settings()

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from content_moderator import ContentModerator
-from storage import extract_json_object
+from persona_bot.services.content_moderator import ContentModerator
+from persona_bot.utils.storage import extract_json_object
 
 
 class JsonExtractionTests(unittest.TestCase):
@@ -56,7 +56,7 @@ class ModerationJsonTests(unittest.IsolatedAsyncioTestCase):
             '例 {"dummy": 1}\n```json\n{"safe": false, "reason": "架空の判定"}\n```',
         ):
             with self.subTest(text=text), patch(
-                "content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(text=text)),
+                "persona_bot.services.content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(text=text)),
             ):
                 self.assertEqual(await moderator.check("架空の入力"), (False, "架空の判定"))
                 safe, reason, category, reminder = await moderator.check_and_route("架空の入力")
@@ -67,5 +67,5 @@ class ModerationJsonTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_usable_json_keeps_existing_fail_open_behavior(self):
         moderator = ContentModerator(None, SimpleNamespace(words=[]))
-        with patch("content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(text="{invalid}"))):
+        with patch("persona_bot.services.content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(text="{invalid}"))):
             self.assertEqual(await moderator.check("架空の入力"), (True, ""))
