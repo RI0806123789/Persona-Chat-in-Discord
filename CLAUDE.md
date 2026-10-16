@@ -63,15 +63,18 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 python -m pip check
 # 外部通信・シークレット・実データ不要の回帰テスト
 python -B -m unittest discover -s tests -v
+# 1モジュールだけ／テスト名の一部に一致するものだけを実行する
+python -B -m unittest tests.core.test_bot_reply_settings -v
+python -B -m unittest discover -s tests -k test_last_slot_accepts_only_one_concurrent_request
 # src/ と deploy/ の全 .py の構文確認（モジュールは起動しない）
 python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 # 個別モジュールの動作確認の例（src を import パスに足す）
 python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.discord_helpers import split_message; assert [len(p) for p in split_message('あ' * 4001)] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
-テストは `tests/` 内で用途別に配置する。構成と個別実行の手順は [テストの案内](tests/README.md#フォルダ構成と個別実行) を参照する。
+テストは `tests/` 内で用途別に配置する。構成と個別実行の手順は [テストの案内](tests/README.md#フォルダ構成と個別実行) を参照する。CI は上記に加えて `python -m compileall -q src deploy tests` で `tests/` の構文も確かめ、`PYTHONIOENCODING=utf-8`・`MPLBACKEND=Agg` を設定する。Linux のジョブだけ `REQUIRE_JAPANESE_GRAPH_FONT=1` で日本語フォントの未導入を失敗にする（未指定の環境では字形テストを省略する）。
 
-確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`persona_bot.core.message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
+確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`persona_bot.core.message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要。`tests/helpers/message_handler_helpers.make_message_handler` が、渡さなかった依存を `Mock` で埋めて組み立てる）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
 
 ```bash
 # 1. 依存関係のインストール (Python 3.10+)
@@ -311,7 +314,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
   - `_is_stale` が見るのは**進める前の（本来の）予定時刻**。そのためクレームが返すレコードの `remind_at` は進める前の値のままにし、進めた後の時刻は `next_remind_at` に入れて返す。stale で今回を見送っても次回時刻は計算済みなので**系列は途切れない**（長期停止明けは翌回の定刻から再開する）。
   - **月次は `recurrence_anchor`（初回時刻）を固定**したまま `calendar.monthrange` で末日へ丸める（`timedelta(days=30)` は使わない）。アンカーを毎回更新すると 1/31→2/28→**3/28** とずれる。正しくは 1/31→2/28→3/31。
   - 日時の加算は `REMINDER_TIMEZONE` のローカル時刻で行ってから UTC へ戻す（DST のあるタイムゾーンへ変えても壊れないため）。許容値・表示名・追い付き上限は `constants.py` の `REMINDER_RECURRENCE_*` に集約する。
-- **時刻の扱い**: 保存は UTC の ISO 8601 で**秒精度に統一**する（期限判定を文字列比較で行うため、桁数が混ざると比較が壊れる）。表示だけ `REMINDER_TIMEZONE` に変換する（`format_local`）。日時の書式に `strftime` の `%-m` / `%#m` は使わないこと（プラットフォーム依存）。
+- **時刻の扱い**: 保存は UTC の ISO 8601 で**秒精度に統一**する（期限判定を文字列比較で行うため、桁数が混ざると比較が壊れる）。表示だけ `REMINDER_TIMEZONE` に変換する（`_format_local`）。日時の書式に `strftime` の `%-m` / `%#m` は使わないこと（プラットフォーム依存）。
 - **パネルの文字数**: 一覧はヘッダー・注記・改行を含め `REMINDER_PANEL_MAX_LENGTH` 以内に収め、入りきらない行は「…ほか N 件」と表示する。省略は本文だけに適用し、通常の上限20件すべてを取り消し用セレクトに残す。
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
@@ -379,7 +382,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ## 規約と落とし穴
 
-- **パス解決**（`persona_bot/config/constants.py`, `persona_bot/config/paths.py`）: `BASE_DIR = src/`（`constants.py` の `Path(__file__).resolve().parents[2]`）、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。
+- **パス解決**（`persona_bot/config/constants.py`, `persona_bot/config/paths.py`）: `BASE_DIR = src/`（`constants.py` の `Path(__file__).resolve().parents[2]`）、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。ファイルの配置を変えたら `tests/integration/test_package_layout.py`（全ペルソナの相対パスと `.env`・DB・記憶・NG の保存先が変わらないことを確かめる）を回す。
 - **設定（APIキー）**: `settings_loader.load_settings()` はプロジェクトルート直下の `.env`（パスは `constants.ENV_FILE_PATH`。**絶対パスで解決すること** — ボットは `src/` から起動するため、カレントディレクトリ基準の相対探索では見つけられない）を `python-dotenv` で読み込み、`.API_KEY_GEMINI` / `.TOKEN_DISCORD` を持つ `Settings` データクラスを返す。旧 `config.py` / `config_private.py` は ver0.1.6 で削除済み。
   - **`load_dotenv(override=False)` を変えないこと**: OS の環境変数が `.env` より優先される。systemd の `EnvironmentFile=` や Docker の `--env-file` へ移行できるようにするための挙動で、逆にするとサーバーに残った古い `.env` が黙って優先され「直したはずのキーが反映されない」事故になる。
   - **未設定なら起動を止める**: ファイル無し・変数無し・空文字・`.env.example` のプレースホルダのまま、のいずれでも `キー未設定` を出力して `SettingsError` を送出する。`load_settings()` は `bot.py` のトップレベルで呼ばれるためボットは起動しない。キーが無いまま起動すると「Discord へは接続できるが Gemini の呼び出しだけ全滅する」という切り分けの難しい状態になるため、あえて失敗させている。
@@ -390,7 +393,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **fire-and-forget は `background.spawn(coro, label=...)` を使う（`asyncio.create_task` を直接呼ばない）**: asyncio のイベントループは実行中タスクを**弱参照**でしか保持しないため、`create_task` の戻り値を捨てるとタスクが実行途中でガベージコレクトされて消えることがある（Python 公式ドキュメントが明記している既知の落とし穴）。`spawn` は完了までタスクへの強参照を保持し、完了時に自動で取り除く。加えてタスク内の例外を `label` 付きでログに出す — `create_task` に投げっぱなしだと例外は回収時まで報告されず、そのまま失われることもある。特に `documents.run_worker()` のような常駐コルーチンでは、消えると添付ファイルの処理が二度と走らなくなる。
 - **タイムゾーン名を表示・プロンプトに載せるときは `timeutil.timezone_label(self._tz)` を使う（`REMINDER_TIMEZONE` などの定数をそのまま書かない）**: `resolve_timezone` は tzdata の無い環境で UTC へフォールバックするため、定数を表示すると「実際は UTC の時刻なのに Asia/Tokyo と名乗る」食い違いが起きる。リマインダーの統合判定プロンプトでは、この食い違いがそのまま9時間ずれた日時での登録に直結する。
 - **モデレーションはフェイルオープン**: タイムアウト/例外時、`content_moderator.check` は *safe* を返してボットを動かし続ける。Gemini のプロンプトブロックは *unsafe* として扱う。この挙動を維持すること — 一時的な API エラーでユーザーをブロックしないこと。**`check` / `check_and_route` の本体で例外を外へ漏らさないこと**: これらは `on_message` の主経路から呼ばれるため、抜けた例外はそのメッセージの処理ごと落とす。準備処理（タイムゾーンの解決など）を `try` の外に置くと、環境依存の失敗が全メッセージの無応答に直結する（実際に `ZoneInfo` の組み立てで起きた）。
-- **タイムゾーンは `timeutil.resolve_timezone(name, purpose=...)` で解決する**: `ZoneInfo` を直接呼ばないこと。タイムゾーンデータベースの無い環境（`tzdata` を含まないスリムな Linux イメージなど）では例外になるため、この関数が UTC へのフォールバックと警告ログをまとめて引き受ける。タイムゾーン名そのもの（`STATS_TIMEZONE` / `ANNIVERSARY_TIMEZONE` / `REMINDER_TIMEZONE`）は用途ごとに `constants.py` で個別に調整できる形を保つ。
+- **タイムゾーンは `timeutil.resolve_timezone(name, purpose=...)` で解決する**: `ZoneInfo` を直接呼ばないこと。タイムゾーンデータベースの無い環境（`tzdata` を含まないスリムな Linux イメージなど）では例外になるため、この関数が UTC へのフォールバックと警告ログをまとめて引き受ける。**Windows はこの状態が既定**で、OS にタイムゾーンDBが無く `tzdata` も `requirements.txt` に含まれないため、Windows の仮想環境では `Asia/Tokyo` を解決できず UTC で動く（テスト実行時に出る「タイムゾーン(Asia/Tokyo)の読み込みに失敗しました」はこれで、テストの失敗ではない）。タイムゾーン名そのもの（`STATS_TIMEZONE` / `ANNIVERSARY_TIMEZONE` / `REMINDER_TIMEZONE`）は用途ごとに `constants.py` で個別に調整できる形を保つ。
 - **再起動でリセットされる状態**（インメモリのみ）: 利用/トークン履歴（`usage_graph`、500件のリングバッファ）、`channel_reset_points`（`/functions` → ⚙️キャラ設定パネルの会話リセットのアンカー）、自発的な会話の**監視状態**（`auto_topic_channels` / `auto_topic_posted_at`）、自律行動の**配信状態と話したいゲージ**（`autonomous_session` / `autonomous_last_activity` / `autonomous_recent_activity`。ボイス接続自体が再起動をまたげないため復元しない）、フィードバックの**評価対象レジストリ**と**付与クールダウンの記録**（`FeedbackService._tracked` / `_last_reaction_at`。記録済みの評価そのものは DB に残る）、ウェルカム投稿済みのサーバーID（`welcomed_guild_ids`。`on_guild_join` は招待時にしか発火しないため、消えても再投稿は起きない）。一方、`GuildSettings` の**設定値**（ペルソナ/モデル/応答モード/グラウンディング/自発会話の ON・しきい値/自律行動の ON）・記念日の投稿記録・リマインダー・フィードバックの記録は DB に永続化され、再起動しても失われない。永続化される状態は `memory/bot.db`（SQLite: affinity / user_stats / queue_tasks / pending_log / profile / guild_settings / anniversary_posts / reminders / feedback）、`memory/projects.json`、`ng/blacklist.json`。`memory/profile.json` は手書き追加用の受け皿で、起動時に DB へ吸収され `{}` に戻る。
 - **単一プロセス前提**: DB は `database.py` 内部の `threading.Lock` + トランザクションで、`projects.json` は `MemoryService.io_lock`（`asyncio.Lock`）で保護される。`blacklist.json` の違反登録・解除は非同期ロックで直列化し、別スレッドで原子的保存した後にキャッシュのスナップショットを差し替える（`profile.json` は起動時に DB へ吸収されるだけ）。プロセス間ロックは存在しない。DB は WAL モードのため、稼働中でも `sqlite3` CLI 等からの**読み取り**は安全（外部からの書き込みはしないこと）。
 - **ログ出力とエンコーディング**: Windows の既定コンソールは cp932 で、絵文字を `print` すると `UnicodeEncodeError` でそこの処理が止まる。`bot.py` の冒頭で標準出力を UTF-8（`errors="replace"`）へ再設定しているので通常は問題ないが、**`bot.py` を経由しない単体スクリプトから同じモジュールを動かすときは `PYTHONIOENCODING=utf-8` を付けること**。
