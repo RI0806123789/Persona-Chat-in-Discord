@@ -11,6 +11,7 @@ from typing import Any
 import discord
 
 from persona_bot.core.app_state import AutonomousSession, GuildSettings
+from persona_bot.core.background import wait_for_cleanup
 from persona_bot.config.constants import (
     AUTONOMOUS_STAGE_TOPIC,
     AUTONOMOUS_VOICE_STATE_RETRIES,
@@ -120,20 +121,28 @@ async def prepare_stage(guild: discord.Guild, channel: discord.StageChannel) -> 
                 f"（{AUTONOMOUS_VOICE_STATE_RETRIES} 回待機）。"
             )
         await member.edit(suppress=False)
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         # 枠を開いた後で発言者になれなかった場合、そのまま抜けると「会話相手
         # 募集中…」の看板を出したステージが誰も居ないまま開きっぱなしになる。
         # 自分で開いた枠だけは閉じてから、失敗を呼び出し元へ伝える。
         if created_instance is not None:
-            instance = channel.instance
-            if instance is None or instance.id == created_instance.id:
-                try:
-                    await created_instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
-                except discord.HTTPException as error:
-                    print(f"自律行動: 中止時のステージ枠の終了に失敗しました（{channel.name}）: {error}")
+            await wait_for_cleanup(
+                _rollback_created_stage(channel, created_instance), label="自律行動の開始中止の枠終了",
+            )
         raise
 
     return created_instance.id if created_instance is not None else None
+
+
+async def _rollback_created_stage(channel: discord.StageChannel, created_instance: discord.StageInstance) -> None:
+    """開始準備に失敗した枠を閉じる。差し替わった枠や借りた枠には触らない。"""
+    try:
+        instance = channel.instance
+        if instance is None or instance.id == created_instance.id:
+            await created_instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
+    except Exception as error:
+        # 削除が失敗しても、元の例外・キャンセルと接続の後片付けを妨げない。
+        print(f"自律行動: 中止時のステージ枠の終了に失敗しました（{channel.name}）: {type(error).__name__}: {error}")
 
 
 async def finish_session_cleanup(

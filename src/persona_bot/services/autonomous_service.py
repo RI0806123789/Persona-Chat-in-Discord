@@ -43,7 +43,7 @@ from typing import Any
 import discord
 
 from persona_bot.services.affinity_service import strip_affinity_tag
-from persona_bot.core.app_state import AutonomousSession, BotState, GuildSettings
+from persona_bot.core.app_state import AutonomousSession, BotState, GuildSettings, ResponseSettings
 
 # パネルからの既存importも維持し、計算本体はDiscordを使わないモジュールへ置く。
 from persona_bot.services.autonomous_metrics import (
@@ -54,7 +54,7 @@ from persona_bot.services.autonomous_metrics import (
     updated_activity_samples,
 )
 from persona_bot.services import autonomous_stage
-from persona_bot.core.background import spawn
+from persona_bot.core.background import spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
@@ -196,6 +196,7 @@ class AutonomousService:
         guild_settings: GuildSettings,
         *,
         claimed_session: AutonomousSession | None = None,
+        response_settings: ResponseSettings | None = None,
     ) -> str | None:
         """配信中のチャンネルに届いたコメントへ、配信者のように応答する。
 
@@ -218,9 +219,11 @@ class AutonomousService:
             # この関数を直接呼ぶ経路でも、従来どおり流量制限を適用する。
             return None
 
+        if response_settings is None:
+            response_settings = guild_settings.snapshot_response()
         channel = message.channel
         async with channel.typing():
-            persona_prompt = self._load_persona(guild_settings)
+            persona_prompt = self._load_persona(response_settings)
             if persona_prompt is None:
                 return None
 
@@ -247,10 +250,10 @@ class AutonomousService:
             # そのサーバーの Google 検索設定に従う（独り言と違って調べ物がありうる）。
             response_text = await self._generate(
                 full_prompt,
-                guild_settings,
+                response_settings,
                 label="コメント応答",
                 detail=f"{message.author.display_name} さんのコメント（画像{len(images)}枚）",
-                grounding=guild_settings.grounding_enabled,
+                grounding=response_settings.grounding_enabled,
                 images=images or None,
             )
             if not response_text:
@@ -465,14 +468,27 @@ class AutonomousService:
             return
 
         stage_instance_id = None
+        # 準備待機中に /join で別の接続へ差し替わっても、開始時の接続だけを対象にする。
+        voice_client = guild.voice_client
         if is_stage:
             try:
                 stage_instance_id = await autonomous_stage.prepare_stage(guild, channel)
+            except asyncio.CancelledError:
+                if voice_client is not None:
+                    await wait_for_cleanup(
+                        autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
+                        label="自律行動の開始キャンセルの切断",
+                    )
+                raise
             except Exception as error:
                 # 発言者になれないステージで喋っても誰にも聞こえないため、
                 # 中途半端に居座らず接続ごと諦める。
                 print(f"自律行動: ステージ({channel.name})の準備に失敗しました（{type(error).__name__}: {error}）。")
-                await autonomous_stage.disconnect(guild)
+                if voice_client is not None:
+                    await wait_for_cleanup(
+                        autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
+                        label="自律行動の開始失敗の切断",
+                    )
                 self._record_start_failure(guild_settings)
                 return
 
@@ -613,10 +629,11 @@ class AutonomousService:
         だけは必ず出す — 人を誘うことがこの機能の目的なので、AI の調子で
         案内そのものが消えては困るため。
         """
+        response_settings = guild_settings.snapshot_response()
         try:
             body = AUTONOMOUS_OPENING_NOTICE
             speech = ""
-            persona_prompt = self._load_persona(guild_settings)
+            persona_prompt = self._load_persona(response_settings)
             if persona_prompt is not None:
                 history_text = await fetch_channel_history_text(
                     channel, None, self._client.user, AUTONOMOUS_HISTORY_LIMIT
@@ -625,7 +642,7 @@ class AutonomousService:
                     persona_prompt, getattr(channel, "name", ""), history_text
                 )
                 generated = await self._generate(
-                    full_prompt, guild_settings, label="第一声", detail=self._channel_label(channel)
+                    full_prompt, response_settings, label="第一声", detail=self._channel_label(channel)
                 )
                 speech = self._screen_speech(generated, "自律行動の第一声")
                 if speech:
@@ -634,8 +651,12 @@ class AutonomousService:
             if not self._is_current_session(guild_settings, session):
                 return
             await send_long_message(channel, body, allowed_mentions=_NO_MENTIONS)
-            if speech:
-                await speak_text(guild, speech, guild_settings.current_prompt_file)
+            # テキストの送信待機中にも /join・/leave・外部からの移動が起こりうる。
+            if speech and self.can_speak_session(guild, guild_settings, session):
+                await speak_text(
+                    guild, speech, response_settings.prompt_file,
+                    is_valid=lambda: self.can_speak_session(guild, guild_settings, session),
+                )
         finally:
             session.busy = False
             # 失敗したときも時刻を進める。進めないと次の見回りで即座に再挑戦し、
@@ -649,11 +670,12 @@ class AutonomousService:
         session: AutonomousSession,
     ) -> None:
         """独り言を1つ生成して投稿・発話する。"""
+        response_settings = guild_settings.snapshot_response()
         try:
             channel = self._client.get_channel(session.channel_id)
             if channel is None:
                 return
-            persona_prompt = self._load_persona(guild_settings)
+            persona_prompt = self._load_persona(response_settings)
             if persona_prompt is None:
                 return
 
@@ -665,7 +687,7 @@ class AutonomousService:
             )
             # 独り言に調べ物は要らないためグラウンディングは使わない（既定の False）。
             generated = await self._generate(
-                full_prompt, guild_settings, label="独り言", detail=self._channel_label(channel)
+                full_prompt, response_settings, label="独り言", detail=self._channel_label(channel)
             )
             speech = self._screen_speech(generated, "自律行動の独り言")
             if not speech:
@@ -677,7 +699,12 @@ class AutonomousService:
                 return
 
             await send_long_message(channel, speech, allowed_mentions=_NO_MENTIONS)
-            await speak_text(guild, speech, guild_settings.current_prompt_file)
+            if not self.can_speak_session(guild, guild_settings, session):
+                return
+            await speak_text(
+                guild, speech, response_settings.prompt_file,
+                is_valid=lambda: self.can_speak_session(guild, guild_settings, session),
+            )
             session.turn_count += 1
         finally:
             session.busy = False
@@ -686,6 +713,20 @@ class AutonomousService:
     # ==========================================================================
     # 補助
     # ==========================================================================
+
+    @staticmethod
+    def can_speak_session(
+        guild: discord.Guild | None, guild_settings: GuildSettings,
+        session: AutonomousSession | None,
+    ) -> bool:
+        """元の配信が続いており、接続先もその配信チャンネルのままか確かめる。"""
+        if guild is None or session is None or guild_settings.autonomous_session is not session:
+            return False
+        voice_client = guild.voice_client
+        return bool(
+            voice_client is not None and voice_client.is_connected()
+            and getattr(voice_client.channel, "id", None) == session.channel_id
+        )
 
     @staticmethod
     def _is_current_session(guild_settings: GuildSettings, session: AutonomousSession) -> bool:
@@ -709,7 +750,7 @@ class AutonomousService:
     async def _generate(
         self,
         full_prompt: str,
-        guild_settings: GuildSettings,
+        response_settings: ResponseSettings,
         *,
         label: str,
         detail: str,
@@ -722,7 +763,7 @@ class AutonomousService:
         """
         response_text, usage_info, _sources = await self._gemini.generate(
             full_prompt,
-            guild_settings.current_model_name,
+            response_settings.model_name,
             images=images,
             timeout=AUTONOMOUS_TIMEOUT_SECONDS,
             grounding=grounding,
@@ -733,12 +774,12 @@ class AutonomousService:
         self._usage.log_snapshot(f"自律行動/{label}", detail, "自動実行", full_prompt, response_text, usage_info)
         return response_text
 
-    def _load_persona(self, guild_settings: GuildSettings) -> str | None:
+    def _load_persona(self, response_settings: ResponseSettings) -> str | None:
         """そのサーバーで選ばれているペルソナのプロンプトを読む（無ければ None）。"""
         try:
-            return load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            return load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
         except FileNotFoundError:
-            print(f"自律行動: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。")
+            print(f"自律行動: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return None
 
     @staticmethod
