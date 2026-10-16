@@ -120,6 +120,30 @@ class ReminderViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(interaction.response.edit_message.call_args.kwargs["view"])
         self.assertTrue(view.is_finished())
 
+    async def test_multiline_messages_become_single_line_options(self) -> None:
+        # #75: 改行を含む本文でも、セレクトの選択肢には改行を残さない。
+        bodies = ["明日9時に\n・架空の買い物\r\n・架空の用事", "\n \t\n", "架空　　の予定\n" * 30]
+        records = [
+            {**make_records(1, body=body)[0], "reminder_id": index + 1, "message": body}
+            for index, body in enumerate(bodies)
+        ]
+        view = ReminderView(ReminderService(None, None, None), records, "11")
+        self.addCleanup(view.stop)
+        options = view.to_components()[0]["components"][0]["options"]
+        self.assertEqual([option["value"] for option in options], ["1", "2", "3"])
+        for option in options:
+            for key in ("label", "description"):
+                text = option.get(key, "")
+                with self.subTest(value=option["value"], key=key):
+                    self.assertNotRegex(text, r"[\r\n\t　]")
+                    self.assertNotIn("  ", text)
+                    self.assertEqual(text, text.strip())
+                    self.assertLessEqual(len(text), 100)
+        self.assertEqual(options[0]["label"], "明日9時に ・架空の買い物 ・架空の用事")
+        self.assertIn("— 明日9時に ・架空の買い物 ・架空の用事", options[0]["description"])
+        # 空白だけの本文は「本文なし」と表示する。
+        self.assertEqual(options[1]["label"], "（本文なし）")
+
     async def test_empty_list_does_not_build_an_empty_select(self) -> None:
         view = ReminderView(ReminderService(None, None, None), [], "11")
         self.addCleanup(view.stop)

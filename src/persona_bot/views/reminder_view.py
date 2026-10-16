@@ -1,9 +1,26 @@
+import re
+
 import discord
 from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
 from persona_bot.services.reminder_service import ReminderService
 from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+
+# 改行・タブ・連続した空白（全角空白を含む）をまとめて1つの半角空白にするための正規表現
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _to_option_text(text: str) -> str:
+    """セレクトの選択肢に載せる文字列を、1行かつ上限の文字数以内にする。
+
+    リマインダーの本文は会話から登録されるため改行を含みうる。選択肢の
+    label / description に改行が入っていると Discord がパネルごと受け付けず、
+    改行入りの予定を1件登録しただけで一覧も取り消しも開けなくなる。
+    改行を除いてから切り詰め、切った位置に残った空白も落とす。
+    """
+    single_line = _WHITESPACE_RUN.sub(" ", text).strip()
+    return single_line[:DISCORD_SELECT_LABEL_MAX_LENGTH].rstrip()
 
 
 def _build_status_text(records: list[dict], service: ReminderService) -> str:
@@ -43,13 +60,13 @@ class ReminderCancelSelect(ui.Select):
         options = []
         # Discord のセレクトは最大25件まで
         for record in records[:DISCORD_SELECT_MAX_OPTIONS]:
-            message = str(record.get("message", ""))
             options.append(
                 discord.SelectOption(
-                    # ラベルは100文字までのため、本文が長い場合は切り詰める
-                    label=message[:DISCORD_SELECT_LABEL_MAX_LENGTH] or "（本文なし）",
+                    # ラベルは100文字までのため、本文が長い場合は切り詰める。
+                    # description も本文を含むので、同じく1行にしてから切り詰める
+                    label=_to_option_text(str(record.get("message", ""))) or "（本文なし）",
                     value=str(record.get("reminder_id")),
-                    description=service.describe(record)[:DISCORD_SELECT_LABEL_MAX_LENGTH],
+                    description=_to_option_text(service.describe(record)),
                 )
             )
         super().__init__(placeholder="🗑️ 取り消すリマインダーを選択…", options=options, row=0)

@@ -1,4 +1,4 @@
-"""記憶圧縮中の文書要約保存を、一時 DB と架空のデータで検証する。"""
+"""記憶圧縮と文書要約の保持を、一時 DB と架空のデータで検証する。"""
 
 import asyncio
 from copy import deepcopy
@@ -38,12 +38,21 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.db.close)
         self.service = MemoryService(None, None, self.db)
 
-    async def check_additions(self, initial_count: int, addition_count: int) -> None:
-        old = [{"document_name": f"old-{i}", "summary": "既存の要約"}
+    async def check_additions(
+        self, initial_count: int, addition_count: int, *, llm_summaries: list | None = None,
+    ) -> None:
+        """圧縮の前後で文書要約が失われないことを確かめる。
+
+        llm_summaries を渡すと、LLM が要約を作り話で出力した場合を再現する。
+        """
+        old = [{"document_name": f"old-{i}", "summary": f"既存の要約-{i}"}
                for i in range(initial_count)]
         other = {"document_summaries": [{"document_name": "other", "summary": "別ユーザー"}]}
         wrapper = default_projects_memory()
-        wrapper["users"] = {"test-user": {"document_summaries": old}, "other-user": other}
+        wrapper["users"] = {
+            "test-user": {"project_note": "圧縮前のメモ", "document_summaries": old},
+            "other-user": other,
+        }
         write_json_file(self.projects_path, wrapper)
         await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
         started = asyncio.Event()
@@ -51,12 +60,16 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         async def compact(pending_text, profile_text, projects_text):
             snapshot = json.loads(projects_text)
-            self.assertEqual(snapshot["document_summaries"], old)
+            # 文書要約は LLM へ渡さない（#73）。他のプロジェクト記憶は渡す。
+            self.assertNotIn("document_summaries", snapshot)
+            self.assertNotIn("既存の要約", projects_text)
+            self.assertEqual(snapshot["project_note"], "圧縮前のメモ")
             started.set()
             await resume.wait()
-            for summary in snapshot["document_summaries"]:
-                summary["summary"] = "圧縮した要約"
+            # LLM の出力は文書要約を含まない（または作り話を含む）丸ごとの差し替え。
             snapshot["project_note"] = "圧縮結果"
+            if llm_summaries is not None:
+                snapshot["document_summaries"] = deepcopy(llm_summaries)
             return {}, snapshot
 
         self.service._compact_memory = AsyncMock(side_effect=compact)
@@ -85,19 +98,52 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         result = load_json_file(self.projects_path, {})
         projects = result["users"]["test-user"]
         summaries = projects["document_summaries"]
-        self.assertEqual(len(summaries), min(initial_count + addition_count, DOCUMENT_SUMMARY_LIMIT))
-        kept_additions = min(addition_count, DOCUMENT_SUMMARY_LIMIT)
-        if kept_additions:
-            self.assertEqual(
-                [s["summary"] for s in summaries[-kept_additions:]],
-                [f"追加-{i}" for i in range(addition_count - kept_additions, addition_count)],
-            )
+        # 圧縮直前の一覧（既存＋圧縮中の追加。上限超過分は古い方から押し出し済み）がそのまま残る。
+        self.assertEqual(summaries, latest["users"]["test-user"]["document_summaries"])
+        expected = [s["summary"] for s in old] + [f"追加-{i}" for i in range(addition_count)]
+        self.assertEqual([s["summary"] for s in summaries], expected[-DOCUMENT_SUMMARY_LIMIT:])
+        self.assertNotIn("作り話", json.dumps(projects, ensure_ascii=False))
         self.assertEqual(projects["project_note"], "圧縮結果")
-        self.assertTrue(all(s["summary"] == "圧縮した要約"
-                            for s in summaries[:len(summaries) - kept_additions]))
         self.assertEqual(result["users"]["other-user"], other_latest)
         entries = self.db.pending_fetch_entries("test-user")
         self.assertEqual([entry["question"] for entry in entries], ["圧縮中の質問"])
+
+    async def test_existing_summaries_survive_when_llm_omits_them(self) -> None:
+        # #73: 圧縮中に追加が無くても、圧縮前からの要約が消えない。
+        await self.check_additions(3, 0)
+
+    async def test_summaries_invented_by_llm_are_discarded(self) -> None:
+        invented = [{"document_name": "fake.txt", "summary": "LLMの作り話"}]
+        await self.check_additions(3, 1, llm_summaries=invented)
+        await self.check_additions(0, 0, llm_summaries=invented)
+
+    async def test_user_without_summaries_does_not_gain_the_key(self) -> None:
+        wrapper = default_projects_memory()
+        wrapper["users"] = {"test-user": {"project_note": "圧縮前のメモ"}}
+        write_json_file(self.projects_path, wrapper)
+        await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
+
+        async def compact(pending_text, profile_text, projects_text):
+            snapshot = json.loads(projects_text)
+            snapshot["document_summaries"] = [{"document_name": "fake.txt", "summary": "LLMの作り話"}]
+            return {}, snapshot
+
+        self.service._compact_memory = AsyncMock(side_effect=compact)
+        await self.service.flush_if_needed(force=True)
+        projects = load_json_file(self.projects_path, {})["users"]["test-user"]
+        self.assertEqual(projects, {"project_note": "圧縮前のメモ"})
+
+    async def test_malformed_summaries_are_kept_as_is(self) -> None:
+        # 手書きなどで型が崩れていても、圧縮では書き換えずに残す。
+        wrapper = default_projects_memory()
+        wrapper["users"] = {"test-user": {"document_summaries": {"手書き": "架空の要約"}}}
+        write_json_file(self.projects_path, wrapper)
+        await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
+        self.service._compact_memory = AsyncMock(return_value=({}, {"project_note": "圧縮結果"}))
+        await self.service.flush_if_needed(force=True)
+        projects = load_json_file(self.projects_path, {})["users"]["test-user"]
+        self.assertEqual(projects["document_summaries"], {"手書き": "架空の要約"})
+        self.assertEqual(projects["project_note"], "圧縮結果")
 
     async def test_addition_at_limit_is_preserved(self) -> None:
         await self.check_additions(DOCUMENT_SUMMARY_LIMIT, 1)
