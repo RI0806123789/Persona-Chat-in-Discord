@@ -5,6 +5,7 @@
 ## プロジェクト構成
 
 - `src/`：Pythonのボット本体。`bot.py`が設定とサービスを配線し、`persona_bot/`を設定（`config/`）・中核処理（`core/`）・機能（`services/`）・画面（`views/`）・音声（`audio/`）・共通処理（`utils/`）に分ける。SQLは`core/database.py`、プロンプトは`services/prompting.py`が担当する。
+- `tests/`：設定・中核処理・機能・画面・共通処理・運用・結合テストを用途別に配置し、`helpers/`に共通補助を置く。
 - `prompts/`：ペルソナ。`assets/`・`docs/`：素材と図。`deploy/`：運用設定例。`.github/`：Issue・PRテンプレート。
 - `memory/`・`ng/`：実行時の記憶とモデレーション関連データ。実データを検証やコミットに含めない。
 
@@ -36,7 +37,7 @@ Linuxではルートで `python3 -m venv .venv` を実行し、`src/` から `..
 
 標準の `unittest` による回帰テストとWindows／LinuxのCIがある。ビルド工程、lint設定、カバレッジ基準は未整備。検証コマンドは[CLAUDE.md](CLAUDE.md)と[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照する。
 
-テストを追加する場合は `tests/test_*.py` とし、標準の `unittest`・`IsolatedAsyncioTestCase` を優先する。外部通信はモック、DBは一時ディレクトリを使う。`bot.py` のimportには設定読込・DB初期化の副作用がある。
+テストを追加する場合は `tests/<分類>/test_*.py` とし、標準の `unittest`・`IsolatedAsyncioTestCase` を優先する。分類フォルダには再帰的なテスト検出に必要な `__init__.py` を置く。外部通信はモック、DBは一時ディレクトリを使う。`bot.py` のimportには設定読込・DB初期化の副作用がある。
 
 ## コミット・PR
 

@@ -76,6 +76,8 @@ python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.disc
 python -B -m unittest discover -s tests -v
 ```
 
+テストは `tests/` 内で用途別に分けています。分類と個別実行の例は [テストの案内](tests/README.md#フォルダ構成と個別実行) を参照してください。
+
 APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `persona_bot.core.message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
 
 [回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.10／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
