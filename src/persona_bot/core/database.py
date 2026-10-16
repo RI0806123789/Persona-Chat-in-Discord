@@ -19,6 +19,8 @@ projects.json は LLM が構造を自由に決める JSON のため、
 ■ 旧データの取り込み
 初回起動時、旧ファイルが残っていれば内容を DB へ取り込み、二重取り込みを
 防ぐためファイルを「<元の名前>.imported.bak」に改名して残す（バックアップ兼用）。
+JSON として読めない・最上位が object でないファイルは取り込まず、改名もせずに
+元の名前のまま残して警告する（次回起動時に再試行される）。
 
 ■ profile.json は「手書き追加用の受け皿」
 profile.json は毎回の起動時にチェックされ、中身があれば profile テーブルへ
@@ -249,6 +251,19 @@ def _json_loads_or(text: Any, default: Any) -> Any:
         return default
 
 
+def _load_legacy_json_object(path: Path) -> dict[str, Any]:
+    """旧 JSON ファイルを読み、最上位が object でなければ例外にする。
+
+    _json_loads_or のように壊れたファイルを {} として扱うと、取り込みが「成功」して
+    .imported.bak へ改名され、データを取り込めなかったことに誰も気づけない。
+    例外にすれば _import_legacy_files が元のファイルを残して警告し、次回起動時に再試行する。
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"最上位が object ではありません（{type(data).__name__}）")
+    return data
+
+
 class Database:
     """memory/bot.db への読み書きを一手に引き受けるクラス。
 
@@ -294,7 +309,13 @@ class Database:
         self._absorb_profile_json()
 
     def close(self) -> None:
-        self._conn.close()
+        """接続を閉じる（終了時に PersonaClient.close から呼ばれる）。
+
+        各サービスは別スレッドから DB を使うため、実行中の読み書きが終わるまで
+        ロックで待ってから閉じる。何度呼んでもよい（sqlite3 の close は冪等）。
+        """
+        with self._lock:
+            self._conn.close()
 
     # ---- スキーマ移行 -------------------------------------------------------
 
@@ -345,6 +366,13 @@ class Database:
                 )
                 if cursor.rowcount:
                     print(f"データベース: pending_log の未割当 {cursor.rowcount} 件を user_id={owner} へ振り直しました。")
+            else:
+                # 引き継ぎ先が無いときは、旧・全体共有の会話ログも破棄する（profile と同じ方針）。
+                # 残すと user_id='' の「誰でもない利用者」として記憶圧縮の対象に数えられ、
+                # 誰も読まない記憶を作るために Gemini を呼び続ける。
+                cursor = self._conn.execute("DELETE FROM pending_log WHERE user_id = ''")
+                if cursor.rowcount:
+                    print(f"データベース: 引き継ぎ先が無いため、pending_log の未割当 {cursor.rowcount} 件を破棄しました。")
 
     # ---- 旧 JSON / テキストファイルの取り込み --------------------------------
 
@@ -369,9 +397,7 @@ class Database:
                 print(f"データベース: {filename} の取り込みに失敗しました: {error}")
 
     def _import_affinity_json(self, path: Path) -> None:
-        data = _json_loads_or(path.read_text(encoding="utf-8"), {})
-        if not isinstance(data, dict):
-            return
+        data = _load_legacy_json_object(path)
         with self._lock, self._conn:
             for user_id, entry in data.items():
                 if not isinstance(entry, dict):
@@ -391,9 +417,7 @@ class Database:
                 )
 
     def _import_user_stats_json(self, path: Path) -> None:
-        data = _json_loads_or(path.read_text(encoding="utf-8"), {})
-        if not isinstance(data, dict):
-            return
+        data = _load_legacy_json_object(path)
         with self._lock, self._conn:
             for user_id, entry in data.items():
                 if not isinstance(entry, dict):
@@ -417,10 +441,9 @@ class Database:
                 )
 
     def _import_queue_json(self, path: Path) -> None:
-        data = _json_loads_or(path.read_text(encoding="utf-8"), {})
-        tasks = data.get("tasks", []) if isinstance(data, dict) else []
+        tasks = _load_legacy_json_object(path).get("tasks", [])
         if not isinstance(tasks, list):
-            return
+            raise ValueError("tasks が配列ではありません")
         with self._lock, self._conn:
             for task in tasks:
                 if not isinstance(task, dict) or not task.get("task_id"):
@@ -473,6 +496,12 @@ class Database:
 
         # 旧 pending_log.txt はユーザー別記憶の導入前のもの＝全体共有。owner に紐付ける。
         owner = self._legacy_owner_id
+        if not owner:
+            # 引き継ぎ先が無ければ取り込まない（_migrate_legacy_profile_rows と同じく破棄する）。
+            # ファイルは呼び出し元が .imported.bak へ改名して残すため、内容は失われない。
+            if entries:
+                print(f"データベース: 引き継ぎ先が無いため、pending_log.txt の {len(entries)} 件は取り込みません。")
+            return
         with self._lock, self._conn:
             for entry in entries:
                 self._conn.execute(
@@ -1159,7 +1188,9 @@ class Database:
         """一時ログを持つユーザーIDの一覧を返す（記憶圧縮の対象ユーザー列挙に使う）。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT DISTINCT user_id FROM pending_log ORDER BY user_id"
+                # user_id='' は旧・全体共有の未割当行。起動時に owner へ振り直すか破棄するが、
+                # 万一残っていても「誰でもない利用者」として圧縮しない。
+                "SELECT DISTINCT user_id FROM pending_log WHERE user_id != '' ORDER BY user_id"
             ).fetchall()
         return [row["user_id"] for row in rows]
 

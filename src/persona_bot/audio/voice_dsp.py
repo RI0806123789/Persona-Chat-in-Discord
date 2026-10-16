@@ -11,7 +11,7 @@ CPU 1コア / メモリ 1GB 級のサーバーで動かす前提のため、`sci
 なお設計初期には、gTTS の単一音声から高さと速さを作り出すために WSOLA
 （時間伸縮）とリサンプリング（ピッチ変更）もここで行っていた。edge-tts への
 移行でサーバー側が同じことを、しかもフォルマントを保ったまま行えるように
-なったため削除した（詳細は VOICE_PROFILE_DESIGN.md の 4〜5 章）。
+なったため削除した（経緯と戻さない理由は CLAUDE.md の「ボイス / TTS」の節）。
 """
 
 import math
@@ -54,7 +54,9 @@ def needs_equalizer(profile: Mapping[str, Any]) -> bool:
     一気に変換させて numpy の処理そのものを飛ばせる。
     """
     equalizer = _resolve_equalizer(profile)
-    return bool(equalizer.get("kind")) or bool(equalizer.get("bit_crush"))
+    # bit_crush は apply_equalizer と同じ関数で判定する（"0" や -1 を「加工あり」と
+    # 誤判定すると、何も変えないのに numpy の経路へ回って処理が重くなる）。
+    return bool(equalizer.get("kind")) or _bit_crush_bits(equalizer) > 0
 
 
 def apply_equalizer(
@@ -89,7 +91,7 @@ def apply_equalizer(
         if coefficients is not None:
             audio = _apply_biquad(audio, coefficients)
 
-    bits = int(_as_float(equalizer.get("bit_crush"), 0.0))
+    bits = _bit_crush_bits(equalizer)
     if bits > 0:
         audio = _bit_crush(audio, bits)
 
@@ -100,11 +102,22 @@ def apply_equalizer(
 
 
 def _as_float(value: Any, default: float) -> float:
-    """プロファイルの値を float にする。数値でなければ既定値へ落とす。"""
+    """プロファイルの値を有限の float にする。数値でない・NaN・無限大なら既定値へ落とす。
+
+    float("nan") / float("inf") は例外にならずに通るため、isfinite で弾く。通すと
+    フィルタ係数が NaN になって int16 変換で雑音になり、bit_crush では int() が例外を出す。
+    """
     try:
-        return float(value)  # type: ignore[arg-type]
+        number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+    return number if math.isfinite(number) else default
+
+
+def _bit_crush_bits(equalizer: Mapping[str, Any]) -> int:
+    """bit_crush の量子化ビット数。1 未満・数値でない場合は 0（＝加工しない）。"""
+    bits = _as_float(equalizer.get("bit_crush"), 0.0)
+    return int(bits) if bits >= 1.0 else 0
 
 
 def _clamp(value: float, low: float, high: float) -> float:

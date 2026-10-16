@@ -233,7 +233,9 @@ def main() -> int:
     print(f".env を作成しました: {ENV_PATH}")
     print("")
     print("次の手順:")
-    print("  1. cd src && python3 -c \"from settings_loader import load_settings; load_settings()\"")
+    # src/ を用途別パッケージへ分けたため、import はパッケージ名から指定する
+    # （旧 `from settings_loader import ...` は ModuleNotFoundError になる）。
+    print("  1. cd src && python3 -c \"from persona_bot.config.settings_loader import load_settings; load_settings()\"")
     print("     → 何も表示されなければ読み込み成功（キー未設定なら 'キー未設定' と出ます）")
     print("  2. 動作確認できたら index/config_private.py は削除して構いません")
     print("  3. systemd 運用中なら sudo systemctl restart bot")

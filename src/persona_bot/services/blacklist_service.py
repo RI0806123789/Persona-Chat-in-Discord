@@ -33,7 +33,29 @@ class BlacklistService:
 
     def _save(self, data: dict[str, Any]) -> None:
         """現在のデータを ng/blacklist.json に書き込む。"""
+        # 一時ファイルを同じディレクトリに作ってから置き換えるため、ng/ が無いと
+        # 初回の違反記録で保存に失敗する（クリーンな環境では ng/ が無いことがある）。
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         write_json_file(self._path, data)
+
+    @staticmethod
+    def _record_of(data: dict[str, Any], key: str) -> dict[str, Any] | None:
+        """1ユーザー分の記録を返す。手書きなどで dict でない値になっていれば None。
+
+        blacklist.json は手で直すこともあるため、値の型を信用しない。is_blocked は
+        on_message の最初に呼ばれるので、ここで例外を出すとそのユーザーの発言が
+        すべて処理できなくなる。
+        """
+        record = data.get(key)
+        return record if isinstance(record, dict) else None
+
+    @staticmethod
+    def _count_of(record: dict[str, Any]) -> int:
+        """違反回数。数値として読めなければ 0 とみなす。"""
+        try:
+            return max(0, int(record.get("count", 0)))
+        except (TypeError, ValueError):
+            return 0
 
     # ------------------------------------------------------------------
     # 参照系
@@ -41,24 +63,22 @@ class BlacklistService:
 
     def is_blocked(self, user_id: int) -> bool:
         """指定ユーザーがブロック中かどうかを返す。"""
-        record = self._data.get(str(user_id))
-        if record is None:
-            return False
-        return bool(record.get("blocked", False))
+        record = self._record_of(self._data, str(user_id))
+        return record is not None and bool(record.get("blocked", False))
 
     def get_violation_count(self, user_id: int) -> int:
         """指定ユーザーの現在の違反回数を返す。"""
-        record = self._data.get(str(user_id))
-        if record is None:
-            return 0
-        return int(record.get("count", 0))
+        record = self._record_of(self._data, str(user_id))
+        return 0 if record is None else self._count_of(record)
 
     def get_all_blocked_users(self) -> list[dict[str, Any]]:
         """ブロック中の全ユーザー情報をリストで返す。"""
         blocked: list[dict[str, Any]] = []
         for uid, record in self._data.items():
-            if record.get("blocked", False):
-                blocked.append({"user_id": int(uid), **record})
+            # 解除パネルへ渡す ID は数値でなければならないため、読めない行は飛ばす
+            if not isinstance(record, dict) or not record.get("blocked", False) or not str(uid).isdigit():
+                continue
+            blocked.append({"user_id": int(uid), **record})
         return blocked
 
     # ------------------------------------------------------------------
@@ -76,13 +96,14 @@ class BlacklistService:
         """
         key = str(user_id)
         data = deepcopy(self._data)
-        record = data.get(key, {"count": 0, "blocked": False})
+        # 記録が無い・壊れている場合は新しく数え始める（壊れた値は保存時に置き換わる）
+        record = self._record_of(data, key) or {"count": 0, "blocked": False}
 
         # 既にブロック済みの場合はカウントを増やさずに現在の状態を返す
         if record.get("blocked", False):
-            return record.get("count", 0), False
+            return self._count_of(record), False
 
-        record["count"] = record.get("count", 0) + 1
+        record["count"] = self._count_of(record) + 1
         record["user_name"] = user_name
 
         just_blocked = False

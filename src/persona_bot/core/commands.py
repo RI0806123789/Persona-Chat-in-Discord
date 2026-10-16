@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 
 from persona_bot.core.app_state import BotState
+from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
@@ -78,13 +79,21 @@ def register_commands(
             await autonomous.stop_session(
                 guild.id, reason=f"/join による上書き（{interaction.user}）"
             )
-            if guild.voice_client is not None:
-                await guild.voice_client.disconnect(force=True)
+            voice_client = guild.voice_client
+            if voice_client is not None:
+                # 既に同じチャンネルへ接続中なら、そのまま使う。切り直すと、読み上げ中の
+                # 音声が途中で止まり、キューに積まれた返信も捨てられてしまう。
+                # （自律行動の配信だった場合は、上の stop_session が接続ごと片付けている。）
+                if (isinstance(voice_client, discord.VoiceClient) and voice_client.is_connected()
+                        and getattr(voice_client.channel, "id", None) == voice_channel.id):
+                    await interaction.followup.send(f"{voice_channel.name} には既に接続しています。")
+                    return
+                await voice_client.disconnect(force=True)
 
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。
         try:
-            await voice_channel.connect()
+            await voice_channel.connect(timeout=VOICE_CONNECT_TIMEOUT_SECONDS)
         except discord.Forbidden:
             print(f"接続エラー (権限不足): {voice_channel.name}")
             await interaction.followup.send(
