@@ -243,6 +243,10 @@ class BotState:
         """
         self._db = db
         self.dm_settings.attach(db, None)
+        # 復元より前に get_guild() で作られた設定にも DB をつなぐ。つながないと、
+        # その設定は persist() しても DB へ書かれず、再起動で既定値に戻ってしまう。
+        for guild_id, guild_settings in self.guild_settings.items():
+            guild_settings.attach(db, guild_id)
 
         try:
             saved_settings = db.guild_settings_load_all()

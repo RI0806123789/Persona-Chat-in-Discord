@@ -59,13 +59,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
-client = PersonaClient(genai_client=genai_client, intents=intents)
+database = Database(DATABASE_PATH, legacy_owner_id=LEGACY_MEMORY_OWNER_ID)
+database.initialize()
+
+# 終了時に Discord・Gemini の接続とあわせて DB も閉じられるよう、DB を渡して生成する。
+client = PersonaClient(genai_client=genai_client, database=database, intents=intents)
 tree = app_commands.CommandTree(client)
 
 state = BotState()
 usage = UsageTracker()
-database = Database(DATABASE_PATH, legacy_owner_id=LEGACY_MEMORY_OWNER_ID)
-database.initialize()
 # 保存済みのサーバーごとの設定（ペルソナ・モデル・応答モード・Google検索・自発会話）と
 # 記念日の投稿記録をメモリへ復元する。以降の設定変更は各 GuildSettings.persist() で保存される。
 state.restore_from_database(database)

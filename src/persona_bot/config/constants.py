@@ -367,6 +367,10 @@ FEEDBACK_PRUNE_MINUTES = 60.0
 WELCOME_MESSAGE_ENABLED = True
 
 # ボイスチャンネルの読み上げ（/join・自律行動での接続中）用
+# /join でボイスチャンネルへ接続するときの待ち時間の上限（秒）。discord.py の既定値と
+# 同じ値だが、調整できるよう明示している（UDP が遮断された環境では、ここで打ち切られて
+# タイムアウトの案内を返す）。自律行動の接続は AUTONOMOUS_CONNECT_TIMEOUT_SECONDS を使う。
+VOICE_CONNECT_TIMEOUT_SECONDS = 30.0
 # 退避先の gTTS に渡す言語コード（主エンジンの edge-tts は話者名で言語が決まる）。
 TTS_LANG = "ja"
 # 読み上げる最大文字数。超過分は切り捨てて末尾に TTS_TRUNCATION_NOTICE を付ける。

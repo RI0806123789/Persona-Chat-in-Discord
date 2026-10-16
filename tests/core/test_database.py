@@ -1,11 +1,13 @@
 """新規DBの初期化と、再起動を挟んだギルド・DM設定の保存を検証する。"""
 
 from contextlib import closing
+import json
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -208,6 +210,108 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         for guild_id in (2, None):
             for name, value in expected[guild_id].items():
                 self.assertEqual(getattr(again.get_guild(guild_id), name), value)
+
+
+class LegacyDataEdgeCaseTests(unittest.TestCase):
+    """引き継ぎ先の無い旧データ・壊れた旧 JSON・終了時の close を確かめる（#68）。"""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        quiet = patch("builtins.print")
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    def open(self, owner: str = "", root: Path | None = None) -> Database:
+        db = Database((root or self.root) / "bot.db", legacy_owner_id=owner)
+        self.addCleanup(db.close)
+        return db
+
+    def pending_users(self, db: Database) -> list[str]:
+        return [row[0] for row in db._conn.execute("SELECT user_id FROM pending_log ORDER BY id")]
+
+    def add_pending(self, db: Database, user_id: str) -> None:
+        with db._lock, db._conn:
+            db._conn.execute(
+                "INSERT INTO pending_log (user_id, created_at, question, response) VALUES (?, ?, ?, ?)",
+                (user_id, "2026-01-01", "架空の質問", "架空の応答"),
+            )
+
+    def test_unassigned_pending_rows_are_dropped_without_owner(self) -> None:
+        db = self.open()
+        db.initialize()
+        self.add_pending(db, "")  # 旧・全体共有の未割当行
+        self.add_pending(db, "test-user")
+        self.assertEqual(db.pending_distinct_user_ids(), ["test-user"])
+        db.initialize()  # 再起動相当。後始末が走る
+        self.assertEqual(self.pending_users(db), ["test-user"])
+
+    def test_unassigned_pending_rows_go_to_owner(self) -> None:
+        db = self.open(owner="owner-user")
+        db.initialize()
+        self.add_pending(db, "")
+        db.initialize()
+        self.assertEqual(self.pending_users(db), ["owner-user"])
+
+    def test_pending_log_txt_is_kept_as_backup_without_owner(self) -> None:
+        text = "[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n"
+        for owner, expected in (("", []), ("owner-user", ["owner-user"])):
+            with self.subTest(owner=owner):
+                # ケースごとに別のフォルダを使い、前のケースの失敗が次へ波及しないようにする
+                root = self.root / (owner or "no-owner")
+                root.mkdir()
+                (root / "pending_log.txt").write_text(text, encoding="utf-8")
+                db = self.open(owner, root)
+                db.initialize()
+                self.assertEqual(self.pending_users(db), expected)
+                self.assertEqual((root / "pending_log.txt.imported.bak").read_text(encoding="utf-8"), text)
+
+    def test_broken_legacy_json_is_left_in_place_for_retry(self) -> None:
+        files = {
+            "affinity.json": "{架空の壊れたJSON",
+            "user_stats.json": "[1, 2]",
+            "queue.json": '{"tasks": "架空の非配列"}',
+        }
+        for name, text in files.items():
+            (self.root / name).write_text(text, encoding="utf-8")
+        self.open().initialize()
+        for name, text in files.items():
+            with self.subTest(file=name):
+                self.assertEqual((self.root / name).read_text(encoding="utf-8"), text)
+                self.assertFalse((self.root / f"{name}.imported.bak").exists())
+
+    def test_valid_legacy_json_is_still_imported_and_renamed(self) -> None:
+        entry = {"affinity": 70, "valence": 60, "arousal": 40, "last_interaction": 1.0}
+        (self.root / "affinity.json").write_text(json.dumps({"test-user": entry}), encoding="utf-8")
+        db = self.open()
+        db.initialize()
+        self.assertEqual(db.affinity_load_all()["test-user"]["affinity"], 70)
+        self.assertFalse((self.root / "affinity.json").exists())
+        self.assertTrue((self.root / "affinity.json.imported.bak").exists())
+
+    def test_close_waits_for_a_running_operation_and_is_repeatable(self) -> None:
+        db = self.open()
+        db.initialize()
+        closed = threading.Event()
+
+        def close() -> None:
+            db.close()
+            closed.set()
+
+        db._lock.acquire()  # 別スレッドの読み書きが実行中の状態
+        try:
+            worker = threading.Thread(target=close)
+            worker.start()
+            self.assertFalse(closed.wait(0.2))
+            self.assertEqual(db._conn.execute("SELECT 1").fetchone()[0], 1)
+        finally:
+            db._lock.release()
+        worker.join(5)
+        self.assertTrue(closed.is_set())
+        with self.assertRaises(sqlite3.ProgrammingError):
+            db._conn.execute("SELECT 1")
+        db.close()
 
 
 class ReminderUserIndexTests(unittest.TestCase):

@@ -1,9 +1,11 @@
 """旧設定の移行ログにキーの値や断片が残らないことを検証する。"""
 
 from contextlib import redirect_stdout
+import importlib
 import io
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -112,6 +114,18 @@ class MigrationLoggingTests(unittest.TestCase):
         self.assert_no_secret_fragments(output)
         if os.name == "posix":
             self.assertEqual(stat.S_IMODE(self.env_path.stat().st_mode), 0o600)
+
+    def test_next_step_command_imports_the_current_settings_loader(self) -> None:
+        result, output = self.run_main()
+        self.assertEqual(result, 0)
+        line = next(line for line in output.splitlines() if "load_settings" in line)
+        match = re.search(r"from ([\w.]+) import (\w+)", line)
+        self.assertIsNotNone(match, line)
+        # 案内どおり src/ から import できるか確かめる（load_settings は呼ばない＝実際の .env を読まない）
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+        self.addCleanup(sys.path.remove, sys.path[0])
+        module = importlib.import_module(match[1])
+        self.assertTrue(callable(getattr(module, match[2])))
 
     def test_force_updates_file_without_logging_secrets(self) -> None:
         self.env_path.write_text("OLD_TEST_CONFIGURATION=replace\n", encoding="utf-8")

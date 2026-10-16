@@ -239,7 +239,8 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
         target.permissions_for.return_value = SimpleNamespace(connect=True)
         replacement = self.make_voice(target)
 
-        async def join_connect():
+        async def join_connect(**kwargs):
+            # /join は接続の待ち時間（timeout）を指定して connect する
             self.guild.voice_client = replacement
             return replacement
 
