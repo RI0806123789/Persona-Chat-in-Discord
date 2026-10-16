@@ -20,7 +20,7 @@ tests/
 └── helpers/      # テスト間で共有する補助処理
 ```
 
-一括実行のコマンドは従来どおり。各フォルダの `__init__.py` により、Python 3.10／3.13の `unittest discover` がサブフォルダも検出する。分類だけ、モジュールだけ、ファイルの直接実行も選べる。
+表内のテストパスは `tests/` からの相対パスで表す。一括実行のコマンドは従来どおり。各フォルダの `__init__.py` により、Python 3.10／3.13の `unittest discover` がサブフォルダも検出する。分類だけ、モジュールだけ、ファイルの直接実行も選べる。
 
 ```bash
 python -B -m unittest discover -s tests/services -v
@@ -30,7 +30,21 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 外部サービスはモック、DB・JSONは一時ディレクトリを使う。実際の設定・会話・記憶は読み込まない。メッセージ処理は `MessageHandler` を直接呼び、`bot.py` の起動処理やAST抽出は使わない。時刻集計の日本時間は標準ライブラリの固定オフセットで再現し、タイムゾーンDB欠落時のUTC代用も別途検証する。
 
-Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
+以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
+
+## 同期I/O・画像の容量制限・JSON抽出の確認（#69・#70）
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #69 | `services/test_auto_topic_service`・`services/test_autonomous_speech`・`views/test_remaining_io` | 自発会話・記念日・第一声・独り言・コメント応答・要約のペルソナ読込中もイベントループが進む。設定のパス確認とNG再読込はdefer後のワーカーで実行し、結果を本人のパネルへ返す。DMを監視せず、公開要約の権限・通信エラーを通知する |
+| #69 | `utils/test_image_attachments`・`services/test_ng_word_service.NgWordReloadTests` | 画像の取得前・取得後の容量確認、上限ちょうどの画像のRGB変換、壊れた画像の後の継続、中断時の全画像の回収。NGワードは正規表現の準備後に単語とまとめて反映する |
+| #69 | 既存の `services/test_document_service.DocumentTemporaryFileTests` | 共通のワーカー待機へ置き換えた後も、書込エラー・単発／繰り返しキャンセルで一時ファイルが残らず、回収後に再作成されない |
+| #70 | `utils/test_json_extraction.ServiceJsonTests`・`services/test_stats_service.StatsAnalysisTests` | 文書要約・記憶ルーティング・圧縮・統計解析で前置きの別形式JSONを読み飛ばす。必要なキーが無い場合の失敗・キャッシュ保持と、カテゴリ・繰り返し種別の空白／大小文字の正規化を確認する |
+| #70 | `config/test_tuning_constants.ModerationAndChoiceTuningTests` | 起動前に変えたモデレーションのモデル・タイムアウトと、既定ペルソナ・応答モードが利用側へ反映される |
+
+2026-10-17、Windows・Python 3.13.3で追加22件を修正前のソースに適用し、subTestを含め19失敗・8エラーを確認した。画像の4件は、新しい定数・デコード補助関数が修正前に存在しないことによるエラー。読込失敗後の継続・非画像の除外・統合判定の正規化・必要なキーが無い場合の既存の失敗処理の4件は修正前から成功した。修正後は全412テストが省略なしで成功した。
+
+`pip check`、全106ソースの構文とPython 3.10文法、構成図XML、4001文字のメッセージ分割、`git diff --check`も成功。外部通信はモック、DB・画像・JSONは一時ディレクトリと架空のデータを使った。Linux・Python 3.10での実行と、Discord・Gemini・音声の実接続は未確認。#71・#72はマージ済みPRで、両方のマージコミットが作業開始時のmainに含まれることを確認した。
 
 ## 読み上げの音色・/join・旧データ移行・終了処理の確認（#67・#68）
 
@@ -142,23 +156,23 @@ Windows・Python 3.13の仮想環境で、既存286件と追加2件の全288テ�
 
 | Issue | 代表テスト | 修正前 → 修正後 | 検出した問題 |
 | --- | --- | --- | --- |
-| #2 | `test_memory_service.DocumentSummaryCompactionTests.test_addition_at_limit_is_preserved` | `08717c9` → `790b4f7` | 圧縮中に追加した要約の消失 |
-| #3 | `test_document_service.DocumentTemporaryFileTests.test_read_failure_removes_temporary_file` | `08717c9` → `790b4f7` | 添付読込失敗後の一時ファイル残留 |
-| #4 | `test_document_service.DocumentResponseTests.test_affinity_tag_is_removed_before_screening_and_storage` | `302c7c1` → `46abda2` | 文書応答の感情タグ残留 |
-| #5 | `test_settings_view.ConversationResetTests.test_guild_reset_excludes_messages_before_button_press` | `302c7c1` → `46abda2` | リセット前の履歴混入 |
-| #6 | `test_reminder_service.ReminderRegistrationTests.test_last_slot_accepts_only_one_concurrent_request` | `302c7c1` → `22571ac` | 残り1枠への同時二重登録 |
-| #7 | `test_bot_reply_settings.ReplySettingsTests.test_generation_change_uses_old_settings_then_next_reply_uses_new` | `302c7c1` → `22571ac` | 生成と評価に使うモデル・ペルソナの不一致 |
-| #8 | `test_autonomous_comments.AutonomousCommentAdmissionTests.test_five_comments_make_only_one_input_and_output_check` | `cb46a7b` → `6e9cdd9` | 連続5コメントで入力判定も5回実行 |
-| #9 | `test_stats_service.UserStatsPersistenceTests.test_write_count_is_constant_for_one_hundred_and_thousand_users` | `cb46a7b` → `6e9cdd9` | ユーザー数に比例してDB書込が増加 |
-| #11 | `test_storage.JsonStorageTests` | `033cd92` → `c200681` | 書込中断で原本が変化し、破損時の退避がない |
-| #12 | `test_reminder_view.ReminderStatusTextTests.test_long_lists_fit_limit_and_report_every_omitted_record` | `033cd92` → `c200681` | 長文の予定一覧が1900文字を超過 |
-| #13 | `test_autonomous_session_cleanup` | `c200681` → 追加修正 | 接続喪失時の残留・停止中に差し替わった接続や枠の誤操作 |
-| #14 | `test_event_loop_io` | `c200681` → 追加修正 | DB・JSON・描画待機中にイベントループが停止 |
-| #15 | `test_gemini_service.GeminiGenerationTests` | `c200681` → 追加修正 | フォールバックが期限をリセットし、障害時にも追加呼出 |
-| #16 | `test_graph_fonts` | `ea0f29f` → 追加修正 | Linux候補の欠落と、共有設定を使わない全5種類のグラフ |
-| #18 | `test_affinity_service` | `6852d84` → 追加修正 | 親密度保存が全件削除・再挿入され、書込量がユーザー数に比例 |
-| #19 | `test_tuning_constants` / `test_affinity_service.AffinityTuningTests` | `6852d84` → 追加修正 | 文書・記憶・統計・音声・親密度の定数変更が利用側へ反映されない |
-| #20 | `test_shared_helpers` | `6852d84` → 追加修正 | 共通送信・マスク処理が使われず、グラフ送信ヘルパーでバッファが閉じない |
+| #2 | `services/test_memory_service.DocumentSummaryCompactionTests.test_addition_at_limit_is_preserved` | `08717c9` → `790b4f7` | 圧縮中に追加した要約の消失 |
+| #3 | `services/test_document_service.DocumentTemporaryFileTests.test_read_failure_removes_temporary_file` | `08717c9` → `790b4f7` | 添付読込失敗後の一時ファイル残留 |
+| #4 | `services/test_document_service.DocumentResponseTests.test_affinity_tag_is_removed_before_screening_and_storage` | `302c7c1` → `46abda2` | 文書応答の感情タグ残留 |
+| #5 | `views/test_settings_view.ConversationResetTests.test_guild_reset_excludes_messages_before_button_press` | `302c7c1` → `46abda2` | リセット前の履歴混入 |
+| #6 | `services/test_reminder_service.ReminderRegistrationTests.test_last_slot_accepts_only_one_concurrent_request` | `302c7c1` → `22571ac` | 残り1枠への同時二重登録 |
+| #7 | `core/test_bot_reply_settings.ReplySettingsTests.test_generation_change_uses_old_settings_then_next_reply_uses_new` | `302c7c1` → `22571ac` | 生成と評価に使うモデル・ペルソナの不一致 |
+| #8 | `services/test_autonomous_comments.AutonomousCommentAdmissionTests.test_five_comments_make_only_one_input_and_output_check` | `cb46a7b` → `6e9cdd9` | 連続5コメントで入力判定も5回実行 |
+| #9 | `services/test_stats_service.UserStatsPersistenceTests.test_write_count_is_constant_for_one_hundred_and_thousand_users` | `cb46a7b` → `6e9cdd9` | ユーザー数に比例してDB書込が増加 |
+| #11 | `utils/test_storage.JsonStorageTests` | `033cd92` → `c200681` | 書込中断で原本が変化し、破損時の退避がない |
+| #12 | `views/test_reminder_view.ReminderStatusTextTests.test_long_lists_fit_limit_and_report_every_omitted_record` | `033cd92` → `c200681` | 長文の予定一覧が1900文字を超過 |
+| #13 | `services/test_autonomous_session_cleanup` | `c200681` → 追加修正 | 接続喪失時の残留・停止中に差し替わった接続や枠の誤操作 |
+| #14 | `integration/test_event_loop_io` | `c200681` → 追加修正 | DB・JSON・描画待機中にイベントループが停止 |
+| #15 | `services/test_gemini_service.GeminiGenerationTests` | `c200681` → 追加修正 | フォールバックが期限をリセットし、障害時にも追加呼出 |
+| #16 | `utils/test_graph_fonts` | `ea0f29f` → 追加修正 | Linux候補の欠落と、共有設定を使わない全5種類のグラフ |
+| #18 | `services/test_affinity_service` | `6852d84` → 追加修正 | 親密度保存が全件削除・再挿入され、書込量がユーザー数に比例 |
+| #19 | `config/test_tuning_constants` / `services/test_affinity_service.AffinityTuningTests` | `6852d84` → 追加修正 | 文書・記憶・統計・音声・親密度の定数変更が利用側へ反映されない |
+| #20 | `utils/test_shared_helpers` | `6852d84` → 追加修正 | 共通送信・マスク処理が使われず、グラフ送信ヘルパーでバッファが閉じない |
 
 #17は初回確認時に#8との重複としてクローズされており、既存11件とローカルNG判定の追加1件で、対応済みの動作を確認した。再オープン後は下記の追加検証を行った。
 
@@ -182,7 +196,7 @@ DB新規初期化・初期化の再実行・サーバーとDM設定の保存復�
 
 `config/test_tuning_constants.py` は起動前に定数を変更した状態を再現し、文書プレビューのUTF-8境界・文書記憶の参照件数・ランキング人数・EQ既定値と上下限・既定EQ名・PCMクリップを検証する。参照件数が0以下なら文書要約を載せず、小さいブロックでもIIRの状態が途切れないことも確認する。先行7テストは修正前に6失敗・1エラー（subTest込み）、修正後は全件成功した。外部サービスには接続しない。
 
-`constants.py` の定義と `src/*.py` の参照をASTで再監査し、外部にも内部にも参照されない定数は0件と確認した。外部から直接参照されない `PROJECT_ROOT` / `NG_DIR` / `EDGE_TTS_VOICE_MALE` は定数定義内で使われる。`STATS_HOURLY_BUCKETS` は1時間ごとの24要素という保存形式を表し、今回の対応では区間数変更や既存データの再区分は行っていない。
+`config/constants.py` の定義と `src/` 以下のPythonソースの参照をASTで再監査し、外部にも内部にも参照されない定数は0件と確認した。外部から直接参照されない `PROJECT_ROOT` / `NG_DIR` / `EDGE_TTS_VOICE_MALE` は定数定義内で使われる。`STATS_HOURLY_BUCKETS` は1時間ごとの24要素という保存形式を表し、今回の対応では区間数変更や既存データの再区分は行っていない。
 
 ## 共通ヘルパーの検証
 

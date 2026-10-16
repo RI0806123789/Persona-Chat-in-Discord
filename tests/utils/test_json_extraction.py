@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.services.content_moderator import ContentModerator
+from persona_bot.services.gemini_service import GeminiService
+from persona_bot.services.memory_service import MemoryService
 from persona_bot.utils.storage import extract_json_object
 
 
@@ -69,3 +71,65 @@ class ModerationJsonTests(unittest.IsolatedAsyncioTestCase):
         moderator = ContentModerator(None, SimpleNamespace(words=[]))
         with patch("persona_bot.services.content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(text="{invalid}"))):
             self.assertEqual(await moderator.check("架空の入力"), (True, ""))
+
+
+class ServiceJsonTests(unittest.IsolatedAsyncioTestCase):
+    async def test_document_summary_skips_unrelated_json(self):
+        for prefix in ('{"dummy": 1}', '```json\n{"dummy": 1}\n```'):
+            with self.subTest(prefix=prefix), patch(
+                "persona_bot.services.gemini_service.generate_content", new=AsyncMock(return_value=SimpleNamespace(
+                    text=prefix + '\n{"summary": "架空の要約"}',
+                )),
+            ):
+                result = await GeminiService(None).summarize_document(object(), "fictional.txt", "test-model")
+                self.assertEqual(result["summary"], "架空の要約")
+
+    async def test_router_skips_unrelated_json_and_normalizes_category(self):
+        service = MemoryService(None, None, None)
+        for value, expected in ((" PROFILE ", "profile"), (" Projects ", "projects"), (" unknown ", "none")):
+            with self.subTest(value=value), patch(
+                "persona_bot.services.memory_service.generate_content", new=AsyncMock(return_value=SimpleNamespace(
+                    text='{"dummy": 1}\n' + json.dumps({"category": value}),
+                )),
+            ):
+                self.assertEqual(await service.route_category("前に話した架空の計画を教えてください"), expected)
+
+    async def test_compaction_skips_json_missing_either_required_key(self):
+        service = MemoryService(None, None, None)
+        expected = {"profile": {"趣味": "架空の工作"}, "projects": {"計画": "架空の計画"}}
+        for prefix in ('{"dummy": 1}', '{"profile": {}}', '{"projects": {}}'):
+            with self.subTest(prefix=prefix), patch(
+                "persona_bot.services.memory_service.generate_content", new=AsyncMock(return_value=SimpleNamespace(
+                    text=prefix + '\n' + json.dumps(expected),
+                )),
+            ):
+                self.assertEqual(await service._compact_memory("架空の会話", "{}", "{}"),
+                                 (expected["profile"], expected["projects"]))
+
+    async def test_missing_required_fields_keep_existing_failures(self):
+        with patch("persona_bot.services.gemini_service.generate_content", new=AsyncMock(
+            return_value=SimpleNamespace(text='{"dummy": 1}'),
+        )):
+            with self.assertRaises(ValueError):
+                await GeminiService(None).summarize_document(object(), "fictional.txt", "test-model")
+        with patch("persona_bot.services.memory_service.generate_content", new=AsyncMock(
+            return_value=SimpleNamespace(text='{"profile": {}}'),
+        )):
+            self.assertEqual(await MemoryService(None, None, None)._compact_memory("架空の会話", "{}", "{}"),
+                             (None, None))
+
+    async def test_combined_moderation_normalizes_category_and_recurrence(self):
+        moderator = ContentModerator(None, SimpleNamespace(words=[]))
+        for repeat, expected in ((" DAILY ", "daily"), (" Weekly ", "weekly"), (" Monthly ", "monthly"), ("unknown", "none"), (None, "none")):
+            response = {"safe": True, "category": " PROFILE ", "reminder": {
+                "at": "2026-12-01 12:00", "message": "架空の予定", "repeat": repeat,
+            }}
+            with self.subTest(repeat=repeat), patch(
+                "persona_bot.services.content_moderator.generate_content", new=AsyncMock(return_value=SimpleNamespace(
+                    text=json.dumps(response),
+                )),
+            ):
+                safe, reason, category, reminder = await moderator.check_and_route("架空の依頼")
+                self.assertTrue(safe)
+                self.assertEqual(category, "profile")
+                self.assertEqual(reminder["repeat"], expected)

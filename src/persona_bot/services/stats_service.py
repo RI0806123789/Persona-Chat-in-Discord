@@ -354,7 +354,7 @@ class StatsService:
                 timeout=STATS_ANALYSIS_TIMEOUT_SECONDS,
                 grounding=False,
             )
-            parsed = extract_json_object(text or "")
+            parsed = extract_json_object(text or "", required_keys=("topics", "big_five", "personality"))
             if not parsed:
                 print("会話統計の解析結果を JSON として解釈できませんでした。")
         except Exception as error:

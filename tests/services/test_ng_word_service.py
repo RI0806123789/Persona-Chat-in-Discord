@@ -76,5 +76,24 @@ class NgWordOrderTests(NgWordFileTestCase):
         self.assertEqual(NgWordFilter().find_ng_words("問題のない文"), [])
 
 
+class NgWordReloadTests(NgWordFileTestCase):
+    def test_reload_publishes_words_and_pattern_only_after_compilation(self) -> None:
+        self.write(self.public, "架空語A\n", bom=False)
+        ng_filter = NgWordFilter()
+        self.write(self.public, "架空語B\n架空語C\n", bom=False)
+        original = ng_word_service._build_pattern
+
+        def compile_words(words):
+            self.assertEqual(ng_filter.words, ["架空語A"])
+            self.assertEqual(ng_filter.word_count, 1)
+            self.assertEqual(ng_filter.mask_ng_words("架空語Aと架空語B"), "●●●●と架空語B")
+            return original(words)
+
+        with patch.object(ng_word_service, "_build_pattern", side_effect=compile_words):
+            ng_filter.reload()
+        self.assertEqual(ng_filter.words, ["架空語B", "架空語C"])
+        self.assertEqual(ng_filter.mask_ng_words("架空語Aと架空語B"), "架空語Aと●●●●")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,6 @@ from persona_bot.config.constants import (
     MEMORY_FLUSH_IDLE_SECONDS,
     MEMORY_FLUSH_MAX_USERS_PER_RUN,
     MEMORY_FLUSH_THRESHOLD_ENTRIES,
-    MEMORY_ROUTE_CATEGORIES,
     PROFILE_MEMORY_PATH,
     PROJECTS_MEMORY_PATH,
     ROUTER_MODEL_NAME,
@@ -25,6 +24,7 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.database import Database
 from persona_bot.services.genai_client import generate_content
+from persona_bot.utils.normalization import normalize_memory_category
 from persona_bot.services.prompting import build_memory_compaction_prompt, build_router_prompt
 from persona_bot.utils.storage import (
     extract_json_object,
@@ -191,10 +191,8 @@ class MemoryService:
                 self._genai_client, model=ROUTER_MODEL_NAME, contents=router_prompt,
                 timeout=ROUTER_TIMEOUT_SECONDS, temperature=0, response_mime_type="application/json",
             )
-            parsed = extract_json_object(safe_response_text(response) or "")
-            category = str((parsed or {}).get("category", "none")).lower()
-            if category in MEMORY_ROUTE_CATEGORIES:
-                return category
+            parsed = extract_json_object(safe_response_text(response) or "", required_keys=("category",))
+            return normalize_memory_category((parsed or {}).get("category"))
         except Exception as error:
             print(f"ルーティング判定エラー: {error}")
         return "none"
@@ -432,7 +430,7 @@ class MemoryService:
         if reason_name is not None:
             raise _PromptBlockedError(reason_name)
 
-        parsed = extract_json_object(safe_response_text(response) or "")
+        parsed = extract_json_object(safe_response_text(response) or "", required_keys=("profile", "projects"))
         if not parsed:
             return None, None
 

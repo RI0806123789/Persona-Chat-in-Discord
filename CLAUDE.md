@@ -354,6 +354,10 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ### グラフ描画と同期I/Oの待機
 
+自発会話・記念日・自律配信・会話要約のペルソナ読込も `run_in_thread` で待つ。設定確定の存在確認とNGワード再読込はDiscordへ応答をdeferしてからワーカーで行う。NGワードは単語と正規表現を準備してからスナップショットを差し替え、読込途中の状態を公開しない。画像は `MAX_IMAGE_SIZE_BYTES` を取得前と取得後に確認し、デコードとRGB変換をワーカーへ渡す。中断時は取得済み画像も回収する。
+
+モデルのJSON抽出には用途ごとの `required_keys` を指定する（モデレーションは `safe`、文書要約は `summary`、記憶ルーティングは `category`、圧縮は `profile` / `projects`、統計は `topics` / `big_five` / `personality`）。記憶カテゴリと繰り返し種別の正規化は `utils/normalization.py` に集約する。`reminder_service.normalize_recurrence` は同じ関数を再公開している。
+
 フォント候補は `constants.GRAPH_FONT_FAMILY` を唯一の情報源とし、`graph_rendering.graph_font_context()` が導入済み候補と汎用フォントだけを順序どおり返す。利用量・時間帯・話題・性格・ランキングの全描画でこの設定を `plt.rc_context` に渡し、グローバルな設定は変更しない。Linuxでは `fonts-noto-cjk` 等の日本語フォントをOSへ導入する必要がある。導入・キャッシュ再生成の手順はREADME、字形と5種類のPNG確認は `tests/utils/test_graph_fonts.py` を参照する。LinuxのCIはフォントを導入し、未解決ならテストを失敗させる。
 
 統計の `build_dashboard` / `build_ranking_graph` と利用量の `build_graph_buffer` は、データをイベントループでコピーしてから描画をワーカーへ渡す。matplotlibはスレッド間で共有状態を持つため、全描画関数を `graph_rendering.serialized_plot` の共通ロックで直列化する（Aggバックエンドを維持）。UIは描画前に応答をdeferし、完了後に本人だけのfollowupで返す。描画中の収集設定変更・削除は更新世代でも照合し、古い画像を破棄する。中断時の画像バッファ・Figureも回収する。

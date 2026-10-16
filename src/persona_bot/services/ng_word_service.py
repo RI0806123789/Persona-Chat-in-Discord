@@ -63,31 +63,33 @@ class NgWordFilter:
     """NGワードのフィルタリングを行うクラス。"""
 
     def __init__(self) -> None:
-        self._ng_words: list[str] = []
-        self._pattern: re.Pattern[str] | None = None
+        self._snapshot: tuple[list[str], re.Pattern[str] | None] = ([], None)
         self.reload()
 
     def reload(self) -> None:
         """NGワードリストをファイルから再読み込みする。"""
-        self._ng_words = load_ng_words()
-        self._pattern = _build_pattern(self._ng_words)
-        if self._ng_words:
-            print(f"NGワード: {len(self._ng_words)}件 読み込み済み")
+        words = load_ng_words()
+        pattern = _build_pattern(words)
+        # ワーカーで準備してから一度に公開し、再読込中も従来の判定を維持する。
+        self._snapshot = (words, pattern)
+        if words:
+            print(f"NGワード: {len(words)}件 読み込み済み")
 
     @property
     def word_count(self) -> int:
-        return len(self._ng_words)
+        return len(self._snapshot[0])
 
     @property
     def words(self) -> list[str]:
         """NGワードのリストを返す（ContentModerator 連携用）。"""
-        return list(self._ng_words)
+        return list(self._snapshot[0])
 
     def contains_ng_word(self, text: str) -> bool:
         """テキストにNGワードが含まれているかどうかを判定する。"""
-        if self._pattern is None:
+        pattern = self._snapshot[1]
+        if pattern is None:
             return False
-        return bool(self._pattern.search(text))
+        return bool(pattern.search(text))
 
     def find_ng_words(self, text: str) -> list[str]:
         """テキスト中に含まれるNGワードの一覧を、重複を除いて最初に現れた順で返す。
@@ -95,15 +97,17 @@ class NgWordFilter:
         set で重複を除くと順序が実行ごとに変わり、ログの比較やテストが不安定になるため
         dict.fromkeys で出現順を保つ。
         """
-        if self._pattern is None:
+        pattern = self._snapshot[1]
+        if pattern is None:
             return []
-        return list(dict.fromkeys(match.group() for match in self._pattern.finditer(text)))
+        return list(dict.fromkeys(match.group() for match in pattern.finditer(text)))
 
     def mask_ng_words(self, text: str) -> str:
         """テキスト中のNGワードを伏字(●)に置換して返す。"""
-        if self._pattern is None:
+        pattern = self._snapshot[1]
+        if pattern is None:
             return text
-        return self._pattern.sub(lambda m: "●" * len(m.group()), text)
+        return pattern.sub(lambda m: "●" * len(m.group()), text)
 
     def mask_with_log(self, text: str, *, label: str) -> str:
         """NGワードが含まれていればログに出したうえでマスクし、無ければ元のテキストを返す。

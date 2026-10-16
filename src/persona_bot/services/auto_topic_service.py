@@ -17,6 +17,7 @@ from persona_bot.config.constants import (
     AUTO_TOPIC_TIMEOUT_SECONDS,
 )
 from persona_bot.services.content_moderator import ContentModerator
+from persona_bot.core.background import run_in_thread
 from persona_bot.core.database import Database
 from persona_bot.utils.discord_helpers import fetch_channel_history_text, send_long_message
 from persona_bot.services.gemini_service import GeminiService
@@ -44,7 +45,7 @@ class AutoTopicService:
     構造化された誕生日・記念日があれば、今日が該当日のときにそのユーザーが
     所属するサーバーの監視チャンネルへお祝いメッセージを投稿する。
 
-    監視状態・投稿記録はいずれもインメモリのみで、再起動でリセットされる。
+    監視状態と話題提供の投稿記録はインメモリのみ。記念日の投稿記録はDBに保存する。
     """
 
     def __init__(
@@ -76,8 +77,10 @@ class AutoTopicService:
         """チャンネルを監視対象に登録し、最終活動時刻を今に更新する。
 
         ボットが会話に参加した（＝話しかけられた）チャンネルだけを対象にする。
-        guild_id は DM の場合 None（BotState.dm_settings 側に登録される）。
+        guild_id が None（DM）の場合は監視しない。
         """
+        if guild_id is None:
+            return
         self._state.get_guild(guild_id).auto_topic_channels[channel_id] = datetime.now(timezone.utc)
 
     def mark_activity(self, channel_id: int, guild_id: int | None) -> None:
@@ -86,6 +89,8 @@ class AutoTopicService:
         ボット宛てかどうかに関係なく「チャンネルで会話が行われている」ことを
         記録するため、on_message の早い段階（メンション判定より前）から呼ばれる。
         """
+        if guild_id is None:
+            return
         guild_settings = self._state.get_guild(guild_id)
         if channel_id in guild_settings.auto_topic_channels:
             guild_settings.auto_topic_channels[channel_id] = datetime.now(timezone.utc)
@@ -155,7 +160,9 @@ class AutoTopicService:
             return False
 
         try:
-            persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            persona_prompt = await run_in_thread(
+                lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            )
         except FileNotFoundError:
             print(f"自発的な会話: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。")
             return False
@@ -437,7 +444,9 @@ class AutoTopicService:
             return False
 
         try:
-            persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            persona_prompt = await run_in_thread(
+                lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            )
         except FileNotFoundError:
             print(f"記念日: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。")
             return False

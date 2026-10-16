@@ -2,6 +2,7 @@ import discord
 from discord import ui
 
 from persona_bot.core.app_state import GuildSettings
+from persona_bot.core.background import run_in_thread
 from persona_bot.views.auto_topic_view import AutoTopicView
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
@@ -122,9 +123,10 @@ class NgReloadButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
-        hub.ng_filter.reload()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await run_in_thread(hub.ng_filter.reload)
         # ハブは残したまま、結果を新しいエフェメラルメッセージとして送る
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ NGワードリストを再読み込みしました。（{hub.ng_filter.word_count}件）", ephemeral=True
         )
 
