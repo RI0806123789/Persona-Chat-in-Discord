@@ -55,7 +55,7 @@ from persona_bot.services.autonomous_metrics import (
     updated_activity_samples,
 )
 from persona_bot.services import autonomous_stage
-from persona_bot.core.background import spawn, wait_for_cleanup
+from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
@@ -232,7 +232,7 @@ class AutonomousService:
             response_settings = guild_settings.snapshot_response()
         channel = message.channel
         async with channel.typing():
-            persona_prompt = self._load_persona(response_settings)
+            persona_prompt = await run_in_thread(self._load_persona, response_settings)
             if persona_prompt is None:
                 return None
 
@@ -701,7 +701,7 @@ class AutonomousService:
         try:
             body = AUTONOMOUS_OPENING_NOTICE
             speech = ""
-            persona_prompt = self._load_persona(response_settings)
+            persona_prompt = await run_in_thread(self._load_persona, response_settings)
             if persona_prompt is not None:
                 history_text = await fetch_channel_history_text(
                     channel, guild_settings.channel_reset_points.get(channel.id),
@@ -744,7 +744,7 @@ class AutonomousService:
             channel = self._client.get_channel(session.channel_id)
             if channel is None:
                 return
-            persona_prompt = self._load_persona(response_settings)
+            persona_prompt = await run_in_thread(self._load_persona, response_settings)
             if persona_prompt is None:
                 return
 

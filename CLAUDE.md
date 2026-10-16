@@ -134,7 +134,7 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 - **`GuildSettings`**: ペルソナ（`current_prompt_file`）・モデル（`current_model_name`）・応答モード（`current_respond_mode`）・グラウンディング（`grounding_enabled`）・会話リセット地点（`channel_reset_points`）・自発会話の設定と監視状態（`auto_topic_*`）・自律行動の設定と配信状態（`autonomous_*`）・記念日の投稿記録（`anniversary_posted_dates`）を持つ。
 - **`BotState.get_guild(guild_id)`**: そのサーバーの `GuildSettings` を返す。未登録なら初回アクセス時にデフォルト値で自動生成する。**`guild_id=None`（DM）は `BotState.dm_settings` を返す** — DM にはギルドが無いため、全 DM で1スロットを共有する。`iter_all_guild_settings()` は「全サーバー + DM」を横断する見回り処理用。
 - **`BotState` に残すもの**: 最終活動時刻（`last_activity_timestamp`）とバックグラウンドタスクの起動フラグ類のみ（サーバーに依存しないプロセス全体の状態）。
-- **永続化**: 設定値（ペルソナ・モデル・応答モード・グラウンディング・自発会話の ON/しきい値・自律行動の ON）と記念日の投稿記録は DB に保存され、起動時に `BotState.restore_from_database(db)`（`bot.py` の `Database` 初期化直後に1回）が復元する。**設定を変えたら `await guild_settings.persist()` を呼ぶこと** — UI の確定ボタンやトグルの直後がその場所。保存はフェイルオープン（失敗してもインメモリの変更は残る）。`get_guild()` が新しく作る `GuildSettings` には `attach()` で DB が引き継がれるので、呼び出し側は何もしなくてよい。`restore_from_database` は、復元より前に `get_guild()` で作られていた設定にも `attach()` する（つながないと、その設定の `persist()` が DB へ書かれない）。
+- **永続化**: 設定値（ペルソナ・モデル・応答モード・グラウンディング・自発会話の ON/しきい値・自律行動の ON）と記念日の投稿記録は DB に保存され、起動時に `BotState.restore_from_database(db)`（`bot.py` の `Database` 初期化直後に1回）が復元する。**設定を変えたら `await guild_settings.persist()` を呼ぶこと** — UI の確定ボタンやトグルの直後がその場所。保存はフェイルオープン（失敗してもインメモリの変更は残る）。`persist()` は `_persist_lock` で直列化し、**保存する値はロックを取ってから読む**（保存は行の総入れ替えなので、並んだ2つの保存の書き込み順が入れ替わると古い値で上書きされる）。書き込みは `run_in_thread` で待つ（素の `asyncio.to_thread` に戻すと、キャンセルの瞬間にロックが外れて同じ上書きが起きる）。記念日の記録（`record_anniversary_post`）も `run_in_thread` で待つ。`get_guild()` が新しく作る `GuildSettings` には `attach()` で DB が引き継がれるので、呼び出し側は何もしなくてよい。`restore_from_database` は、復元より前に `get_guild()` で作られていた設定にも `attach()` する（つながないと、その設定の `persist()` が DB へ書かれない）。
 - **永続化しないもの**: `channel_reset_points` / `auto_topic_channels` / `auto_topic_posted_at` / `autonomous_session` / `autonomous_last_activity` / `autonomous_recent_activity` は実行時に自然に再構築される一時状態のため、意図的にインメモリのみ。ここを永続化したくなった場合はチャンネル単位の書き込みが毎メッセージ走る点に注意すること（`autonomous_*` の実行時状態はそもそもボイス接続が再起動をまたげないため、復元しても意味がない）。
 - **規約**: サービス層は `BotState` から設定を勝手に読まないこと。`bot.py` / `commands.py` が `state.get_guild(message.guild.id if message.guild else None)` で解決し、**`GuildSettings` かその中の値（例: `model_name`）を引数で渡す**。`GeminiService.generate()` / `summarize_document()` が `model_name` を必須引数に取るのはこのため（サービスが「どのギルドの設定か」を知らずに済む）。固定モデルを使う経路（`stats_service.py` のルーターなど）は `ROUTER_MODEL_NAME` を明示的に渡す。UI の各 View も `BotState` ではなく `GuildSettings` を受け取る。
 
@@ -242,6 +242,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ### スラッシュコマンド (`commands.py`)
 
+`/functions`・`/join`・`/leave` は副作用の前に `reject_blocked_interaction` でブラックリストを確認する。拒否は本人だけに通知する。パネルも `PanelView.interaction_check` で毎回確認し、開いた後のブロックを反映する。`FunctionsView` が渡す `blocked_user_check` を `swap_panel` で引き継ぐこと。サブパネルへ渡し忘れると開いたままの画面から操作できてしまう。
+
 すべてのコマンドは `register_commands` で登録され、`on_ready` で同期される。全一覧: `/functions`（機能ハブ。エフェメラル）、`/join` + `/leave`（ボイスチャンネル）。**`/join` と `/leave` はどちらも先に `autonomous.stop_session()` を呼ぶ** — 自律行動でボットが自分から通話に入っている可能性があり、素の `disconnect` だけで済ませるとボットが開いたステージ枠が「配信中」の看板を出したまま残る。`/leave` での強制退出は自律行動の緊急停止手段でもある（idea.md の要件）。`/join` は配信を止めた後も同じチャンネルへ接続中なら、切り直さずにその接続を使う（切り直すと読み上げ中の音声とキューが失われる）。接続の待ち時間は `VOICE_CONNECT_TIMEOUT_SECONDS`。`/functions` はハブパネルを開き、ボタンで各機能へ分岐する: **⚙️ キャラ設定**（`SettingsView` に変身）、**📋 会話要約**（`SummaryView` に変身）、**📈 会話統計**（`StatsView` に変身。ユーザー別ダッシュボード。管理者はここから 👍 フィードバック集計も見られる）、**💬 自発会話**（`AutoTopicView` に変身。自発的な話題提供と 🎙️ 自律行動の ON/OFF・しきい値設定。「ボットが自分から話し出す」系の入口はここに統一している）、**⏰ リマインダー**（`ReminderView` に変身。本人の予定の一覧・取り消し）、**📊 グラフ**（利用トークングラフをその場で表示）、**🔄 NGワード再読込**、**🔍 Google検索**（グラウンディングのその場トグル。確定なしで即そのサーバーの `GuildSettings` に反映）、**❓ 使い方**（`HelpView` に変身。会話のしかたと全機能の説明。権限制限なし）、**🔒 統計プライバシー**（`StatsPrivacyView` に変身。本人の会話統計の収集停止・蓄積データ削除）、**🚫 ブロック解除**（**管理者専用**。ブロック中ユーザーの選択メニューから解除。管理者以外にはボタン自体を非表示）。旧コマンド（`/status`、`/summarize`、`/graph`、`/ng_reload`、`/unblock`、および `/ai`、`/set`、`/gemini`、`/setting`、`/reset`）は削除済み — 設定・要約・利用グラフ・NG再読込・ブロック解除は `/functions` ハブに、テキストチャットは mention モードの `on_message` パイプラインに統合された。
 
 ### キャラ設定 UI (`settings_view.py`, `commands.py`, `choices.py`)
@@ -252,7 +254,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 サブパネルへの遷移とハブ復帰では、古いViewを停止して `await interaction.original_response()` の `InteractionMessage` を新しいViewへ渡す。通常の `interaction.message` を保持すると、エフェメラルUIのタイムアウト編集がチャンネル経由になり404で失敗する。
 
-`/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間にそのサーバーの `GuildSettings.grounding_enabled` を反転して保存する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。
+`/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間にそのサーバーの `GuildSettings.grounding_enabled` を反転して保存する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。`RunSummaryButton` は生成から送信までを `try` で囲み、パネルを「要約中...」のまま残さない。全員表示の投稿の失敗は、権限不足（`Forbidden`。権限設定の確認か「自分だけ」での表示を案内）と途中での失敗（`HTTPException`。一部が投稿されている可能性を案内）を個別に伝え、それ以外の想定外の例外も定型の案内へ差し替える（例外の文面は内部の情報を含みうるので見せない）。「自分だけ」で1通目を表示済みなら、それを上書きせず followup で伝える。Gemini の通信エラー・タイムアウトは `GeminiService.generate` が `None` に変えるため、`generate_channel_summary` が案内文を返す。
 
 ### 自発的な会話 (`auto_topic_service.py`, `auto_topic_view.py`)
 
@@ -320,7 +322,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **二重通知の防止**: `Database.reminder_claim_due()` が SELECT と UPDATE を同一トランザクションで行い、期限到来分をクレームしてから返す（`queue_tasks` と同じクレーム方式）。送信自体が失敗しても `pending` に戻さない — 重複通知より「時間外れの再通知」の方が困るため。
 - **繰り返し（`none`/`daily`/`weekly`/`monthly`）**: 新しい行を作らず、**同じ行の `remind_at` を次回時刻へ進めて `pending` のまま残す**（`reminder_id` が変わらないのでパネルからの取り消しが直感どおりに効き、`done` 行で保持枠を食い潰さない）。単発は従来どおり `done`。次回時刻の計算は `reminder_service.next_occurrence()`（暦だけを扱う純粋関数）が担い、`reminder_claim_due` へ**同期関数として渡してクレームと同一トランザクションで実行する** — 2ステップに分けると間でクラッシュしたときに繰り返しが失われる。
   - **渡す計算関数から `Database` のメソッドを呼ばないこと**（`self._lock` は再入不可の `threading.Lock`。同じスレッドから取り直すとデッドロックする）。`async def` にするのも不可（`await` されずコルーチンが返る）。
-  - **停止明けは「未来になるまで反復」して追い付く**。1回分だけ進めると追い付くまで見回り（60秒）のたびに通知が飛ぶ。歯止めは `REMINDER_RECURRENCE_MAX_CATCHUP_STEPS`（到達したら `canceled` にして止める）。過ぎた回はまとめて通知しない（通知は最大1回、時刻は未来へ）。
+  - **停止明けは「未来になるまで反復」して追い付く**。1回分だけ進めると追い付くまで見回り（60秒）のたびに通知が飛ぶ。歯止めは `REMINDER_RECURRENCE_MAX_CATCHUP_STEPS`（到達したら `canceled` にして止める）。次回時刻を作れなかった繰り返しは、`None` が返った場合も計算が例外で落ちた場合も `canceled` にする（例外だけ `done` にすると正常に完了したように見え、途絶えた原因を追えない）。単発は常に `done`。過ぎた回はまとめて通知しない（通知は最大1回、時刻は未来へ）。
   - `_is_stale` が見るのは**進める前の（本来の）予定時刻**。そのためクレームが返すレコードの `remind_at` は進める前の値のままにし、進めた後の時刻は `next_remind_at` に入れて返す。stale で今回を見送っても次回時刻は計算済みなので**系列は途切れない**（長期停止明けは翌回の定刻から再開する）。
   - **月次は `recurrence_anchor`（初回時刻）を固定**したまま `calendar.monthrange` で末日へ丸める（`timedelta(days=30)` は使わない）。アンカーを毎回更新すると 1/31→2/28→**3/28** とずれる。正しくは 1/31→2/28→3/31。
   - 日時の加算は `REMINDER_TIMEZONE` のローカル時刻で行ってから UTC へ戻す（DST のあるタイムゾーンへ変えても壊れないため）。許容値・表示名・追い付き上限は `constants.py` の `REMINDER_RECURRENCE_*` に集約する。
@@ -329,6 +331,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
+
+`RunStatsButton` の説明文は `split_message` で分割し、最初を元パネル、続きを本人だけのfollowupへ送る。画像のFile・バッファは引き続き `finally` で回収する。`FeedbackButton` は権限・サーバー・サービスの確認後、集計より前に本人限定の応答をdeferし、結果を分割してfollowupへ送る。集計後も管理者権限を再確認し、失敗は本人だけへ案内する。
 
 `RunStatsButton` は生成とFile作成も `try` の対象にし、生成失敗時は「集計中」の元パネルをエラー表示へ更新する。成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じ、Fileの作成途中で失敗した場合も作成済みの分を回収する。他人の統計を表示する場合は生成前と送信直前に管理者権限を再確認し、対象ユーザー選択とブロック解除のSelectも操作時に再確認する。本人の統計は引き続き管理者権限なしで表示できる。
 
@@ -355,11 +359,15 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ### グラフ描画と同期I/Oの待機
 
+自発会話・記念日・自律配信・会話要約のペルソナ読込も `run_in_thread` で待つ。設定確定の存在確認とNGワード再読込はDiscordへ応答をdeferしてからワーカーで行う。NGワードは単語と正規表現を準備してからスナップショットを差し替え、読込途中の状態を公開しない。画像は `MAX_IMAGE_SIZE_BYTES` を取得前と取得後に確認し、デコードとRGB変換をワーカーへ渡す。中断時は取得済み画像も回収する。
+
+モデルのJSON抽出には用途ごとの `required_keys` を指定する（モデレーションは `safe`、文書要約は `summary`、記憶ルーティングは `category`、圧縮は `profile` / `projects`、統計は `topics` / `big_five` / `personality`）。記憶カテゴリと繰り返し種別の正規化は `utils/normalization.py` に集約する。`reminder_service.normalize_recurrence` は同じ関数を再公開している。
+
 フォント候補は `constants.GRAPH_FONT_FAMILY` を唯一の情報源とし、`graph_rendering.graph_font_context()` が導入済み候補と汎用フォントだけを順序どおり返す。利用量・時間帯・話題・性格・ランキングの全描画でこの設定を `plt.rc_context` に渡し、グローバルな設定は変更しない。Linuxでは `fonts-noto-cjk` 等の日本語フォントをOSへ導入する必要がある。導入・キャッシュ再生成の手順はREADME、字形と5種類のPNG確認は `tests/utils/test_graph_fonts.py` を参照する。LinuxのCIはフォントを導入し、未解決ならテストを失敗させる。
 
 統計の `build_dashboard` / `build_ranking_graph` と利用量の `build_graph_buffer` は、データをイベントループでコピーしてから描画をワーカーへ渡す。matplotlibはスレッド間で共有状態を持つため、全描画関数を `graph_rendering.serialized_plot` の共通ロックで直列化する（Aggバックエンドを維持）。UIは描画前に応答をdeferし、完了後に本人だけのfollowupで返す。描画中の収集設定変更・削除は更新世代でも照合し、古い画像を破棄する。中断時の画像バッファ・Figureも回収する。
 
-`background.run_in_thread` は `asyncio.to_thread` の完了を待つ入口。キャンセルしてもスレッド自体は止まらないため、worker完了まで呼出元のロックを保持してからキャンセルを伝播する。記憶・違反記録・会話統計の保存はこの入口を使い、後着した保存が削除や新しい更新を上書きしないようにする。起動時の記憶ディレクトリ準備も `MemoryService.io_lock` の下で実行する。
+`background.run_in_thread` は `asyncio.to_thread` の完了を待つ入口。キャンセルしてもスレッド自体は止まらないため、worker完了まで呼出元のロックを保持してからキャンセルを伝播する。記憶・違反記録・会話統計・サーバー設定・記念日の記録の保存はこの入口を使い、後着した保存が削除や新しい更新を上書きしないようにする（ロックと組み合わせて初めて順序が守られる。ロックの無い呼び出しを置き換えるだけでは並行した保存の順序は守れない）。起動時の記憶ディレクトリ準備も `MemoryService.io_lock` の下で実行する。
 
 ### リアクションによるフィードバック収集 (`feedback_service.py`, `stats_view.py`)
 
@@ -387,7 +395,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **本文は Discord の1メッセージ上限に収める**: `_fit_to_discord_limit` が超過分を切り詰めて警告ログを出す。エフェメラルの差し替え（`edit_message`）は1通しか置き換えられないため `split_message` は使えない（View を持てるメッセージは1通だけ）。切り詰めは安全弁であり、発動したら文言を減らすこと。
 - **使い方パネル**: `HelpView` は `PanelView` を継承し、部品は ↩️ 戻る（row 0）だけ。表示のみで副作用が無いため権限制限は設けない（DM でも使える）。差し替えは `view_parts.swap_panel()`。
 - **ウェルカム投稿の配線は薄く保つ**: `on_guild_join` は「本文を組み立てて `discord_helpers.post_welcome_message` へ渡す」だけで、判断ロジックは各モジュール側にある。イベントハンドラの本体は `try/except Exception` で包む（案内の失敗でイベント処理を落とさない）。必要な `guilds` インテントは `Intents.default()` に含まれるため **`bot.py` の intents は触らない**。
-- **投稿先の決め方**（`pick_announcement_channel`）: ① `guild.system_channel` → ② `guild.text_channels` を順に走査して最初に送信できるチャンネル → ③ 見つからなければ投稿しない（`print` のログのみ）。権限は必ず `channel.permissions_for(guild.me)` で**チャンネル単位に**確認する（サーバー全体のロールで許可されていてもチャンネル個別で拒否されうる。`/join` の接続権限チェックと同じ作法）。「送ってみて失敗したら次」の例外頼みにしないこと（無駄に API を叩き、権限エラーとネットワーク障害を区別できない）。`guild.channels` は使わない（カテゴリやボイスが混ざる）。`guild.me` が `None`（キャッシュ未取得）なら権限を判定できないので諦める。
+- **投稿先の決め方**（`pick_announcement_channel`）: ① `guild.system_channel` → ② `guild.text_channels` を順に走査して最初に送信できるチャンネル → ③ 見つからなければ投稿しない（`print` のログのみ）。権限は必ず `channel.permissions_for(guild.me)` で**チャンネル単位に**、閲覧（`view_channel`）と送信（`send_messages`）の両方を確認する（サーバー全体のロールで許可されていてもチャンネル個別で拒否されうる。`/join` の接続権限チェックや自発会話と同じ作法。discord.py は閲覧できないチャンネルの送信権限も落とすが、その内部の挙動には頼らない）。「送ってみて失敗したら次」の例外頼みにしないこと（無駄に API を叩き、権限エラーとネットワーク障害を区別できない）。`guild.channels` は使わない（カテゴリやボイスが混ざる）。`guild.me` が `None`（キャッシュ未取得）なら権限を判定できないので諦める。
 - **連投防止**: `BotState.welcomed_guild_ids`（**インメモリのみ**。`auto_topic_channels` と同じ「実行時に自然に再構築される一時状態」）。`on_guild_join` は実際に招待されたときにしか発火せず再起動・再接続では発火しないため、プロセスをまたぐ重複投稿は原理的に起きない（この集合は同一プロセス内でイベントが重複した場合の保険）。**投稿済みフラグは送信を待つ前に立てること** — 送信後に立てると、その待ち時間に入ってきた2件目が二重投稿になる。DB へは持たせない（`guild_settings` に列を足すと `guild_settings_load_all` / `guild_settings_save` / `apply_persisted` / `persist` の4か所すべてを揃えて直す必要があり、1か所でも漏れると他の設定が既定値へ戻る）。
 - **ウェルカム本文に `@everyone` / `@here` / ロールメンションを絶対に書かないこと**（公開チャンネルへの投稿なので通知爆撃になる。招待→キック→再招待を繰り返されると毎回投稿される）。送信側でも `discord.AllowedMentions.none()` を付けて二重に防いでいる。個人情報・記憶・統計も載せない（参加時点でそもそもデータが無い）。
 - **フェイルオープン**: `post_welcome_message` は例外を外へ出さず、投稿できたかを `bool` で返す（`discord.Forbidden` → `discord.HTTPException` の順で捕まえる）。案内が出せなくてもボット自体は普通に使える。`WELCOME_MESSAGE_ENABLED`（`constants.py`）で投稿だけを止められ、止めても ❓ 使い方 からいつでも読める。既に招待済みのサーバーへは投稿されない（仕様として許容）。

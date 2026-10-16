@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import ANY, AsyncMock, Mock, patch
@@ -17,6 +18,7 @@ from persona_bot.core.app_state import AutonomousSession, BotState
 from persona_bot.services import autonomous_service
 from persona_bot.services.autonomous_service import AutonomousService
 from tests.helpers.message_handler_helpers import make_message_handler
+from tests.helpers.thread_probe import make_thread_probe
 
 
 class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
@@ -144,6 +146,19 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
                     self.settings.autonomous_session = None
                     self.assertFalse(is_valid())
                     self.settings.autonomous_session = self.session
+
+    async def test_all_speech_paths_load_persona_without_blocking_loop(self) -> None:
+        for kind in ("opening", "monologue", "comment"):
+            with self.subTest(kind=kind):
+                operation, threads = make_thread_probe("架空のペルソナ")
+                self.loader.side_effect = operation
+                if kind == "comment":
+                    result = await self.service.handle_comment(self.make_comment(), "架空のコメント", self.settings)
+                    self.assertEqual(result, "架空の応答")
+                else:
+                    await self.speak(kind)
+                self.assertTrue(threads)
+                self.assertNotIn(threading.get_ident(), threads)
 
     async def test_comment_uses_one_snapshot_before_typing_and_for_tts(self) -> None:
         @asynccontextmanager

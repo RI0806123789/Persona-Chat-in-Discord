@@ -20,8 +20,9 @@ DM_SETTINGS_GUILD_KEY = 0
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
 MEMORY_DIR = PROJECT_ROOT / "memory"
-# SQLite データベース本体。affinity / user_stats / queue_tasks / pending_log を格納する。
-# profile.json / projects.json は LLM が構造を決める自由形式 JSON のためファイルのまま。
+# SQLite データベース本体。親密度・統計・文書キュー・一時ログ・プロフィール・
+# サーバー設定・記念日の投稿記録・リマインダー・フィードバックの9テーブルを格納する。
+# profile.json は起動時の手書き追加用、projects.json は自由形式JSONとして保持する。
 DATABASE_PATH = MEMORY_DIR / "bot.db"
 PROFILE_MEMORY_PATH = MEMORY_DIR / "profile.json"
 PROJECTS_MEMORY_PATH = MEMORY_DIR / "projects.json"
@@ -96,6 +97,8 @@ SUMMARY_TIMEOUT_SECONDS = 120.0
 SUMMARY_TIMEZONE = "Asia/Tokyo"
 
 MAX_DOCUMENT_SIZE_BYTES = 5 * 1024 * 1024
+# 画像も取得前と取得後に容量を確認し、大きな添付の取得・デコードを見送る。
+MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".csv", ".md"}
 # マルチモーダル入力として受け付ける画像の拡張子（Content-Type が空の添付の判定用）。
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -117,11 +120,11 @@ TEXT_VALIDATION_PREVIEW_BYTES = 4096
 QUEUE_MAX_FINISHED_TASKS = 50
 MAX_GROUNDING_SOURCES = 5
 GROUNDING_MODEL_NAME = "gemini-2.5-flash"
-# timeout未指定時の検索付き生成全体の期限（秒）。REST・SDKの全段で共有する。
+# timeout未指定時の検索付き生成全体の期限（秒）。SDKの生成全段で共有する。
 GROUNDING_REQUEST_TIMEOUT_SECONDS = 60.0
 # 検索ツール非対応を示す4xxの場合だけ、GROUNDING_MODEL_NAMEで再試行するか。
-# True: 選択モデルREST → サブモデルREST → 選択モデルSDKの順で非対応を回避する。
-# False: サブモデルを省いてSDKへ進む。期限切れ・5xx・認証・利用枠エラーは再試行しない。
+# True: 選択モデル検索 → サブモデル検索 → 選択モデル検索なしの順で試す。
+# False: サブモデルを省いて検索なしへ進む。期限切れ・5xx・認証・利用枠エラーは再試行しない。
 GROUNDING_SUBMODEL_RETRY_ENABLED = True
 
 # UsageTracker が保持するトークン履歴の上限（リングバッファ）

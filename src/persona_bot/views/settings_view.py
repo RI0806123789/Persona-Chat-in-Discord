@@ -2,6 +2,7 @@ import discord
 from discord import ui
 
 from persona_bot.core.app_state import GuildSettings
+from persona_bot.core.background import run_in_thread
 from persona_bot.config.choices import (
     MODEL_CHOICES,
     MODEL_DISPLAY_NAMES,
@@ -132,8 +133,9 @@ class ConfirmButton(ui.Button):
         view: SettingsView = self.view  # type: ignore[assignment]
 
         # ペルソナのファイル存在チェック
-        if not resolve_prompt_path(view.temp_persona).exists():
-            await interaction.response.edit_message(
+        await interaction.response.defer()
+        if not await run_in_thread(lambda: resolve_prompt_path(view.temp_persona).exists()):
+            await interaction.edit_original_response(
                 content=f"エラー: ファイル「{view.temp_persona}」が見つかりませんでした。設定は変更されていません。",
                 view=None,
             )
@@ -155,7 +157,7 @@ class ConfirmButton(ui.Button):
             confirmed=True,
         )
 
-        await interaction.response.edit_message(content=confirmed_text, view=None)
+        await interaction.edit_original_response(content=confirmed_text, view=None)
         view.stop()
 
 

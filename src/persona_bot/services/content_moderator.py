@@ -10,13 +10,14 @@ from datetime import datetime
 from typing import Any
 
 from persona_bot.config.constants import (
-    MEMORY_ROUTE_CATEGORIES, MODERATION_NG_WORD_SAMPLE_LIMIT,
-    REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE,
+    MODERATION_MODEL_NAME, MODERATION_NG_WORD_SAMPLE_LIMIT, MODERATION_TIMEOUT_SECONDS,
+    REMINDER_TIMEZONE,
 )
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.genai_client import generate_content
 from persona_bot.utils.storage import extract_json_object, get_prompt_block_reason, safe_response_text
 from persona_bot.utils.timeutil import format_weekday, resolve_timezone, timezone_label
+from persona_bot.utils.normalization import normalize_memory_category, normalize_recurrence
 
 
 # ---------------------------------------------------------------------------
@@ -135,12 +136,6 @@ def _build_prompt(
     )
 
 
-def _normalize_category(value: Any) -> str:
-    """モデルが返す category を検証して正規化する。未知の値は none にフォールバックする。"""
-    category = str(value or "none").strip().lower()
-    return category if category in MEMORY_ROUTE_CATEGORIES else "none"
-
-
 def _normalize_reminder(value: Any) -> dict[str, str] | None:
     """モデルが返す reminder を検証して正規化する。形式が違えば None（依頼なし扱い）。
 
@@ -154,9 +149,7 @@ def _normalize_reminder(value: Any) -> dict[str, str] | None:
     message = str(value.get("message", "")).strip()
     if not at or not message:
         return None
-    repeat = str(value.get("repeat", "none") or "none").strip().lower()
-    if repeat not in REMINDER_RECURRENCE_VALUES:
-        repeat = "none"
+    repeat = normalize_recurrence(value.get("repeat"))
     return {"at": at, "message": message, "repeat": repeat}
 
 
@@ -172,8 +165,8 @@ class ContentModerator:
         genai_client: Any,
         ng_filter: NgWordFilter,
         *,
-        model_name: str = "gemini-3.1-flash-lite",
-        timeout: float = 10.0,
+        model_name: str = MODERATION_MODEL_NAME,
+        timeout: float = MODERATION_TIMEOUT_SECONDS,
     ) -> None:
         self._genai_client = genai_client
         self._ng_filter = ng_filter
@@ -310,7 +303,7 @@ class ContentModerator:
             # 記憶カテゴリとリマインダーは「無し」に倒す。
             return is_safe, reason, "none", None
 
-        category = _normalize_category(parsed.get("category", "none"))
+        category = normalize_memory_category(parsed.get("category", "none"))
         # 不適切と判定した入力からはリマインダーを作らない（そのまま通知文になるため）。
         reminder = _normalize_reminder(parsed.get("reminder")) if is_safe else None
         return is_safe, reason, category, reminder

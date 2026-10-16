@@ -1,6 +1,6 @@
 from discord import app_commands
 
-from persona_bot.config.constants import DEFAULT_MODEL_NAME
+from persona_bot.config.constants import DEFAULT_MODEL_NAME, DEFAULT_PROMPT_FILE, DEFAULT_RESPOND_MODE
 
 
 PERSONA_CHOICES = [
@@ -15,7 +15,7 @@ PERSONA_CHOICES = [
     app_commands.Choice(name="お姉さん", value="../prompts/prompt_ane.txt"),
     app_commands.Choice(name="はんなり", value="../prompts/prompt_kyoto.txt"),
     app_commands.Choice(name="クレーマー", value="../prompts/prompt_greed.txt"),
-    app_commands.Choice(name="標準", value="../prompts/prompt_default.txt"),
+    app_commands.Choice(name="標準", value=DEFAULT_PROMPT_FILE),
 ]
 
 MODEL_CHOICES = [
@@ -26,7 +26,7 @@ MODEL_CHOICES = [
 
 RESPOND_MODE_CHOICES = [
     app_commands.Choice(name="すべての発言に反応", value="all"),
-    app_commands.Choice(name="メンションのみに反応", value="mention"),
+    app_commands.Choice(name="メンションのみに反応", value=DEFAULT_RESPOND_MODE),
 ]
 
 # /functions → 📋 会話要約 の期間選択肢。value は「何時間さかのぼるか」を表す（1か月=30日=720時間）。
