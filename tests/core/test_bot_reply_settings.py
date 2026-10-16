@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -200,8 +200,9 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         affinity.update_emotion.assert_called_once_with("11", 1, 2)
         affinity.save_background.assert_awaited_once_with("11")
 
-    async def test_autonomous_comment_keeps_existing_voice_routing(self) -> None:
+    async def test_autonomous_comment_passes_snapshot_to_generation_and_voice(self) -> None:
         self.namespace["autonomous"].is_comment_channel.return_value = True
+        self.namespace["autonomous"].can_speak_session = Mock(return_value=True)
 
         async def comment(*args, **kwargs):
             await self.switch_at("generate")
@@ -211,9 +212,13 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         await self.on_message(self.message)
         self.namespace["gemini"].generate.assert_not_awaited()
         self.feedback.track_reply.assert_not_called()
+        settings = self.namespace["autonomous"].handle_comment.await_args.kwargs["response_settings"]
+        self.assertEqual(settings.model_name, "old-model")
+        self.assertTrue(settings.grounding_enabled)
         self.voice.assert_awaited_once_with(
-            self.message, self.response, "../prompts/prompt_maid.txt"
+            self.message, self.response, settings.prompt_file, is_valid=ANY,
         )
+        self.assertEqual(settings.prompt_file, "../prompts/prompt_default.txt")
 
 
 if __name__ == "__main__":

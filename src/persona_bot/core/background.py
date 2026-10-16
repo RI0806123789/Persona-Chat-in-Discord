@@ -88,6 +88,24 @@ async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any)
     return result
 
 
+async def wait_for_cleanup(coro: Coroutine[Any, Any, Any], *, label: str) -> Any:
+    """後片付けを別タスクで完了させ、待機中のキャンセルは完了後に伝播する。"""
+    cleanup = spawn(coro, label=label)
+    canceled = False
+    while True:
+        try:
+            result = await asyncio.shield(cleanup)
+            break
+        except asyncio.CancelledError:
+            if cleanup.cancelled():
+                raise
+            # 呼出元に繰り返しキャンセルが届いても、所有リソースを残さない。
+            canceled = True
+    if canceled:
+        raise asyncio.CancelledError
+    return result
+
+
 def make_guarded_loop(
     coro_factory: Callable[[], Coroutine[Any, Any, Any]],
     *,

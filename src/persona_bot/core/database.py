@@ -50,6 +50,7 @@ from persona_bot.config.constants import (
     STATS_HOURLY_BUCKETS,
     STATS_OPT_OUT_DEFAULT,
 )
+from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
 SCHEMA_VERSION = 9
@@ -506,9 +507,13 @@ class Database:
                 self.profile_merge(self._legacy_owner_id, data)
                 absorbed[self._legacy_owner_id] = list(data.keys())
 
-            path.write_text("{}", encoding="utf-8")
-            if absorbed:
-                print(f"データベース: profile.json の内容 {absorbed} を profile テーブルへ追加しました。")
+            if not absorbed:
+                print("データベース: profile.json に取り込めるプロフィールがありません。"
+                      "ユーザー別形式と旧形式の引継ぎ先を確認してください。ファイルを保持します。")
+                return
+
+            write_json_file(path, {})
+            print(f"データベース: profile.json の内容 {absorbed} を profile テーブルへ追加しました。")
         except json.JSONDecodeError as error:
             print(f"データベース: profile.json が JSON として読めないため取り込みをスキップします: {error}")
         except Exception as error:
