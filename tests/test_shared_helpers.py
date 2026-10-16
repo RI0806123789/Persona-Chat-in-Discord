@@ -71,9 +71,12 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
         message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=True)
         self.assertEqual([len(call.args[0]) for call in message.channel.send.call_args_list], [2000, 1])
 
-    async def test_topic_and_anniversary_use_shared_send_without_suppressing_mentions(self) -> None:
+    async def test_topic_and_anniversary_restrict_mentions_in_every_chunk(self) -> None:
         text = "あ" * 4001
-        channel = SimpleNamespace(id=10, name="架空のチャンネル", send=AsyncMock())
+        channel = SimpleNamespace(
+            id=10, name="架空のチャンネル", send=AsyncMock(), guild=SimpleNamespace(me=object()),
+            permissions_for=Mock(return_value=SimpleNamespace(view_channel=True, send_messages=True)),
+        )
         settings = SimpleNamespace(current_prompt_file="架空のパス", current_model_name="架空モデル", channel_reset_points={})
         service = AutoTopicService(
             SimpleNamespace(user=None), None, None,
@@ -88,8 +91,10 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await service._post_topic(channel, settings))
             self.assertTrue(await service._post_anniversary(channel, settings, member, "誕生日"))
         self.assertEqual([call.args[1] for call in sending.call_args_list], [text, f"<@11> {text}"])
-        self.assertTrue(all(call.kwargs == {"suppress_embeds": False, "allowed_mentions": None}
-                            for call in channel.send.call_args_list))
+        for call in channel.send.call_args_list[:3]:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), {"parse": []})
+        for call in channel.send.call_args_list[3:]:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), {"users": [11], "parse": []})
 
     async def test_reminder_keeps_mention_next_date_and_chunk_limits(self) -> None:
         channel = SimpleNamespace(send=AsyncMock())

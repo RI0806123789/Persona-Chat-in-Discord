@@ -55,23 +55,32 @@ class ReminderRegistrationTests(unittest.IsolatedAsyncioTestCase):
     async def check_last_slot(self, *, mixed: bool) -> None:
         for _ in range(REMINDER_MAX_PENDING_PER_USER - 1):
             self.add_record()
-        original_count = self.db.reminder_count_pending
+        original_add = self.db.reminder_add
         barrier = threading.Barrier(2)
+        inserted_ids = []
 
-        def synchronized_count(user_id):
-            # 旧実装では両方に19件を読ませてから登録へ進ませ、競合を確実に再現する。
-            count = original_count(user_id)
+        def synchronized_add(**kwargs):
+            # 実際の登録入口に両スレッドが到達してから、最後の1枠を取り合う。
             barrier.wait(timeout=5)
-            return count
+            reminder_id = original_add(**kwargs)
+            inserted_ids.append(reminder_id)
+            return reminder_id
 
-        with patch.object(self.db, "reminder_count_pending", side_effect=synchronized_count):
-            results = await asyncio.gather(
-                self.register(),
-                self.register(guild_id=None if mixed else 1, recurrence="weekly" if mixed else "none"),
+        with patch.object(self.db, "reminder_add", side_effect=synchronized_add) as add:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    self.register(),
+                    self.register(guild_id=None if mixed else 1, recurrence="weekly" if mixed else "none"),
+                ),
+                timeout=10,
             )
+        self.assertEqual(add.call_count, 2)
+        self.assertFalse(barrier.broken)
+        self.assertEqual(len(inserted_ids), 2)
+        self.assertEqual(sum(reminder_id is not None for reminder_id in inserted_ids), 1)
         self.assertEqual(sum("お知らせします" in (result or "") for result in results), 1)
         self.assertEqual(sum("1人あたり" in (result or "") for result in results), 1)
-        self.assertEqual(original_count("11"), REMINDER_MAX_PENDING_PER_USER)
+        self.assertEqual(self.db.reminder_count_pending("11"), REMINDER_MAX_PENDING_PER_USER)
 
     async def test_last_slot_accepts_only_one_concurrent_request(self) -> None:
         await self.check_last_slot(mixed=False)
@@ -137,7 +146,12 @@ class ReminderRegistrationTests(unittest.IsolatedAsyncioTestCase):
             barrier.wait(timeout=5)
             return self.add_record(db=db)
 
-        results = await asyncio.gather(asyncio.to_thread(add, self.db), asyncio.to_thread(add, other_db))
+        results = await asyncio.wait_for(
+            asyncio.gather(asyncio.to_thread(add, self.db), asyncio.to_thread(add, other_db)),
+            timeout=10,
+        )
+        self.assertFalse(barrier.broken)
+        self.assertEqual(len(results), 2)
         self.assertEqual(sum(result is not None for result in results), 1)
         self.assertEqual(self.db.reminder_count_pending("11"), REMINDER_MAX_PENDING_PER_USER)
 

@@ -271,9 +271,15 @@ class Database:
     def initialize(self) -> None:
         """テーブル作成 → スキーマ移行 → 旧行の owner 移行 → 旧ファイル取り込み → profile.json 吸収。起動時に1回呼ぶ。"""
         with self._lock, self._conn:
+            # DDL と PRAGMA は自動ではトランザクションを開始しないため明示する。
+            # スキーマと user_version をまとめて確定し、途中失敗時はすべて元へ戻す。
+            self._conn.execute("BEGIN IMMEDIATE")
             for statement in _CREATE_TABLE_STATEMENTS:
                 self._conn.execute(statement)
-            self._apply_migrations()
+            applied_versions = self._apply_migrations()
+        # 途中失敗で取り消された移行を、成功したように記録しない。
+        for version in applied_versions:
+            print(f"データベース: スキーマをバージョン {version} へ移行しました。")
         self._migrate_legacy_profile_rows()
         self._import_legacy_files()
         self._absorb_profile_json()
@@ -283,9 +289,10 @@ class Database:
 
     # ---- スキーマ移行 -------------------------------------------------------
 
-    def _apply_migrations(self) -> None:
-        """PRAGMA user_version と SCHEMA_VERSION を比べ、未適用の移行だけを実行する。"""
+    def _apply_migrations(self) -> list[int]:
+        """呼出元の明示トランザクション内で未適用の移行を実行し、変更した版を返す。"""
         current = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        applied_versions = []
         for version in range(current + 1, SCHEMA_VERSION + 1):
             for statement in _MIGRATIONS.get(version, []):
                 self._conn.execute(statement)
@@ -293,7 +300,8 @@ class Database:
             # version は range() 由来の int なのでインジェクションの心配はない。
             self._conn.execute(f"PRAGMA user_version = {version}")
             if _MIGRATIONS.get(version):
-                print(f"データベース: スキーマをバージョン {version} へ移行しました。")
+                applied_versions.append(version)
+        return applied_versions
 
     def _migrate_legacy_profile_rows(self) -> None:
         """ユーザー別記憶への移行の後始末（冪等）。

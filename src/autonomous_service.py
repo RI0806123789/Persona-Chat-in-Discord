@@ -37,7 +37,6 @@ VoiceClient を持たせない。持たせると、管理者にキックされ�
 """
 
 import asyncio
-import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,12 +44,18 @@ import discord
 
 from affinity_service import strip_affinity_tag
 from app_state import AutonomousSession, BotState, GuildSettings
+
+# パネルからの既存importも維持し、計算本体はDiscordを使わないモジュールへ置く。
+from autonomous_metrics import (
+    compute_talk_desire,
+    describe_quiet_hours,
+    is_quiet_hours,
+    start_retry_wait_minutes,
+    updated_activity_samples,
+)
+import autonomous_stage
 from background import spawn
 from constants import (
-    AUTONOMOUS_ACTIVITY_BONUS_MAX,
-    AUTONOMOUS_ACTIVITY_BONUS_PER_MESSAGE,
-    AUTONOMOUS_ACTIVITY_SAMPLES_MAX,
-    AUTONOMOUS_ACTIVITY_WINDOW_MINUTES,
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
     AUTONOMOUS_CLOSING_NOTICE_MOVED,
@@ -63,17 +68,9 @@ from constants import (
     AUTONOMOUS_IDLE_STOP_MINUTES,
     AUTONOMOUS_IMAGE_ONLY_COMMENT,
     AUTONOMOUS_OPENING_NOTICE,
-    AUTONOMOUS_QUIET_HOURS_END,
-    AUTONOMOUS_QUIET_HOURS_START,
     AUTONOMOUS_SESSION_MAX_MINUTES,
-    AUTONOMOUS_STAGE_TOPIC,
-    AUTONOMOUS_START_RETRY_COOLDOWN_MINUTES,
-    AUTONOMOUS_START_RETRY_MAX_MULTIPLIER,
     AUTONOMOUS_TALK_INTERVAL_MINUTES,
     AUTONOMOUS_TIMEOUT_SECONDS,
-    AUTONOMOUS_TIMEZONE,
-    AUTONOMOUS_VOICE_STATE_RETRIES,
-    AUTONOMOUS_VOICE_STATE_WAIT_SECONDS,
 )
 from content_moderator import ContentModerator, screen_bot_response
 from discord_helpers import (
@@ -90,7 +87,6 @@ from prompting import (
     build_autonomous_opening_prompt,
     build_autonomous_reply_prompt,
 )
-from timeutil import resolve_timezone, timezone_label
 from usage_graph import UsageTracker
 from voice import speak_text
 
@@ -98,65 +94,6 @@ from voice import speak_text
 # ないため、メンションらしき文字列が混じっても通知爆撃にしないための保険。
 # （コメントへの応答だけは reply でコメント主に通知する。）
 _NO_MENTIONS = discord.AllowedMentions.none()
-
-# ボイス/ステージのどちらでも受け取れるチャンネル型。
-VocalChannel = discord.VoiceChannel | discord.StageChannel
-
-# 深夜の抑制に使うタイムゾーン。**import 時に1回だけ解決する。**
-# resolve_timezone は失敗時に警告を出すため、パネル表示のたびに呼ぶとログが溢れる。
-# サービスのインスタンスからもパネル表示（describe_quiet_hours）からも同じものを使う。
-_QUIET_HOURS_TZ = resolve_timezone(AUTONOMOUS_TIMEZONE, purpose="自律行動の時間帯制限")
-
-
-def describe_quiet_hours() -> str:
-    """自律行動を止める時間帯の表示文字列（例: "00:00〜05:59（Asia/Tokyo）"）。
-
-    抑制が無効（開始と終了が同じ値）なら空文字を返す。
-
-    **タイムゾーン名は定数ではなく `timezone_label` で作ること。**
-    `resolve_timezone` は tzdata の無い環境で UTC へフォールバックするため、
-    定数をそのまま表示すると「実際は UTC の 00:00〜05:59（＝日本時間の
-    09:00〜14:59）なのに Asia/Tokyo と名乗る」という食い違いが起きる。
-    """
-    if AUTONOMOUS_QUIET_HOURS_START == AUTONOMOUS_QUIET_HOURS_END:
-        return ""
-    end_hour = (AUTONOMOUS_QUIET_HOURS_END - 1) % 24
-    return (
-        f"{AUTONOMOUS_QUIET_HOURS_START:02d}:00〜{end_hour:02d}:59"
-        f"（{timezone_label(_QUIET_HOURS_TZ)}）"
-    )
-
-
-def compute_talk_desire(guild_settings: GuildSettings, *, now: datetime | None = None) -> float:
-    """そのサーバーの「話したいゲージ」（0〜100）を計算する。
-
-    基礎値は無会話時間に比例して増え、`auto_topic_interval_hours` で 100 に届く
-    （自発会話のしきい値をそのまま「ゲージが満タンになるまでの時間」として
-    共用する。設定項目を増やさず、パネル1枚で完結させるため）。
-    そこへ「直近の会話の活発さ」を加点する — 人が集まっているサーバーほど
-    早く話したくなる、という `idea.md` の「直近の会話状況から値を決める」部分。
-
-    **人間の発言をまだ一度も観測していないサーバーでは 0 を返す。** これにより
-    「招待されただけで誰とも話していないサーバー」や「再起動直後」に、いきなり
-    ボイスチャンネルへ入り込むことがない（観測は `mark_activity` が行う）。
-
-    パネル表示（`auto_topic_view`）からも呼べるよう、サービスのインスタンスに
-    依存しないモジュール関数にしてある。
-    """
-    now = now if now is not None else datetime.now(timezone.utc)
-    last_activity = guild_settings.autonomous_last_activity
-    if last_activity is None:
-        return 0.0
-
-    full_minutes = max(1.0, guild_settings.auto_topic_interval_hours * 60.0)
-    silence_minutes = max(0.0, (now - last_activity).total_seconds() / 60.0)
-    base = 100.0 * silence_minutes / full_minutes
-
-    window_start = now - timedelta(minutes=AUTONOMOUS_ACTIVITY_WINDOW_MINUTES)
-    recent_count = sum(1 for at in guild_settings.autonomous_recent_activity if at >= window_start)
-    bonus = min(AUTONOMOUS_ACTIVITY_BONUS_MAX, recent_count * AUTONOMOUS_ACTIVITY_BONUS_PER_MESSAGE)
-
-    return max(0.0, min(100.0, base + bonus))
 
 
 class AutonomousService:
@@ -186,8 +123,6 @@ class AutonomousService:
         self._moderator = moderator
         self._ng_filter = ng_filter
         self._usage = usage
-        # 解決はモジュール読み込み時に1回だけ（describe_quiet_hours と同じものを使う）。
-        self._tz = _QUIET_HOURS_TZ
 
     # ==========================================================================
     # on_message から呼ばれる入口
@@ -219,12 +154,9 @@ class AutonomousService:
         now = datetime.now(timezone.utc)
         guild_settings.autonomous_last_activity = now
 
-        # 時間窓の外へ出た分を落としてから追加する（放っておくと際限なく伸びる）。
-        window_start = now - timedelta(minutes=AUTONOMOUS_ACTIVITY_WINDOW_MINUTES)
-        samples = [at for at in guild_settings.autonomous_recent_activity if at >= window_start]
-        samples.append(now)
-        # 極端に発言が多いサーバーでもメモリを食わないよう件数でも頭打ちにする。
-        guild_settings.autonomous_recent_activity = samples[-AUTONOMOUS_ACTIVITY_SAMPLES_MAX:]
+        guild_settings.autonomous_recent_activity = updated_activity_samples(
+            guild_settings.autonomous_recent_activity, now=now,
+        )
 
         session = guild_settings.autonomous_session
         if session is not None and session.channel_id == channel_id:
@@ -422,7 +354,7 @@ class AutonomousService:
 
         if not guild_settings.autonomous_enabled:
             return
-        if self._is_quiet_hours():
+        if is_quiet_hours():
             return
         # /join で人が呼んだ接続を横取りしない（読み上げ用に呼ばれている最中かもしれない）。
         if guild.voice_client is not None:
@@ -472,7 +404,7 @@ class AutonomousService:
                 guild.id, reason="設定が無効化されました", notice=AUTONOMOUS_CLOSING_NOTICE_DISABLED
             )
             return
-        if self._is_quiet_hours():
+        if is_quiet_hours():
             await self.stop_session(
                 guild.id, reason="時間帯制限（深夜）", notice=AUTONOMOUS_CLOSING_NOTICE_QUIET
             )
@@ -508,7 +440,7 @@ class AutonomousService:
         失敗した経路では必ず `_record_start_failure` を通すこと。ゲージは失敗しても
         満タンのままなので、記録しないと次の見回り（1分後）で同じ失敗を繰り返す。
         """
-        channel = self._pick_channel(guild)
+        channel = autonomous_stage.pick_channel(guild)
         if channel is None:
             # 出ていける先が無いサーバー（権限不足・ボイスチャンネルが無いなど）。
             # ここは API を1回も叩かず、チャンネル一覧の権限を見るだけなので
@@ -535,12 +467,12 @@ class AutonomousService:
         stage_instance_id = None
         if is_stage:
             try:
-                stage_instance_id = await self._prepare_stage(guild, channel)
+                stage_instance_id = await autonomous_stage.prepare_stage(guild, channel)
             except Exception as error:
                 # 発言者になれないステージで喋っても誰にも聞こえないため、
                 # 中途半端に居座らず接続ごと諦める。
                 print(f"自律行動: ステージ({channel.name})の準備に失敗しました（{type(error).__name__}: {error}）。")
-                await self._disconnect(guild)
+                await autonomous_stage.disconnect(guild)
                 self._record_start_failure(guild_settings)
                 return
 
@@ -581,69 +513,12 @@ class AutonomousService:
         解除される（設定を直した直後に試せるようにするため）。
         """
         guild_settings.autonomous_start_failures += 1
-        multiplier = min(guild_settings.autonomous_start_failures, AUTONOMOUS_START_RETRY_MAX_MULTIPLIER)
-        wait_minutes = AUTONOMOUS_START_RETRY_COOLDOWN_MINUTES * multiplier
+        wait_minutes = start_retry_wait_minutes(guild_settings.autonomous_start_failures)
         guild_settings.autonomous_start_retry_at = datetime.now(timezone.utc) + timedelta(minutes=wait_minutes)
         print(
             f"自律行動: 配信の開始に失敗しました（連続 {guild_settings.autonomous_start_failures} 回目）。"
             f"次に試すのは約 {wait_minutes:.0f} 分後です。"
         )
-
-    async def _prepare_stage(self, guild: discord.Guild, channel: discord.StageChannel) -> int | None:
-        """ステージで発言できる状態にし、自分で開いた枠のIDを返す。
-
-        ステージチャンネルは参加しただけでは「観客」（suppress=True）のままで
-        音声を流せない。自分の抑制を解除するには mute_members 権限が要る。
-        ステージ枠（StageInstance）がまだ無ければ自分で開く — その看板（topic）が
-        チャンネル一覧に出るので、「会話相手募集中…」を人に見せる手段にもなる。
-        他の人が開いた枠に相乗りした場合は None を返し、終了時にも閉じない。
-        """
-        created_instance = None
-        if channel.instance is None:
-            created_instance = await channel.create_instance(
-                topic=AUTONOMOUS_STAGE_TOPIC,
-                privacy_level=discord.PrivacyLevel.guild_only,
-                # **send_start_notification を True にしないこと。** True にすると
-                # Discord が「ステージが始まりました」という @everyone 相当の通知を
-                # サーバー全体へ送る。ボットが自分の判断で何度も配信を始める機能で
-                # これを有効にすると、そのたびに全員へ通知が飛ぶ（通知爆撃になる）。
-                send_start_notification=False,
-                reason="ボットの自律行動による配信開始",
-            )
-
-        try:
-            # connect() 直後は自分のボイス状態がまだキャッシュに乗っておらず、
-            # Member.edit(suppress=False) が channel_id を載せられずに失敗しうる。
-            # 見えるまで少しだけ待ってから呼ぶ。
-            member = guild.me
-            for _ in range(AUTONOMOUS_VOICE_STATE_RETRIES):
-                if member is not None and member.voice is not None and member.voice.channel is not None:
-                    break
-                await asyncio.sleep(AUTONOMOUS_VOICE_STATE_WAIT_SECONDS)
-                member = guild.me
-            # 待っても見えなかった場合はここで諦める。そのまま edit すると
-            # channel_id を載せられないリクエストになり、API 側のエラーメッセージが
-            # 「権限不足」などに化けて原因が追えなくなる。
-            if member is None or member.voice is None or member.voice.channel is None:
-                raise RuntimeError(
-                    "ボイス状態を取得できず、ステージの発言者になれませんでした"
-                    f"（{AUTONOMOUS_VOICE_STATE_RETRIES} 回待機）。"
-                )
-            await member.edit(suppress=False)
-        except Exception:
-            # 枠を開いた後で発言者になれなかった場合、そのまま抜けると「会話相手
-            # 募集中…」の看板を出したステージが誰も居ないまま開きっぱなしになる。
-            # 自分で開いた枠だけは閉じてから、失敗を呼び出し元へ伝える。
-            if created_instance is not None:
-                instance = channel.instance
-                if instance is None or instance.id == created_instance.id:
-                    try:
-                        await created_instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
-                    except discord.HTTPException as error:
-                        print(f"自律行動: 中止時のステージ枠の終了に失敗しました（{channel.name}）: {error}")
-            raise
-
-        return created_instance.id if created_instance is not None else None
 
     async def stop_session(
         self,
@@ -693,7 +568,7 @@ class AutonomousService:
             canceled = True
         finally:
             cleanup = spawn(
-                self._finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
+                autonomous_stage.finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
                 label="自律行動の終了後片付け",
             )
             while True:
@@ -711,40 +586,6 @@ class AutonomousService:
             raise asyncio.CancelledError
         return True
 
-    async def _finish_session_cleanup(
-        self, guild_id: int, guild_settings: GuildSettings, session: AutonomousSession,
-        channel: Any, guild: discord.Guild | None, voice_client: discord.VoiceProtocol | None,
-    ) -> None:
-        """呼出元のキャンセルから独立して、所有枠の終了と元の接続の切断を完了する。"""
-        try:
-            await self._close_owned_stage(guild_id, guild_settings, session, channel)
-        finally:
-            # 新しい配信に同じVoiceClientが引き継がれた場合も、その配信を優先する。
-            if guild is not None and voice_client is not None and guild_settings.autonomous_session is None:
-                await self._disconnect(guild, expected_voice_client=voice_client)
-
-    async def _close_owned_stage(
-        self, guild_id: int, guild_settings: GuildSettings,
-        session: AutonomousSession, channel: Any,
-    ) -> None:
-        """自分が開いた枠だけを閉じる。待機中に始まった別の配信には触らない。"""
-        if (not session.stage_started_by_bot or session.stage_instance_id is None
-                or not isinstance(channel, discord.StageChannel)
-                or guild_settings.autonomous_session is not None):
-            return
-        try:
-            instance = channel.instance
-            if instance is None:
-                # 作成直後やキック後はキャッシュに枠が無くても、Discord上には残りうる。
-                instance = await channel.fetch_instance()
-            if (guild_settings.autonomous_session is None
-                    and instance.id == session.stage_instance_id):
-                await instance.delete(reason="ボットの自律行動による配信終了")
-        except discord.HTTPException as error:
-            print(f"自律行動: ステージ枠の終了に失敗しました（guild={guild_id}）: {error}")
-        except Exception as error:
-            print(f"自律行動: ステージ枠の終了で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
-
     def _clear_session(self, guild_settings: GuildSettings) -> None:
         """セッション記録を破棄し、「話したいゲージ」を空にする。
 
@@ -754,18 +595,6 @@ class AutonomousService:
         guild_settings.autonomous_session = None
         guild_settings.autonomous_last_activity = datetime.now(timezone.utc)
         guild_settings.autonomous_recent_activity.clear()
-
-    async def _disconnect(
-        self, guild: discord.Guild, *, expected_voice_client: discord.VoiceProtocol | None = None,
-    ) -> None:
-        """ボイス接続を切る（既に切れていても例外を外へ出さない）。"""
-        voice_client = guild.voice_client
-        if voice_client is None or (expected_voice_client is not None and voice_client is not expected_voice_client):
-            return
-        try:
-            await voice_client.disconnect(force=True)
-        except Exception as error:
-            print(f"自律行動: ボイス切断に失敗しました（guild={guild.id}）: {error}")
 
     # ==========================================================================
     # 発話（第一声・独り言）
@@ -915,77 +744,3 @@ class AutonomousService:
     @staticmethod
     def _channel_label(channel: Any) -> str:
         return getattr(channel, "name", None) or f"channel {getattr(channel, 'id', '不明')}"
-
-    def _is_quiet_hours(self) -> bool:
-        """いま自律行動を禁止する時間帯（既定 00:00〜05:59）かどうかを返す。
-
-        ゲージは無会話時間で増えるため、誰も居ない深夜ほど早く満タンになる。
-        寝ている間にボイスチャンネルで喋り続けないための歯止め（idea.md の制限）。
-        開始 > 終了（例: 22時〜6時）のように日をまたぐ指定にも対応する。
-        """
-        start = AUTONOMOUS_QUIET_HOURS_START
-        end = AUTONOMOUS_QUIET_HOURS_END
-        if start == end:
-            return False  # 同じ値なら制限なしとして扱う
-        hour = datetime.now(self._tz).hour
-        if start < end:
-            return start <= hour < end
-        return hour >= start or hour < end
-
-    def _pick_channel(self, guild: discord.Guild) -> VocalChannel | None:
-        """出ていく先のチャンネルを1つ選ぶ。ステージを優先し、無ければボイスから選ぶ。
-
-        候補が複数あればランダムに選ぶ（毎回同じ場所へ出ると単調になるため）。
-
-        権限は必ず `permissions_for(guild.me)` で**チャンネル単位に**確認する。
-        サーバー全体のロールで許可されていても、チャンネル個別の設定で拒否
-        されていることがあるため（`/join` の接続権限チェックと同じ作法）。
-        「入ってみて失敗したら次」にしないのは、無駄に API を叩くうえ、
-        権限エラーとネットワーク障害を区別できなくなるため。
-        """
-        bot_member = guild.me
-        if bot_member is None:
-            # キャッシュ未取得などで自分自身の Member が引けないときは権限を判定できない。
-            return None
-
-        stages = [c for c in guild.stage_channels if self._can_use_stage(c, bot_member)]
-        if stages:
-            return random.choice(stages)
-        voices = [c for c in guild.voice_channels if self._can_use_voice(c, bot_member)]
-        if voices:
-            return random.choice(voices)
-        return None
-
-    @staticmethod
-    def _can_use_voice(channel: discord.VoiceChannel, bot_member: discord.Member) -> bool:
-        """そのボイスチャンネルで配信できるか。
-
-        独り言はチャンネル付属のチャットにも投稿し、そこがコメントの受付口にも
-        なるため、接続・発話だけでなく閲覧と送信の権限も要る。
-        """
-        permissions = channel.permissions_for(bot_member)
-        return bool(
-            permissions.view_channel
-            and permissions.connect
-            and permissions.speak
-            and permissions.send_messages
-        )
-
-    @staticmethod
-    def _can_use_stage(channel: discord.StageChannel, bot_member: discord.Member) -> bool:
-        """そのステージチャンネルで発言者として配信できるか。
-
-        ステージは参加しただけでは観客（suppress=True）で音声を流せず、
-        自分の抑制を解除するには mute_members が要る。さらにステージ枠が
-        まだ無ければ自分で開く必要があり、それにはステージモデレーターの
-        3権限（manage_channels / mute_members / move_members）が要る。
-        条件を満たさないステージは候補から外す（入っても喋れないため）。
-        """
-        permissions = channel.permissions_for(bot_member)
-        if not (permissions.view_channel and permissions.connect and permissions.send_messages):
-            return False
-        if not permissions.mute_members:
-            return False
-        if channel.instance is None and not (permissions.manage_channels and permissions.move_members):
-            return False
-        return True

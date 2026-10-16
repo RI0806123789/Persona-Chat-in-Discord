@@ -28,7 +28,7 @@ class PanelView(ui.View):
     def __init__(self, *, timeout: float = VIEW_TIMEOUT_SECONDS, timeout_notice: str) -> None:
         super().__init__(timeout=timeout)
         # タイムアウト時に UI を取り除くためのパネルメッセージ参照（送信後に設定される）。
-        self.message: discord.Message | None = None
+        self.message: discord.InteractionMessage | None = None
         # タイムアウトしたときにユーザーへ表示する文言（パネルごとに変える）。
         self.timeout_notice: str = timeout_notice
 
@@ -87,9 +87,10 @@ class BackButton(ui.Button):
 
         hub = make_hub()
         await interaction.response.edit_message(content=hub.build_preview(), view=hub)
-        hub.message = interaction.message
         if view is not None:
             view.stop()
+        # エフェメラルはチャンネル経由では編集できないためWebhookの参照を保持する。
+        hub.message = await interaction.original_response()
 
 
 async def swap_panel(
@@ -110,12 +111,11 @@ async def swap_panel(
         content:     差し替え後のメッセージ本文（通常は panel.build_preview()）。
     """
     await interaction.response.edit_message(content=content, view=panel)
-    # タイムアウト時に UI を取り除けるよう、差し替え先へメッセージ参照を引き継ぐ。
-    panel.message = interaction.message
     # ハブは役目を終えたので停止する。止めないとハブのタイムアウト処理が
     # 後からメッセージを誤って上書きする（同じメッセージを共有しているため、
     # 表示中のサブパネルが「機能パネルは時間切れです」に化けてしまう）。
     hub.stop()
+    panel.message = await interaction.original_response()
 
 
 async def send_graph_ephemeral(

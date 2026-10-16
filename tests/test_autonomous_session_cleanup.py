@@ -14,6 +14,7 @@ import discord
 
 from app_state import AutonomousSession, BotState
 import autonomous_service
+import autonomous_stage
 from autonomous_service import AutonomousService
 from background import spawn
 
@@ -336,13 +337,34 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.guild.me = SimpleNamespace(
             voice=SimpleNamespace(channel=self.channel), edit=AsyncMock(),
         )
-        self.service._pick_channel = Mock(return_value=self.channel)
         self.service._speak_opening = AsyncMock()
-        await self.service._start_session(self.guild, self.settings)
+        with patch.object(autonomous_stage, "pick_channel", return_value=self.channel):
+            await self.service._start_session(self.guild, self.settings)
         session = self.settings.autonomous_session
         self.assertIsNotNone(session)
         self.assertTrue(session.stage_started_by_bot)
         self.assertEqual(getattr(session, "stage_instance_id", None), self.instance.id)
+
+    async def test_failed_stage_start_disconnects_and_waits_without_resetting_gauge(self) -> None:
+        self.settings.autonomous_session = None
+        self.channel.connect = AsyncMock()
+        self.channel.instance = None
+        self.channel.create_instance = AsyncMock(return_value=self.instance)
+        self.guild.me = SimpleNamespace(
+            voice=SimpleNamespace(channel=self.channel),
+            edit=AsyncMock(side_effect=RuntimeError("架空の発言権限エラー")),
+        )
+        last_activity = self.settings.autonomous_last_activity
+        before = datetime.now(timezone.utc)
+        with patch.object(autonomous_stage, "pick_channel", return_value=self.channel):
+            await self.service._start_session(self.guild, self.settings)
+        self.assertIsNone(self.settings.autonomous_session)
+        self.assertEqual(self.settings.autonomous_start_failures, 1)
+        self.assertGreaterEqual(self.settings.autonomous_start_retry_at, before + timedelta(minutes=30))
+        self.assertEqual(self.settings.autonomous_last_activity, last_activity)
+        self.assertEqual(self.settings.autonomous_recent_activity, [self.now])
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
 
 
 if __name__ == "__main__":

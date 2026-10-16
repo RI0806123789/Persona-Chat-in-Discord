@@ -145,6 +145,8 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ### データベース (`database.py`)
 
+スキーマ初期化では `BEGIN IMMEDIATE` で明示的にトランザクションを開始し、初版テーブルの作成・全未適用DDL・`PRAGMA user_version` を同時に確定する。DDLは接続のコンテキストマネージャーだけでは自動でトランザクションを開始しないため、この開始処理を外さないこと。途中失敗時は開始前のスキーマと版へ戻り、再起動で再試行する。移行成功のログはコミット後に出す。
+
 SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先。SQL 文はすべて `database.py` に集約されている。テーブルは9つ: `affinity`（親密度・感情）、`user_stats`（会話統計）、`queue_tasks`（文書処理キュー）、`pending_log`（記憶圧縮前の一時ログ。`user_id` 列でユーザー別）、`profile`（プロフィール記憶。`(user_id, key)` の複合主キーでユーザー別。値は JSON 文字列）、`guild_settings`（サーバーごとの設定。`guild_id` が主キー。DM は `DM_SETTINGS_GUILD_KEY`＝`0`。**保存は `INSERT OR REPLACE` による行の総入れ替え**なので、列を足したら `guild_settings_load_all` / `guild_settings_save` / `GuildSettings.apply_persisted` / `GuildSettings.persist` の4か所を必ず揃えて直すこと — 1か所でも漏らすと設定を保存するたびにその項目が既定値へ黙って戻る）、`anniversary_posts`（記念日のお祝い投稿記録。`(guild_id, user_id, label)` が主キー）、`reminders`（リマインダー。`status` は `pending`/`done`/`canceled`。見回り用に `(status, remind_at)` の索引つき。`recurrence` は `none`/`daily`/`weekly`/`monthly` で、繰り返しは通知後も `pending` のまま `remind_at` だけが進む）、`feedback`（返信への 👍👎 評価。`(message_id, user_id)` が主キーで押し替えは上書き。集計用に `(guild_id, created_at)` の索引つき）。`projects.json` は LLM が構造を自由に決めるため、テーブル化せず JSON ファイルのまま（ただし `{"_schema": "per_user_v1", "users": {user_id: {...}}}` の形でユーザー別に束ねる）。**`affinity`/`user_stats`/`profile`/`pending_log`/`projects.json` はすべて `user_id` で分離され、記憶は完全にユーザーごとに独立している**（他人の記憶が混ざらない＝プライバシー保護）。
 
 - **スキーマ変更の手順**: `SCHEMA_VERSION` を1つ上げて `_MIGRATIONS` にそのバージョンの SQL 文を追記する。適用済みバージョンは `PRAGMA user_version` に記録され、起動時に未適用分だけが実行される。`_CREATE_TABLE_STATEMENTS`（初版の形）は変更禁止 — 変更は必ず `_MIGRATIONS` 側で行う（実例: バージョン2 = `profile` テーブル追加、バージョン3 = `profile` の複合主キー化＋`pending_log.user_id` 追加、バージョン4 = `guild_settings` / `anniversary_posts` テーブル追加、バージョン5 = `reminders` テーブル追加、バージョン6 = `reminders` へ繰り返し列（`recurrence` / `recurrence_anchor`）追加、バージョン7 = `feedback` テーブル＋索引追加、バージョン8 = `user_stats` へ統計収集の停止列（`stats_opt_out`）追加、バージョン9 = `guild_settings` へ自律行動の有効/無効列（`autonomous_enabled`）追加）。**`SCHEMA_VERSION` は自分が追加した分ちょうどまでしか上げないこと** — 番号を飛ばすと、後から埋めた小さいバージョンは `user_version` が既に先へ進んでいるため永久に実行されない。
@@ -180,7 +182,7 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 アップロード・削除は `client.aio.files`、文書要約は共通の生成入口を使う。PDFは `application/pdf`、txt/csv/mdは `text/plain` を明示し、ファイル転送にも全体の期限を設ける。factoryは公開HTTPXクライアントを指定し、aiohttp経路のSDK独自再送を避ける。転送transportはuploadコマンドの応答に必須の状態ヘッダーがない場合、応答を閉じて明示的に失敗させる。これによりSDK内の同期sleep・再送を防ぎ、イベントループと期限管理を保つ。SDKのprivate実装は上書きしない。
 
-Geminiのテキストは `storage.safe_response_text` から取得する。空候補・プロンプトや候補の安全ブロックでは本文を返さず、思考パートはSDKの本文取得で除外される。`get_prompt_block_reason` は新SDKの文字列enumと旧形式の数値enumを区別し、未指定をブロックと誤認しない。モデルのJSONは `storage.extract_json_object` でフェンス除去とネストを扱ってパースする。
+Geminiのテキストは `storage.safe_response_text` から取得する。空候補・プロンプトや候補の安全ブロックでは本文を返さず、思考パートはSDKの本文取得で除外される。`get_prompt_block_reason` は新SDKの文字列enumと旧形式の数値enumを区別し、未指定をブロックと誤認しない。モデルのJSONは `storage.extract_json_object` でコードブロックを優先し、ネスト・文字列内の括弧を標準パーサーで処理する。不正候補の後も走査し、モデレーションは `required_keys=("safe",)` で説明中の別形式のJSON例を除外する。
 
 ### 親密度 / 感情 (`affinity_service.py`)
 
@@ -229,9 +231,13 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
 
+サブパネルへの遷移とハブ復帰では、古いViewを停止して `await interaction.original_response()` の `InteractionMessage` を新しいViewへ渡す。通常の `interaction.message` を保持すると、エフェメラルUIのタイムアウト編集がチャンネル経由になり404で失敗する。
+
 `/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間にそのサーバーの `GuildSettings.grounding_enabled` を反転して保存する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。
 
 ### 自発的な会話 (`auto_topic_service.py`, `auto_topic_view.py`)
+
+自動投稿は生成前に `_can_send` でチャンネル単位の閲覧・送信権限を確認する。スレッドでは `send_messages_in_threads` を使い、DM・ボットのMember未取得時も生成を見送る。事前の権限不足は記録せず、復旧後の見回りで再試行する。生成中の権限変更による `Forbidden` は話題提供の処理済み時刻を記録し、次に人間が発言するまでAPIの再実行を抑える。話題提供は `AllowedMentions.none()`、記念日は対象Memberだけを許可し、全体・ロール・他ユーザーへの通知を抑止する。
 
 一定時間会話が無いテキストチャンネルへ、過去の話題をもとにボットから話題提供する機能。デフォルトは**無効**で、`/functions` → **💬 自発会話** の `AutoTopicView`（間隔セレクト + ON/OFF トグル2つ + 確定/戻る。確定まで `GuildSettings` を変更しない）から有効化する。**設定・監視状態はサーバーごとに独立している。**しきい値は `AUTO_TOPIC_INTERVAL_CHOICES`（1/3/6/12/24時間、`choices.py`）から選ぶ。
 
@@ -243,12 +249,14 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **状態の保存範囲**: 有効/無効としきい値は DB（`guild_settings` テーブル）に永続化され再起動後も維持される。監視チャンネル（`auto_topic_channels`）と投稿記録（`auto_topic_posted_at`）はインメモリのみで、再起動後はそのチャンネルでボットが再び会話に参加した時点から監視が始まる。
 - **自律行動との競合抑止**: `_run_pending_checks_for_guild` は、そのサーバーで自律行動の配信が進行中（`GuildSettings.autonomous_session is not None`）なら**何もせずに戻る**。両方が有効なサーバーでは、しきい値を共用する都合で「無会話が続いた瞬間」に両方が同時に発火しうる。ボイスで独り言を始めながらテキストにも話しかけると、どちらに応えればよいのか分からずうるさいだけになるため、既に自分から喋っている間は話題提供の側を黙らせる。この判定を外さないこと。
 
-### 自律行動（ボイス/ステージでの「配信」） (`autonomous_service.py`, `auto_topic_view.py`)
+### 自律行動（ボイス/ステージでの「配信」） (`autonomous_service.py`, `autonomous_metrics.py`, `autonomous_stage.py`, `auto_topic_view.py`)
+
+`AutonomousService` は見回り・コメント処理・発話・停止の統括を担当する。ゲージ・活動窓・深夜判定・開始失敗の待ち時間はDiscordに依存しない `autonomous_metrics.py`、チャンネル選択・発言権・所有ステージ枠の終了・接続の切断は `autonomous_stage.py` に分離している。`compute_talk_desire` / `describe_quiet_hours` は既存のパネルとの互換性のためサービスからも再公開する。終了処理のタスク生成とキャンセル伝播はサービス、枠IDと接続の参照照合はステージヘルパーの責務とする。
 
 **ボットが自分の意志でボイス/ステージチャンネルへ入り、独り言を続けながら、聞きに来た人のコメントへ配信者のように応答する機能。** 自発的な会話が「テキストへ話題を1つ投稿する」だけなのに対し、こちらは通話に居座って会話の場そのものを作る。デフォルトは**無効**で、`/functions` → **💬 自発会話** の 🎙️ 自律行動 トグルから有効化する（前項参照）。ver0.1.7(BETA) の機能。この節で「idea.md」と書いているのは、この機能の要件をまとめた利用者のメモのこと。**リポジトリには含まれていない**ので探さなくてよい（参照している要件は、この節にすべて書き写してある）。
 
 - **話したいゲージ**（`compute_talk_desire`。モジュール関数なのでパネル表示からも呼べる）: 0〜100。基礎値は無会話時間に比例し、`auto_topic_interval_hours` で 100 に届く。そこへ「直近 `AUTONOMOUS_ACTIVITY_WINDOW_MINUTES` の人間の発言数 × `AUTONOMOUS_ACTIVITY_BONUS_PER_MESSAGE`」を `AUTONOMOUS_ACTIVITY_BONUS_MAX` を上限に加点する（人が集まっているサーバーほど早く話したくなる）。**人間の発言をまだ一度も観測していないサーバーでは 0 を返す** — 招待されただけのサーバーや再起動直後に、いきなりボイスへ入り込まないための歯止め。観測は `on_message` から呼ばれる `mark_activity` が行う。
-- **【重要】開始に失敗したら必ず `_record_start_failure` を通すこと**: ゲージは開始に失敗しても下がらない（時間が経つほど増えるだけ）ため、記録しないと次の見回り＝1分後に同じ判定が通り、**接続→失敗→切断を永久に繰り返す**（権限設定が中途半端なサーバーが1つあるだけで1日1440回）。待ち時間は `AUTONOMOUS_START_RETRY_COOLDOWN_MINUTES × 連続失敗回数`（`AUTONOMOUS_START_RETRY_MAX_MULTIPLIER` 倍で頭打ち。既定 30分〜最長4時間）。**ゲージ自体はリセットしない** — リセットすると権限を直したあともしきい値時間ぶん待たされる。代わりに `/functions` のパネルで確定するとこの待ち時間が即座に解除される。開始に成功したら `autonomous_start_failures` / `autonomous_start_retry_at` を消すこと。行き先が無い（`_pick_channel` が None）場合だけは API を1回も叩いていないので待ち時間を入れない。
+- **【重要】開始に失敗したら必ず `_record_start_failure` を通すこと**: ゲージは開始に失敗しても下がらない（時間が経つほど増えるだけ）ため、記録しないと次の見回り＝1分後に同じ判定が通り、**接続→失敗→切断を永久に繰り返す**（権限設定が中途半端なサーバーが1つあるだけで1日1440回）。待ち時間は `AUTONOMOUS_START_RETRY_COOLDOWN_MINUTES × 連続失敗回数`（`AUTONOMOUS_START_RETRY_MAX_MULTIPLIER` 倍で頭打ち。既定 30分〜最長4時間）。**ゲージ自体はリセットしない** — リセットすると権限を直したあともしきい値時間ぶん待たされる。代わりに `/functions` のパネルで確定するとこの待ち時間が即座に解除される。開始に成功したら `autonomous_start_failures` / `autonomous_start_retry_at` を消すこと。行き先が無い（`autonomous_stage.pick_channel` が None）場合だけは API を1回も叩いていないので待ち時間を入れない。
 - **発火と行き先**: `autonomous_loop`（`AUTONOMOUS_CHECK_MINUTES` = 1分ごと）がゲージ ≥ `AUTONOMOUS_GAUGE_THRESHOLD` のサーバーで `_start_session` を呼ぶ。行き先は**ステージ優先**で、発言者になれるステージが無ければボイスチャンネルから選ぶ（候補が複数あれば `random.choice`）。権限は必ず `permissions_for(guild.me)` で**チャンネル単位に**確認する（`/join` と同じ作法）。ステージは「参加しただけでは観客（suppress=True）で音声を流せない」ため `mute_members` が必須、ステージ枠が無ければ自分で開くので `manage_channels` / `move_members` も要る。条件を満たさないチャンネルは候補から外す（入っても喋れないため）。
 - **ステージ枠**: `create_instance` のトピックは `AUTONOMOUS_STAGE_TOPIC`（「会話相手募集中…」）。チャンネル一覧に出るので、これが人を誘う看板になる。**`send_start_notification=True` にしないこと** — サーバー全体へ @everyone 相当の通知が飛び、ボットが配信を始めるたびに通知爆撃になる。**自分で開いた枠だけを終了時に閉じる**（`stage_started_by_bot` と作成応答から得た `stage_instance_id`）。枠のIDが一致しなければ削除しない。他人が開いた枠に相乗りした場合は閉じない。
 - **発話**: 第一声（`build_autonomous_opening_prompt`）→ `AUTONOMOUS_TALK_INTERVAL_MINUTES` ごとの独り言（`build_autonomous_monologue_prompt`）。どちらもチャンネル付属のチャットへ投稿し、同じ本文を `voice.speak_text` で読み上げる。生成が失敗しても `last_spoke_at` は `finally` で必ず進める（進めないと、生成が壊れている間ずっと毎分 API を叩き続ける）。第一声は生成に失敗しても `AUTONOMOUS_OPENING_NOTICE`（募集の看板）だけは必ず投稿する。
@@ -262,7 +270,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **停止中の接続差し替え**: 停止開始時のVoiceClient参照だけを切断対象とし、待機中に `/join` や新配信へ差し替わった接続は切らない。同じVoiceClientが自動再接続した場合はforce切断する。枠キャッシュが無いときは取得し、所有IDを照合して閉じる。
 - **チャンネル移動は「追従」ではなく「終了」**: 管理者にドラッグで別のチャンネルへ移されると接続は生きたままなので、接続の有無だけでは気づけない。`_tend_session` は `voice_client.channel.id` と `session.channel_id` を突き合わせ、食い違ったら配信を畳む。追従しないのは、セッションが開いたステージ枠を `channel_id` で覚えているため、行き先を差し替えると元の枠を閉じられなくなるから。
 - **セッションの取り残しを防ぐ**: `_check_guild` は `guild` が引けないとき（サーバーから追い出された・キャッシュ未取得）も、セッション記録が残っていれば片付ける。残すと `is_comment_channel` が真を返し続け、さらに自発会話の競合抑止も効いたままになって**そのサーバーの話題提供が二度と動かなくなる**。
-- **時間帯制限**: `AUTONOMOUS_QUIET_HOURS_START`〜`END`（既定 00:00〜05:59、`AUTONOMOUS_TIMEZONE` 基準）は開始せず、配信中でも退出する。タイムゾーンは**モジュール読み込み時に1回だけ**解決し（`_QUIET_HOURS_TZ`）、サービスもパネル表示も同じものを使う（`resolve_timezone` は失敗時に警告を出すため、パネルを開くたびに呼ぶとログが溢れる）。**画面へ出す時間帯は `describe_quiet_hours()` で作ること** — 定数から直接組み立てると、tzdata の無い環境で UTC へフォールバックしたときに「実際は UTC の 00:00〜05:59（＝日本時間の 09:00〜14:59）なのに Asia/Tokyo と名乗る」食い違いが起きる。ゲージは無会話時間で増えるため、誰も居ない深夜ほど早く満タンになる — 寝ている間にボイスチャンネルで喋り続けないための歯止め（idea.md の制限）。開始 > 終了（例: 22〜6）の日またぎ指定にも対応している。
+- **時間帯制限**: `AUTONOMOUS_QUIET_HOURS_START`〜`END`（既定 00:00〜05:59、`AUTONOMOUS_TIMEZONE` 基準）は開始せず、配信中でも退出する。タイムゾーンは**モジュール読み込み時に1回だけ**解決し（`autonomous_metrics.QUIET_HOURS_TZ`）、サービスもパネル表示も同じものを使う（`resolve_timezone` は失敗時に警告を出すため、パネルを開くたびに呼ぶとログが溢れる）。**画面へ出す時間帯は `describe_quiet_hours()` で作ること** — 定数から直接組み立てると、tzdata の無い環境で UTC へフォールバックしたときに「実際は UTC の 00:00〜05:59（＝日本時間の 09:00〜14:59）なのに Asia/Tokyo と名乗る」食い違いが起きる。ゲージは無会話時間で増えるため、誰も居ない深夜ほど早く満タンになる — 寝ている間にボイスチャンネルで喋り続けないための歯止め（idea.md の制限）。開始 > 終了（例: 22〜6）の日またぎ指定にも対応している。
 - **接続の唯一の情報源は `guild.voice_client`**: `AutonomousSession` に VoiceClient を持たせないこと。持たせると、管理者にキックされた・回線が切れたときに実態と食い違った参照が残り、切断済みのクライアントへ喋り続ける。**`/join` で人が呼んだ接続があるサーバーでは配信を始めない**（読み上げ用に呼ばれている最中かもしれないため）。
 - **多重発話の防止**: 生成と読み上げは数十秒かかるため見回りループの中で待たず `background.spawn` で裏へ逃がす。二重起動は `session.busy` で防ぐ（`_tend_session` が spawn の**前**に立て、`_speak_monologue` が `finally` で下ろす）。`handle_comment` は生成に入る前にも `last_spoke_at` を進め、応答を作っている間に独り言がぶつからないようにする。生成を待っている間に配信が終わっていることがあるため、送信の直前に `_is_current_session` で確かめる。
 - **状態の保存範囲**: 永続化するのは有効/無効（`guild_settings.autonomous_enabled`、スキーマ バージョン9）だけ。セッション・ゲージ・活動記録・開始失敗の待ち時間はインメモリのみ（ボイス接続自体が再起動をまたげないため、復元しても意味がない）。

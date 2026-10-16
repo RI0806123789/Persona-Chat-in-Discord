@@ -3,13 +3,16 @@
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from app_state import BotState
+import database
 from database import Database, SCHEMA_VERSION
 
 
@@ -47,6 +50,106 @@ class DatabaseInitializationTests(unittest.TestCase):
         self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
         self.assertEqual(self.db.profile_load("other-user"), {"趣味": "架空の読書"})
         self.assertEqual(len(self.db.pending_fetch_entries("test-user")), 1)
+
+    def prepare_version_five(self) -> None:
+        # 繰り返し列を追加する前のDBに、架空の既存データを用意する。
+        with patch.object(database, "SCHEMA_VERSION", 5):
+            self.db.initialize()
+        self.db.profile_merge("test-user", {"趣味": "架空の工作"})
+        self.db.pending_append("test-user", "2026-01-01", "架空の質問", "架空の回答")
+        with self.db._lock, self.db._conn:
+            self.db._conn.execute(
+                "INSERT INTO reminders"
+                " (user_id, channel_id, message, remind_at, created_at)"
+                " VALUES ('test-user', 10, '架空の予定', '2026-01-02', '2026-01-01')"
+            )
+
+    def assert_version_five_is_intact(self) -> None:
+        # 別接続から、失敗したDDLもバージョン番号も永続化されていないことを確認する。
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(reminders)")}
+            self.assertNotIn("recurrence", columns)
+            self.assertNotIn("recurrence_anchor", columns)
+            self.assertEqual(connection.execute(
+                "SELECT reminder_id, user_id, message FROM reminders"
+            ).fetchall(), [(1, "test-user", "架空の予定")])
+        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(len(self.db.pending_fetch_entries("test-user")), 1)
+
+    def assert_restart_completes_migration(self) -> None:
+        self.db.close()
+        self.db = Database(self.path)
+        self.db.initialize()
+        self.db.initialize()
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        reminders = self.db.reminder_list_pending("test-user")
+        self.assertEqual(len(reminders), 1)
+        self.assertEqual(reminders[0]["reminder_id"], 1)
+        self.assertEqual(reminders[0]["message"], "架空の予定")
+        self.assertEqual(reminders[0]["recurrence"], "none")
+        self.assertEqual(reminders[0]["recurrence_anchor"], "")
+        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(len(self.db.pending_fetch_entries("test-user")), 1)
+
+    def check_failed_migration(self, *, completed_statements: int) -> None:
+        self.prepare_version_five()
+        statements = database._MIGRATIONS[6]
+        broken = [
+            *statements[:completed_statements],
+            "SELECT * FROM fictional_missing_table",
+            *statements[completed_statements:],
+        ]
+        with patch.dict(database._MIGRATIONS, {6: broken}):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "fictional_missing_table"):
+                self.db.initialize()
+        self.assertFalse(self.db._conn.in_transaction)
+        self.assert_version_five_is_intact()
+        self.assert_restart_completes_migration()
+
+    def test_failure_after_first_ddl_rolls_back_and_retries(self) -> None:
+        self.check_failed_migration(completed_statements=1)
+
+    def test_failure_before_version_update_rolls_back_and_retries(self) -> None:
+        self.check_failed_migration(completed_statements=len(database._MIGRATIONS[6]))
+
+    def test_fresh_database_failure_rolls_back_schema_and_version(self) -> None:
+        statements = [*database._MIGRATIONS[6], "SELECT * FROM fictional_missing_table"]
+        with patch.dict(database._MIGRATIONS, {6: statements}):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.initialize()
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall(), [])
+        self.db.initialize()
+        self.assertEqual(self.db.reminder_list_pending("test-user"), [])
+
+    def test_process_exit_during_ddl_can_restart_without_data_loss(self) -> None:
+        self.prepare_version_five()
+        self.db.close()
+        script = """
+import os
+import sys
+sys.path.insert(0, sys.argv[2])
+import database
+db = database.Database(sys.argv[1])
+db._conn.create_function("stop_migration", 0, lambda: os._exit(17))
+statements = database._MIGRATIONS[6]
+database._MIGRATIONS[6] = [statements[0], "SELECT stop_migration()", *statements[1:]]
+db.initialize()
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", script, str(self.path),
+             str(Path(__file__).resolve().parents[1] / "src")],
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
+        )
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.db = Database(self.path)
+        self.assert_version_five_is_intact()
+        self.assert_restart_completes_migration()
 
 
 class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
