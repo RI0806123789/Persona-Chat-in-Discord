@@ -155,6 +155,38 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
             await self.process()
         self.assert_no_files()
 
+    async def test_pdf_validation_cancellation_waits_for_stream_to_close_before_removal(self) -> None:
+        self.attachment.filename = "fictional.pdf"
+        entered = asyncio.Event()
+        release = threading.Event()
+        streams = []
+        loop = asyncio.get_running_loop()
+
+        def read_pdf(stream):
+            streams.append(stream)
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(timeout=5):
+                raise TimeoutError("PDF検証の待機が終了しませんでした")
+            return SimpleNamespace(is_encrypted=False)
+
+        with patch.dict(sys.modules, {"pypdf": SimpleNamespace(PdfReader=read_pdf)}):
+            task = spawn(self.process(), label="PDF検証キャンセルの確認")
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                for _ in range(2):
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertFalse(streams[0].closed)
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(streams[0].closed)
+        self.assert_no_files()
+
 
 class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

@@ -11,6 +11,7 @@ from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.constants import (
+    DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_WORKER_IDLE_SECONDS,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT,
@@ -120,7 +121,11 @@ class DocumentService:
         await asyncio.to_thread(self._db.queue_update_task, task_id, updates, now_iso)
         # 完了/失敗タスクが際限なく溜まらないよう、終了時に古いものから削除する
         if updates.get("status") in _TERMINAL_STATUSES:
-            await asyncio.to_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
+            try:
+                await asyncio.to_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
+            except Exception as error:
+                # 終端状態の保存は成功済み。掃除の失敗で二重返信やfailedへの転落を起こさない。
+                print(f"文書ワーカー: 終了タスクの掃除に失敗しました: {error}")
 
     async def _claim_next_task(self) -> dict[str, Any] | None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -149,14 +154,17 @@ class DocumentService:
             # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
             guild_id = message.guild.id if message.guild is not None else None
             guild_settings = self._state.get_guild(guild_id)
+            response_settings = guild_settings.snapshot_response()
 
             for attachment in attachments:
-                await self._process_attachment(attachment, author_id, guild_settings.current_model_name)
+                await self._process_attachment(attachment, author_id, response_settings.model_name)
 
-            prompt_file = guild_settings.current_prompt_file
+            prompt_file = response_settings.prompt_file
             prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(prompt_file)))
             memory_category = await self._memory.route_category(question)
-            memory_context, document_context = await self._memory.build_contexts(memory_category, author_id)
+            memory_context, document_context = await self._memory.build_contexts(
+                memory_category, author_id, limit=max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments)),
+            )
             history_text = await fetch_channel_history_text(
                 message.channel,
                 guild_settings.channel_reset_points.get(message.channel.id),
@@ -171,9 +179,9 @@ class DocumentService:
             )
             response_text, usage_info, grounding_sources = await self._gemini.generate(
                 full_prompt,
-                guild_settings.current_model_name,
+                response_settings.model_name,
                 timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-                grounding=guild_settings.grounding_enabled,
+                grounding=response_settings.grounding_enabled,
             )
 
             if not response_text:
@@ -310,9 +318,10 @@ def validate_pdf_file(temp_path: Path) -> None:
     except ImportError as error:
         # 失敗の詳細はユーザーへの返信にも載るため、英語の例外ではなく原因が分かる文にする
         raise ValueError("PDFの検証に必要な pypdf がインストールされていません。") from error
-    reader = PdfReader(str(temp_path))
-    if reader.is_encrypted:
-        raise ValueError("PDFが暗号化されています。")
+    with temp_path.open("rb") as file:
+        reader = PdfReader(file)
+        if reader.is_encrypted:
+            raise ValueError("PDFが暗号化されています。")
 
 
 def validate_text_file(temp_path: Path) -> None:
@@ -328,6 +337,6 @@ def validate_text_file(temp_path: Path) -> None:
 
 async def validate_document_file(temp_path: Path, suffix: str) -> None:
     if suffix == ".pdf":
-        await asyncio.to_thread(validate_pdf_file, temp_path)
+        await run_in_thread(validate_pdf_file, temp_path)
     else:
-        await asyncio.to_thread(validate_text_file, temp_path)
+        await run_in_thread(validate_text_file, temp_path)

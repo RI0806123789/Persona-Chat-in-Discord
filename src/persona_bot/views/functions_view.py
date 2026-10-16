@@ -287,6 +287,9 @@ class UnblockSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "UnblockView" = self.view  # type: ignore[assignment]
+        if not is_administrator(interaction.user):
+            await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
+            return
         user_id = int(self.values[0])
         # 選択肢のラベルから表示名を拾う（通知メッセージ用）
         name = next((o.label for o in self.options if o.value == self.values[0]), str(user_id))
