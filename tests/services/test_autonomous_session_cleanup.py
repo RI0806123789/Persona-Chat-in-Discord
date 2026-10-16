@@ -333,12 +333,18 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.guild.voice_client = None
         self.channel.instance = None
         self.channel.create_instance = AsyncMock(return_value=self.instance)
-        self.channel.connect = AsyncMock()
+        async def connect(**kwargs):
+            self.guild.voice_client = self.voice
+            return self.voice
+
+        self.channel.connect = AsyncMock(side_effect=connect)
+        self.voice.is_connected.return_value = True
         self.guild.me = SimpleNamespace(
             voice=SimpleNamespace(channel=self.channel), edit=AsyncMock(),
         )
         self.service._speak_opening = AsyncMock()
-        with patch.object(autonomous_stage, "pick_channel", return_value=self.channel):
+        with (patch.object(autonomous_stage, "pick_channel", return_value=self.channel),
+              patch.object(autonomous_service, "is_quiet_hours", return_value=False)):
             await self.service._start_session(self.guild, self.settings)
         session = self.settings.autonomous_session
         self.assertIsNotNone(session)
@@ -347,7 +353,8 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_stage_start_disconnects_and_waits_without_resetting_gauge(self) -> None:
         self.settings.autonomous_session = None
-        self.channel.connect = AsyncMock()
+        self.channel.connect = AsyncMock(return_value=self.voice)
+        self.voice.is_connected.return_value = True
         self.channel.instance = None
         self.channel.create_instance = AsyncMock(return_value=self.instance)
         self.guild.me = SimpleNamespace(
@@ -356,7 +363,8 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         last_activity = self.settings.autonomous_last_activity
         before = datetime.now(timezone.utc)
-        with patch.object(autonomous_stage, "pick_channel", return_value=self.channel):
+        with (patch.object(autonomous_stage, "pick_channel", return_value=self.channel),
+              patch.object(autonomous_service, "is_quiet_hours", return_value=False)):
             await self.service._start_session(self.guild, self.settings)
         self.assertIsNone(self.settings.autonomous_session)
         self.assertEqual(self.settings.autonomous_start_failures, 1)

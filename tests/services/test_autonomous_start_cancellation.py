@@ -12,13 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import discord
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import spawn
-from persona_bot.services import autonomous_stage
+from persona_bot.services import autonomous_service, autonomous_stage
 from persona_bot.services.autonomous_service import AutonomousService
 
 
 class AutonomousStartCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.settings = BotState().get_guild(1)
+        self.settings.autonomous_enabled = True
         self.instance = SimpleNamespace(id=101, delete=AsyncMock())
         self.channel = Mock(spec=discord.StageChannel, id=10)
         self.channel.name = "架空のステージ"
@@ -26,14 +27,24 @@ class AutonomousStartCancellationTests(unittest.IsolatedAsyncioTestCase):
         self.channel.create_instance = AsyncMock(return_value=self.instance)
         self.voice = Mock(spec=discord.VoiceClient)
         self.voice.channel = self.channel
+        self.voice.is_connected.return_value = True
         self.voice.disconnect = AsyncMock()
         self.channel.connect = AsyncMock(return_value=self.voice)
         self.member = SimpleNamespace(voice=SimpleNamespace(channel=self.channel), edit=AsyncMock())
         self.guild = SimpleNamespace(id=1, voice_client=self.voice, me=self.member)
+
+        async def connect(**kwargs):
+            self.guild.voice_client = self.voice
+            return self.voice
+
+        self.channel.connect.side_effect = connect
         self.service = AutonomousService(None, None, None, None, None, None)
         picker = patch.object(autonomous_stage, "pick_channel", return_value=self.channel)
         picker.start()
         self.addCleanup(picker.stop)
+        quiet = patch.object(autonomous_service, "is_quiet_hours", return_value=False)
+        quiet.start()
+        self.addCleanup(quiet.stop)
 
     async def test_cancellation_during_voice_cache_wait_closes_stage_and_disconnects(self) -> None:
         self.member.voice = None

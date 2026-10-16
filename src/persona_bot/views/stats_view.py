@@ -51,6 +51,9 @@ class StatsUserSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsView" = self.view  # type: ignore[assignment]
+        if not is_administrator(interaction.user):
+            await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
+            return
         view.temp_target_id = self.values[0]
         view.refresh_items()
         await interaction.response.edit_message(content=view.build_preview(), view=view)
@@ -67,6 +70,9 @@ class RunStatsButton(ui.Button):
 
         # 一般ユーザーは自分のデータに固定する（他人のデータは管理者専用）。
         target_id = view.temp_target_id if view.is_admin else view.viewer_id
+        if target_id != view.viewer_id and not is_administrator(interaction.user):
+            await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
+            return
 
         # パネル（エフェメラル）を「集計中」に更新してから長時間処理に入る。
         await interaction.response.edit_message(content="🔄 集計中...", view=None)
@@ -77,19 +83,36 @@ class RunStatsButton(ui.Button):
         # 🔕 収集停止中の注記まで見せてしまう（＝相手の opt-out が露見する）。
         # 管理者のユーザー選択は収集停止中の人を除外するため通常は選べないが、
         # 「選んだ後に相手が停止した」場合はパネルが開いたままなので到達しうる。
-        caption, images = await view.stats.build_dashboard(
-            target_id, view.temp_item, viewer_id=view.viewer_id
-        )
-        files = [discord.File(buffer, filename=filename) for filename, buffer in images]
+        images = []
+        files = []
         try:
+            caption, images = await view.stats.build_dashboard(
+                target_id, view.temp_item, viewer_id=view.viewer_id
+            )
+            # 描画・解析の待機中にも権限は変わりうる。送信直前にも他人のデータを守る。
+            if target_id != view.viewer_id and not is_administrator(interaction.user):
+                await interaction.edit_original_response(
+                    content="この機能はサーバー管理者のみ利用できます。", view=None,
+                )
+                return
+            # 途中の生成失敗でも、それまでに作成したFileをfinallyで回収する。
+            for filename, buffer in images:
+                files.append(discord.File(buffer, filename=filename))
             await interaction.edit_original_response(content=caption)
             if files:
                 # グラフ画像は本人だけに見えるエフェメラルの followup として送る。
                 await interaction.followup.send(files=files, ephemeral=True)
         except Exception as error:
-            print(f"会話統計の送信中にエラー: {error}")
-            await interaction.followup.send(f"エラー: 統計の表示に失敗しました。（{error}）", ephemeral=True)
+            print(f"会話統計の生成・送信中にエラー: {error}")
+            notice = "エラー: 統計の表示に失敗しました。"
+            try:
+                await interaction.edit_original_response(content=notice, view=None)
+            except Exception:
+                await interaction.followup.send(notice, ephemeral=True)
         finally:
+            # discord.Fileが差し替えたcloseを戻してから、元のバッファを閉じる。
+            for file in files:
+                file.close()
             for _filename, buffer in images:
                 buffer.close()
 

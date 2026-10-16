@@ -184,6 +184,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 ### 文書パイプライン (`document_service.py`)
 
+文書の取得後、最初の添付処理より前に `snapshot_response()` を取得し、全添付の要約・プロンプト読込・最終生成で共用する。`build_contexts` の文書件数は `max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments))` とし、同時添付が既定件数を超えても先頭の要約を落とさない。PDFは `with temp_path.open("rb")` のストリームを `PdfReader` へ渡し、検証の例外時も閉じる。検証ワーカーは `run_in_thread` で終了まで待ってからキャンセルを伝播し、Windowsで削除前にハンドルを解放する。終了タスクの状態保存と古いタスクの掃除は別に扱い、掃除の例外はログだけに留める（完了済みタスクを失敗へ戻したり、回答後にエラーを二重返信しない）。
+
 添付ファイルはチャットをブロックしないよう別系統で処理される。`enqueue_from_message` がタスクを DB の `queue_tasks` テーブルに書き込み（`author_id` を含む）、単一のワーカーコルーチンが `pending` タスクを取得し、一時ファイルへダウンロードし、検証し、Gemini へアップロードし、構造化 JSON へ要約し、要約を**投稿者（`author_id`）の** `projects.json` スライスへ保存し、返信を生成し、その後アップロード済みファイルと一時ファイルを削除する。起動時、`processing` のまま止まっているタスク（処理中にボットがクラッシュしたもの）は `pending` へ戻される。完了済みタスクは `QUEUE_MAX_FINISHED_TASKS` 件に切り詰められる。タスクの取得（claim）は SELECT と UPDATE を同一トランザクションで行うため二重取得されない。PDF の検証に使う `pypdf` は `validate_pdf_file` の中で import する（モジュールの先頭へ戻さないこと — 未導入の環境で起動と回帰テストの検出まで止まる）。未導入なら PDF だけが日本語の `ValueError` で失敗し、PDF の回帰テストは省略される。
 
 ### Gemini 呼び出し (`gemini_service.py`, `genai_client.py`)
@@ -269,6 +271,10 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 `AutonomousService` は見回り・コメント処理・発話・停止の統括を担当する。ゲージ・活動窓・深夜判定・開始失敗の待ち時間はDiscordに依存しない `autonomous_metrics.py`、チャンネル選択・発言権・所有ステージ枠の終了・接続の切断は `autonomous_stage.py` に分離している。`compute_talk_desire` / `describe_quiet_hours` は既存のパネルとの互換性のためサービスからも再公開する。終了処理のタスク生成とキャンセル伝播はサービス、枠IDと接続の参照照合はステージヘルパーの責務とする。
 
+開始待機はサービス内の `_starting` にサーバーごとの `_StartAttempt` として保持する。接続やステージ準備を待つ間の `stop_session` はこの要求も中止にし、セッションが未登録でも `True` を返す。`/leave` は接続の有無にかかわらず停止処理を呼ぶ。開始処理は接続後と準備後に、停止要求・有効設定・静音時間・元のVoiceClientとの一致・接続先を再確認し、成立しなければ所有枠と元の接続を片付ける。待機が完了するまでは同じサーバーの二重開始を抑止し、`finally` で開始要求を破棄する。この要求は永続化しない。
+
+第一声・独り言・コメント応答の履歴取得には、通常チャットと同じ `guild_settings.channel_reset_points.get(channel.id)` を渡す。自律配信だけリセット前の文脈を読み続けないよう、3経路を揃える。
+
 **ボットが自分の意志でボイス/ステージチャンネルへ入り、独り言を続けながら、聞きに来た人のコメントへ配信者のように応答する機能。** 自発的な会話が「テキストへ話題を1つ投稿する」だけなのに対し、こちらは通話に居座って会話の場そのものを作る。デフォルトは**無効**で、`/functions` → **💬 自発会話** の 🎙️ 自律行動 トグルから有効化する（前項参照）。ver0.1.7(BETA) の機能。この節で「idea.md」と書いているのは、この機能の要件をまとめた利用者のメモのこと。**リポジトリには含まれていない**ので探さなくてよい（参照している要件は、この節にすべて書き写してある）。
 
 - **話したいゲージ**（`compute_talk_desire`。モジュール関数なのでパネル表示からも呼べる）: 0〜100。基礎値は無会話時間に比例し、`auto_topic_interval_hours` で 100 に届く。そこへ「直近 `AUTONOMOUS_ACTIVITY_WINDOW_MINUTES` の人間の発言数 × `AUTONOMOUS_ACTIVITY_BONUS_PER_MESSAGE`」を `AUTONOMOUS_ACTIVITY_BONUS_MAX` を上限に加点する（人が集まっているサーバーほど早く話したくなる）。**人間の発言をまだ一度も観測していないサーバーでは 0 を返す** — 招待されただけのサーバーや再起動直後に、いきなりボイスへ入り込まないための歯止め。観測は `on_message` から呼ばれる `mark_activity` が行う。
@@ -322,6 +328,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
+
+`RunStatsButton` は生成とFile作成も `try` の対象にし、生成失敗時は「集計中」の元パネルをエラー表示へ更新する。成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じ、Fileの作成途中で失敗した場合も作成済みの分を回収する。他人の統計を表示する場合は生成前と送信直前に管理者権限を再確認し、対象ユーザー選択とブロック解除のSelectも操作時に再確認する。本人の統計は引き続き管理者権限なしで表示できる。
 
 `/functions` の **📈 会話統計** から開く、ユーザー別の会話ダッシュボード。**すべてエフェメラル（非公開）で表示される。** 集計対象は「ボットへの発言のみ」で、`on_message` パイプラインの添付の振り分けの後（リマインダー判定の前。配信中のコメントも含む）に `stats.record(...)` を fire-and-forget で呼んで蓄積する（失敗してもチャット本体は止めないフェイルオープン）。データは DB の `user_stats` テーブルに永続化され、`asyncio.Lock` で保存を直列化する（単一プロセス前提）。
 
