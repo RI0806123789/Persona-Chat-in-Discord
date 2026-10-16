@@ -1,5 +1,6 @@
 import asyncio
 import io
+import math
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -38,6 +39,73 @@ BIG_FIVE_LABELS = {
     "agreeableness": "協調性",
     "neuroticism": "神経症傾向",
 }
+
+
+# ---- LLM の解析結果・保存済みの値の正規化 ----------------------------------
+# 解析結果は LLM の出力なので、型が指示どおりとは限らない（"weight": "高" など）。
+# 保存時に揃えるだけでなく、描画時にも同じ関数を通す（以前の版で保存された
+# キャッシュが DB に残っていても、描画が例外で落ち続けないようにするため）。
+
+def _finite_number(value: Any) -> float | None:
+    """有限の数値に変換する。変換できなければ None。
+
+    bool は int の一種だが数値として扱わない（True が 1 点として描かれるのを防ぐ）。
+    "0.8" のような数字の文字列は受け付け、"高" や NaN・無限大は捨てる。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def normalize_topics(topics: Any) -> list[dict[str, Any]]:
+    """話題を {"label": 空でない文字列, "weight": 0 以上の有限数} のリストに揃える。
+
+    LLM は ["ゲーム"] のように文字列だけのリストを返すことがあるため、その場合は
+    重み 1.0 の話題として扱う。重みが無い要素は従来どおり 0、数値でない要素は捨てる。
+    """
+    if not isinstance(topics, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for topic in topics:
+        if isinstance(topic, str):
+            label, weight = topic.strip(), 1.0
+        elif isinstance(topic, dict) and isinstance(topic.get("label"), str):
+            label = topic["label"].strip()
+            raw_weight = topic.get("weight")
+            weight = 0.0 if raw_weight is None else _finite_number(raw_weight)
+        else:
+            continue
+        if label and weight is not None:
+            normalized.append({"label": label, "weight": max(0.0, weight)})
+    return normalized
+
+
+def normalize_big_five(big_five: Any) -> dict[str, float]:
+    """ビッグファイブを既知の5軸だけにし、0〜100 の有限数へ丸める。数値でない軸は捨てる。"""
+    if not isinstance(big_five, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for key in BIG_FIVE_LABELS:
+        number = _finite_number(big_five.get(key))
+        if number is not None:
+            normalized[key] = min(100.0, max(0.0, number))
+    return normalized
+
+
+def normalize_hourly(hourly: Any) -> list[float]:
+    """時間帯別の発言回数を STATS_HOURLY_BUCKETS 個の 0 以上の有限数に揃える（不足は 0）。"""
+    values = hourly if isinstance(hourly, list) else []
+    counts = [max(0.0, _finite_number(value) or 0.0) for value in values[:STATS_HOURLY_BUCKETS]]
+    return counts + [0.0] * (STATS_HOURLY_BUCKETS - len(counts))
 
 
 class StatsService:
@@ -240,6 +308,18 @@ class StatsService:
         elapsed_hours = (datetime.now(timezone.utc) - when).total_seconds() / 3600.0
         return elapsed_hours < STATS_ANALYSIS_TTL_HOURS
 
+    @staticmethod
+    def _lacks_personality(cached: dict, sample_count: int) -> bool:
+        """件数不足の時点の解析しか無いが、今は性格推定に足りる件数があるか。
+
+        件数不足で解析したときは性格推定を保存しないため、件数が揃ったら TTL 内でも
+        1回だけ解析し直す。sample_count を持たない以前の版のキャッシュは従来どおり扱う。
+        """
+        analyzed = _finite_number(cached.get("sample_count"))
+        if analyzed is None:
+            return False
+        return analyzed < STATS_PERSONALITY_MIN_SAMPLES <= sample_count
+
     async def ensure_analysis(self, user_id: str, force: bool = False) -> dict | None:
         """話題・性格推定の解析結果を返す。TTL 内ならキャッシュ、なければ LLM で再計算する。
 
@@ -255,7 +335,8 @@ class StatsService:
             samples = list(entry.get("recent_samples") or [])
             if not samples:
                 return cached
-            if not force and cached and self._is_fresh(cached.get("computed_at")):
+            if (not force and cached and self._is_fresh(cached.get("computed_at"))
+                    and not self._lacks_personality(cached, len(samples))):
                 return cached
             version = self._analysis_versions.get(user_id, 0)
 
@@ -279,12 +360,19 @@ class StatsService:
         except Exception as error:
             print(f"会話統計の解析呼び出しに失敗: {error}")
 
-        analysis = {
-            "topics": parsed.get("topics") or [],
-            "big_five": parsed.get("big_five") or {},
-            "personality": parsed.get("personality") or "",
-            "computed_at": datetime.now(timezone.utc).isoformat(),
-        } if parsed else None
+        analysis = None
+        if parsed:
+            # 少数のサンプルからの性格推定は不正確なため保存しない。件数が揃ったら
+            # _lacks_personality により TTL 内でも解析し直す。
+            enough = len(samples) >= STATS_PERSONALITY_MIN_SAMPLES
+            personality = parsed.get("personality")
+            analysis = {
+                "topics": normalize_topics(parsed.get("topics")),
+                "big_five": normalize_big_five(parsed.get("big_five")) if enough else {},
+                "personality": personality.strip() if enough and isinstance(personality, str) else "",
+                "sample_count": len(samples),
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            }
         async with self._save_lock:
             entry = self.cache.get(user_id)
             if entry is None:
@@ -318,7 +406,7 @@ class StatsService:
     @serialized_plot
     def build_hourly_graph(self, entry: dict) -> io.BytesIO:
         """時間帯別の発言回数ヒストグラム（24時間）。"""
-        hourly = entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS
+        hourly = normalize_hourly(entry.get("hourly"))
         with plt.rc_context(graph_font_context()):
             figure, axis = plt.subplots(figsize=(10, 5))
             x = np.arange(STATS_HOURLY_BUCKETS)
@@ -335,11 +423,7 @@ class StatsService:
     @serialized_plot
     def build_topic_graph(self, topics: list[dict]) -> io.BytesIO | None:
         """話題（トピック）の重み付き横棒グラフ。"""
-        cleaned = [
-            (str(t.get("label", "")).strip(), float(t.get("weight", 0) or 0))
-            for t in topics
-            if str(t.get("label", "")).strip()
-        ]
+        cleaned = [(topic["label"], topic["weight"]) for topic in normalize_topics(topics)]
         if not cleaned:
             return None
         cleaned.sort(key=lambda t: t[1], reverse=True)
@@ -360,7 +444,8 @@ class StatsService:
     def build_bigfive_radar(self, big_five: dict) -> io.BytesIO | None:
         """ビッグファイブ性格推定のレーダーチャート（5軸・0〜100）。"""
         keys = list(BIG_FIVE_LABELS.keys())
-        values = [float(big_five.get(k, 0) or 0) for k in keys]
+        normalized = normalize_big_five(big_five)
+        values = [normalized.get(k, 0.0) for k in keys]
         if not any(values):
             return None
         labels = [BIG_FIVE_LABELS[k] for k in keys]
@@ -461,8 +546,12 @@ class StatsService:
             if want_time:
                 images.append(("stats_hourly.png", await run_in_thread(self.build_hourly_graph, entry)))
 
+            samples = entry.get("recent_samples") or []
+            enough_samples = len(samples) >= STATS_PERSONALITY_MIN_SAMPLES
             analysis = None
-            if want_topic or want_personality:
+            # 性格推定だけを見る場合、件数が足りなければ解析（Gemini 呼び出し）自体を行わない。
+            # 先に解析すると、使わない結果のために API を呼び、件数不足の推定を残してしまう。
+            if want_topic or (want_personality and enough_samples):
                 analysis = await self.ensure_analysis(user_id)
 
             if want_topic:
@@ -473,8 +562,7 @@ class StatsService:
                     lines.append("・話題: 解析できるデータがありませんでした。")
 
             if want_personality:
-                samples = entry.get("recent_samples") or []
-                if len(samples) < STATS_PERSONALITY_MIN_SAMPLES:
+                if not enough_samples:
                     lines.append(
                         f"・性格推定: データ不足のため表示できません"
                         f"（発言 {len(samples)} 件 / 必要 {STATS_PERSONALITY_MIN_SAMPLES} 件）。"

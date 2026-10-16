@@ -99,6 +99,9 @@ MAX_DOCUMENT_SIZE_BYTES = 5 * 1024 * 1024
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".csv", ".md"}
 # マルチモーダル入力として受け付ける画像の拡張子（Content-Type が空の添付の判定用）。
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+# 本文が無く画像だけが送られたときに、質問文の代わりにモデルへ渡す文
+# （自律配信のコメントでは AUTONOMOUS_IMAGE_ONLY_COMMENT を使う）。
+IMAGE_ONLY_QUESTION = "この画像について説明・反応してください。"
 # Discord の1メッセージあたりの文字数上限。これを超える返信は split_message で分割する。
 DISCORD_MESSAGE_MAX_LENGTH = 2000
 DOCUMENT_UPLOAD_TIMEOUT_SECONDS = 60.0

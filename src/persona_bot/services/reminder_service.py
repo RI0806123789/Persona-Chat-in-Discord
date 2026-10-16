@@ -452,4 +452,12 @@ class ReminderService:
         next_at = record.get("next_remind_at")
         if next_at:
             body += f"\n🔁 次回は {_format_local(str(next_at), self._tz)} にお知らせします。"
-        await send_long_message(channel, body)
+        # 本文は利用者が書いた文なので、@everyone・@here・ロール・他人へのメンションが
+        # 含まれうる（AI モデレーションは不適切な表現を見るだけで、これらは通過する）。
+        # 通知を飛ばしてよいのは依頼者本人だけに限る（記念日のお祝いと同じ制御）。
+        # 繰り返しのリマインダーでは同じ本文が定期的に出るため、毎回この制限を掛ける。
+        allowed_mentions = discord.AllowedMentions(
+            users=[discord.Object(id=int(record["user_id"]))],
+            everyone=False, roles=False, replied_user=False,
+        )
+        await send_long_message(channel, body, allowed_mentions=allowed_mentions)

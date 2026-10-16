@@ -316,7 +316,7 @@
                 <mxCell id="a2_d_voice" value="&lt;b&gt;ボイス送出 &amp;amp; リアクション付与&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;discord.PCMAudio / add_reaction ×2&lt;/span&gt;" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#333333;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="2010" y="310" width="210" height="90" as="geometry"/>
                 </mxCell>
-                <mxCell id="a2_b_mark" value="&lt;b&gt;活動を観測（ゲートより前）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                <mxCell id="a2_b_mark" value="&lt;b&gt;関門② ブロック判定 → 活動を観測&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
                     <mxGeometry x="260" y="495" width="210" height="100" as="geometry"/>
                 </mxCell>
                 <mxCell id="a2_b_gate" value="&lt;b&gt;関門① 応答モードのゲート&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;DM / 全発言モード / メンション&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;or 配信中のコメント欄&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
@@ -328,13 +328,13 @@
                 <mxCell id="a2_b_route" value="&lt;b&gt;関門⑤⑥ リマインダー・配信中かの取り直し&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ルーティング分岐（文書/コメント/通常）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※統計記録は関門ではなく spawn される付随処理&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
                     <mxGeometry x="1010" y="495" width="210" height="125" as="geometry"/>
                 </mxCell>
-                <mxCell id="a2_b_handle" value="&lt;b&gt;handle_chat_message()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;channel.typing() 開始&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;load_image_attachments()&lt;br&gt;記憶は非同期一括取得（JSONは1回）&lt;br&gt;本文が空なら定型の質問文へ差し替え&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                <mxCell id="a2_b_handle" value="&lt;b&gt;handle_chat_message()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;channel.typing() 開始&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;load_image_attachments()&lt;br&gt;記憶は非同期一括取得（JSONは1回）&lt;br&gt;本文が空なら定型の質問文へ差し替え（画像も読めなければ断って終了）&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
                     <mxGeometry x="1260" y="495" width="210" height="130" as="geometry"/>
                 </mxCell>
                 <mxCell id="a2_b_tts" value="&lt;b&gt;play_tts_response()&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボイス未接続なら no-op&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
                     <mxGeometry x="2010" y="495" width="210" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="a2_b_guard" value="&lt;b&gt;関門②③ ブラックリスト / NGワード&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;ng_filter.contains_ng_word()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※②と③の間に 空判定・チャンネル種別判定&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                <mxCell id="a2_b_guard" value="&lt;b&gt;関門③ NGワード&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;ng_filter.contains_ng_word()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※①と③の間に 空判定・チャンネル種別判定&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="510" y="655" width="210" height="120" as="geometry"/>
                 </mxCell>
                 <mxCell id="a2_b_prompt" value="&lt;b&gt;1本のフラットなプロンプトを組み立て&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;build_full_prompt()（services/prompting.py）&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px&quot;&gt;ペルソナ＋親密度＋記憶＋履歴＋質問&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
@@ -679,19 +679,19 @@
                     <mxGeometry x="440" y="180" width="380" height="100" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_resolve" value="&lt;b&gt;サーバー設定を解決&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;guild_id = message.guild.id if message.guild else None&lt;br&gt;state.get_guild(guild_id)&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※DM は全DM共有スロット&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
-                    <mxGeometry x="440" y="340" width="380" height="115" as="geometry"/>
+                    <mxGeometry x="440" y="495" width="380" height="115" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_mark" value="&lt;b&gt;会話の活動を観測（ゲートより前に呼ぶ）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボット宛てでない発言も記録する&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
-                    <mxGeometry x="440" y="500" width="380" height="110" as="geometry"/>
+                <mxCell id="b1_mark" value="&lt;b&gt;会話の活動を観測（ブロック判定の後・ゲートより前）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;auto_topic.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.mark_activity()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※ボット宛てでない発言も記録する&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4D4D4D;fontColor=#1A1A1A;fontSize=12;fontFamily=Meiryo UI;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="660" width="380" height="110" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_dec_gate" value="&lt;b&gt;関門① 応答モードのゲート&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;accepts_normally?&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;DM / mention以外のモード / メンションあり&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
-                    <mxGeometry x="440" y="670" width="380" height="130" as="geometry"/>
+                    <mxGeometry x="440" y="820" width="380" height="130" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_dec_comment" value="&lt;b&gt;【例外】配信中のコメント欄か?&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;autonomous.is_comment_channel()&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;※メンション不要で拾う&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
-                    <mxGeometry x="440" y="860" width="380" height="120" as="geometry"/>
+                    <mxGeometry x="440" y="1010" width="380" height="120" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_dec_black" value="&lt;b&gt;関門② ブラックリスト&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
-                    <mxGeometry x="440" y="1040" width="380" height="110" as="geometry"/>
+                <mxCell id="b1_dec_black" value="&lt;b&gt;関門② ブラックリスト（最初に判定）&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.is_blocked()&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="340" width="380" height="110" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_dec_empty" value="&lt;b&gt;本文をクリーニングした結果&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;clean_message_content()&lt;/span&gt;&lt;br&gt;&lt;b&gt;本文も添付も空か?&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontColor=#7F6000;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="440" y="1210" width="380" height="130" as="geometry"/>
@@ -714,7 +714,7 @@
                 <mxCell id="b1_ignore_bot" value="&lt;b&gt;return（未ログイン / ボットの発言は処理しない）&lt;/b&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="60" y="180" width="300" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_ignore" value="&lt;b&gt;黙って破棄（return）&lt;/b&gt;&lt;br&gt;・ゲート不成立かつ配信中でない&lt;br&gt;・ブラックリスト登録済み&lt;br&gt;・本文も添付も空&lt;br&gt;・返信できないチャンネル種別" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                <mxCell id="b1_ignore" value="&lt;b&gt;黙って破棄（return）&lt;/b&gt;&lt;br&gt;・ブラックリスト登録済み（活動も記録しない）&lt;br&gt;・ゲート不成立かつ配信中でない&lt;br&gt;・本文も添付も空&lt;br&gt;・返信できないチャンネル種別" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="60" y="1100" width="300" height="200" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_violation" value="&lt;b&gt;notify_violation()&lt;/b&gt;&lt;br&gt;違反を1回記録し警告を返信&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;blacklist.record_violation()&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
@@ -726,7 +726,7 @@
                 <mxCell id="b1_blocked" value="&lt;b&gt;ブラックリストに登録&lt;/b&gt;&lt;br&gt;「以降のメッセージは無視されます」&lt;br&gt;と返信して終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="60" y="2120" width="300" height="110" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_warn" value="&lt;b&gt;「あと◯回で応答を停止します」&lt;/b&gt;&lt;br&gt;と警告して終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                <mxCell id="b1_warn" value="&lt;b&gt;「あと◯回で応答を停止します」&lt;/b&gt;&lt;br&gt;と警告して終了&lt;br&gt;※並行した違反で既にブロック済みなら返信しない" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="60" y="2290" width="300" height="100" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_conn_b" value="&lt;b&gt;①&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
@@ -771,7 +771,7 @@
                 <mxCell id="b1_end" value="&lt;b&gt;終了&lt;/b&gt;" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#E8E8E8;strokeColor=#666666;fontColor=#333333;fontSize=13;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="2250" width="380" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_unsupported" value="&lt;b&gt;「未対応の添付ファイルが含まれています」と返信&lt;/b&gt;&lt;br&gt;pdf / txt / csv / md のみ対応&lt;br&gt;→ 終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
+                <mxCell id="b1_unsupported" value="&lt;b&gt;「未対応の添付ファイルが含まれています」と返信&lt;/b&gt;&lt;br&gt;対応形式（画像・pdf / txt / csv / md）を案内&lt;br&gt;→ 終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
                     <mxGeometry x="1520" y="350" width="340" height="110" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_oversize" value="&lt;b&gt;「ファイルサイズが上限を超えています」&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px;color:#666666&quot;&gt;MAX_DOCUMENT_SIZE_BYTES = 5MB&lt;/span&gt;&lt;br&gt;→ 終了" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontColor=#7A1F1C;fontSize=12;fontFamily=Meiryo UI;" parent="1" vertex="1">
@@ -795,7 +795,7 @@
                 <mxCell id="b1_e02" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_bot" target="b1_ignore_bot" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_e03" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_bot" target="b1_resolve" edge="1">
+                <mxCell id="b1_e03" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_bot" target="b1_dec_black" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_e04" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_resolve" target="b1_mark" edge="1">
@@ -804,18 +804,18 @@
                 <mxCell id="b1_e05" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_mark" target="b1_dec_gate" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_e06" value="Yes（通常受付）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_gate" target="b1_dec_black" edge="1">
+                <mxCell id="b1_e06" value="Yes（通常受付）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_gate" target="b1_dec_empty" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="880" y="735"/>
-                            <mxPoint x="880" y="1095"/>
+                            <mxPoint x="880" y="885"/>
+                            <mxPoint x="880" y="1275"/>
                         </Array>
                     </mxGeometry>
                 </mxCell>
                 <mxCell id="b1_e07" value="No（メンション無し）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_gate" target="b1_dec_comment" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_e08" value="Yes（コメントとして拾う）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment" target="b1_dec_black" edge="1">
+                <mxCell id="b1_e08" value="Yes（コメントとして拾う）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment" target="b1_dec_empty" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_e09" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_comment" target="b1_ignore" edge="1">
@@ -824,7 +824,7 @@
                 <mxCell id="b1_e10" value="Yes（ブロック中）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" parent="1" source="b1_dec_black" target="b1_ignore" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="b1_e11" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_black" target="b1_dec_empty" edge="1">
+                <mxCell id="b1_e11" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#4D4D4D;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="b1_dec_black" target="b1_resolve" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="b1_e12" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;jettySize=auto;orthogonalLoop=1;strokeColor=#B85450;strokeWidth=1.5;endArrow=block;endFill=1;fontSize=11;fontFamily=Meiryo UI;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="b1_dec_empty" target="b1_ignore" edge="1">
