@@ -258,6 +258,20 @@ class StatsAnalysisTests(unittest.IsolatedAsyncioTestCase):
             buffer.close()
         return caption, [name for name, _ in images]
 
+    async def test_analysis_skips_unrelated_json_and_keeps_cache_when_fields_are_missing(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+        self.gemini.generate.side_effect = None
+        self.gemini.generate.return_value = ('{"dummy": 1}\n' + json.dumps(self.analysis), None, [])
+        analysis = await self.service.ensure_analysis("user-0", force=True)
+        self.assertEqual(analysis["personality"], "架空の推定")
+        self.assertEqual(analysis["topics"], self.analysis["topics"])
+        for missing in ("topics", "big_five", "personality"):
+            with self.subTest(missing=missing):
+                invalid = {key: value for key, value in self.analysis.items() if key != missing}
+                self.gemini.generate.return_value = (json.dumps(invalid), None, [])
+                self.assertEqual(await self.service.ensure_analysis("user-0", force=True), analysis)
+                self.assertEqual(self.db.stats_load_all()["user-0"]["analysis"], analysis)
+
     async def test_personality_only_with_few_samples_skips_analysis(self) -> None:
         self.seed(STATS_PERSONALITY_MIN_SAMPLES - 1)
         caption, images = await self.dashboard("personality")

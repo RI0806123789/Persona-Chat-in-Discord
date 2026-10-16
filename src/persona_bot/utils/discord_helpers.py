@@ -10,11 +10,13 @@ from PIL import Image
 from persona_bot.config.constants import (
     DISCORD_MESSAGE_MAX_LENGTH,
     IMAGE_EXTENSIONS,
+    MAX_IMAGE_SIZE_BYTES,
     SUMMARY_TIMEZONE,
     SUPPORTED_DOCUMENT_EXTENSIONS,
     WELCOME_MESSAGE_ENABLED,
 )
 from persona_bot.utils.timeutil import resolve_timezone
+from persona_bot.core.background import run_in_thread
 
 # ボットが会話・履歴取得に対応しているチャンネル種別
 SupportedMessageChannel = (
@@ -165,20 +167,35 @@ async def fetch_messages_since(
     return collected
 
 
+def _decode_image_bytes(image_bytes: bytes) -> Image.Image:
+    """画像の展開とRGB変換をワーカーで行い、入力を閉じた後も使える画像を返す。"""
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        return image.convert("RGB")
+
+
 async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> list[Image.Image]:
     image_objects: list[Image.Image] = []
-    for attachment in attachments:
-        if not attachment_is_image(attachment):
-            continue
-        try:
-            image_bytes = await attachment.read()
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                image_objects.append(image.copy())
-        except Exception as error:
-            print(f"画像読み込みエラー: {error}")
-    return image_objects
+    try:
+        for attachment in attachments:
+            if not attachment_is_image(attachment):
+                continue
+            if attachment.size > MAX_IMAGE_SIZE_BYTES:
+                print("画像読み込み: サイズ上限を超えているため見送ります。")
+                continue
+            try:
+                image_bytes = await attachment.read()
+                if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
+                    print("画像読み込み: 取得した画像がサイズ上限を超えているため見送ります。")
+                    continue
+                image_objects.append(await run_in_thread(_decode_image_bytes, image_bytes))
+            except Exception as error:
+                print(f"画像読み込みエラー: {error}")
+        return image_objects
+    except BaseException:
+        # 中断時に受取先がなくなる画像も回収する。処理中の画像はrun_in_threadが回収する。
+        for image in image_objects:
+            image.close()
+        raise
 
 
 def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[str]:

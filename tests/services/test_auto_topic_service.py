@@ -3,16 +3,19 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import discord
 from persona_bot.services import auto_topic_service
 from persona_bot.core.app_state import BotState
 from persona_bot.services.auto_topic_service import AutoTopicService
+from tests.helpers.thread_probe import make_thread_probe
 
 
 class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +44,31 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.history = patch.object(
             auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="架空の履歴"),
         ).start()
+
+    async def test_dm_is_not_watched_or_updated(self):
+        self.service.watch_channel(20, None)
+        self.assertEqual(self.state.dm_settings.auto_topic_channels, {})
+        old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.state.dm_settings.auto_topic_channels[20] = old
+        self.service.mark_activity(20, None)
+        self.assertEqual(self.state.dm_settings.auto_topic_channels, {20: old})
+        self.service.watch_channel(30, 1)
+        self.settings.auto_topic_channels[30] = old
+        self.service.mark_activity(30, 1)
+        self.assertGreater(self.settings.auto_topic_channels[30], old)
+
+    async def test_topic_and_anniversary_prompt_loading_keeps_loop_responsive(self):
+        for kind in ("topic", "anniversary"):
+            with self.subTest(kind=kind):
+                operation, threads = make_thread_probe("架空のペルソナ")
+                self.prompt.side_effect = operation
+                if kind == "topic":
+                    result = await self.service._post_topic(self.channel, self.settings)
+                else:
+                    result = await self.service._post_anniversary(self.channel, self.settings, self.member, "誕生日")
+                self.assertTrue(result)
+                self.assertTrue(threads)
+                self.assertNotIn(threading.get_ident(), threads)
 
     async def test_denied_permissions_or_missing_member_skip_generation_on_every_check(self):
         for condition in ("view_channel", "send_messages", "member", "dm"):

@@ -6,6 +6,7 @@ from discord import ui
 
 from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import GuildSettings
+from persona_bot.core.background import run_in_thread
 from persona_bot.config.choices import SUMMARY_PERIOD_CHOICES
 from persona_bot.config.constants import SUMMARY_MAX_MESSAGES, SUMMARY_TIMEOUT_SECONDS
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
@@ -74,7 +75,9 @@ async def generate_channel_summary(
 
     # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
-        persona_prompt = load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+        persona_prompt = await run_in_thread(
+            lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+        )
     except FileNotFoundError:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
         print(f"要約: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。口調なしで続行します。")
@@ -198,7 +201,18 @@ class RunSummaryButton(ui.Button):
                 await interaction.followup.send(chunk, ephemeral=True)
         else:
             # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
-            await send_long_message(channel, text)
+            try:
+                await send_long_message(channel, text)
+            except discord.Forbidden:
+                await interaction.edit_original_response(
+                    content="⚠️ 要約を投稿する権限がありません。ボットの権限設定を確認してください。"
+                )
+                return
+            except discord.HTTPException:
+                await interaction.edit_original_response(
+                    content="⚠️ 要約の投稿に失敗しました。一部が投稿されている可能性があります。チャンネルを確認してください。"
+                )
+                return
             await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
 
 
