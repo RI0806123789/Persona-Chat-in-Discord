@@ -15,8 +15,9 @@ from zoneinfo import ZoneInfoNotFoundError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.core.background import spawn
-from persona_bot.config.constants import STATS_RECENT_SAMPLES_MAX
+from persona_bot.config.constants import STATS_PERSONALITY_MIN_SAMPLES, STATS_RECENT_SAMPLES_MAX
 from persona_bot.core.database import Database
+from persona_bot.services import stats_service
 from persona_bot.services.stats_service import StatsService
 
 
@@ -222,6 +223,104 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 self.gemini.generate.side_effect = generate
                 self.assertIsNone(await self.service.ensure_analysis("user-0", force=True))
                 self.assertIsNone(self.db.stats_load_all()["user-0"]["analysis"])
+
+
+class StatsAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    """少数サンプル時の解析の省略と、LLM の型ゆらぎの正規化を確認する（#66）。"""
+
+    async def asyncSetUp(self) -> None:
+        timezone_patch = patch("persona_bot.services.stats_service.resolve_timezone", return_value=timezone(timedelta(hours=9)))
+        timezone_patch.start()
+        self.addCleanup(timezone_patch.stop)
+        directory = tempfile.TemporaryDirectory(prefix="stats-analysis-test-")
+        self.addCleanup(directory.cleanup)
+        self.db = Database(Path(directory.name) / "bot.db")
+        self.db.initialize()
+        self.addCleanup(self.db.close)
+        self.analysis = {
+            "topics": [{"label": "架空の話題", "weight": 1}],
+            "big_five": {"openness": 60, "extraversion": 40}, "personality": "架空の推定",
+        }
+        self.gemini = SimpleNamespace(generate=AsyncMock(side_effect=lambda *args, **kwargs: (
+            json.dumps(self.analysis), None, []
+        )))
+
+    def seed(self, sample_count: int) -> None:
+        entry = StatsService._new_entry("架空の利用者")
+        entry.update(total_count=sample_count, recent_samples=[f"架空の会話{i}" for i in range(sample_count)])
+        entry["hourly"][9] = sample_count
+        self.db.stats_save_all({"user-0": entry})
+        self.service = StatsService(self.db, self.gemini)
+
+    async def dashboard(self, item: str) -> tuple[str, list[str]]:
+        caption, images = await self.service.build_dashboard("user-0", item)
+        for _, buffer in images:
+            buffer.close()
+        return caption, [name for name, _ in images]
+
+    async def test_personality_only_with_few_samples_skips_analysis(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES - 1)
+        caption, images = await self.dashboard("personality")
+        self.gemini.generate.assert_not_awaited()
+        self.assertIn("データ不足", caption)
+        self.assertEqual(images, [])
+        self.assertIsNone(self.service.cache["user-0"]["analysis"])
+
+    async def test_few_sample_analysis_keeps_no_personality_and_refreshes_when_enough(self) -> None:
+        self.seed(3)
+        await self.dashboard("topic")
+        self.gemini.generate.assert_awaited_once()
+        cached = self.service.cache["user-0"]["analysis"]
+        self.assertEqual((cached["big_five"], cached["personality"], cached["sample_count"]), ({}, "", 3))
+        self.assertEqual(self.db.stats_load_all()["user-0"]["analysis"]["big_five"], {})
+        # TTL 内でも、件数が揃ったら性格推定のために1回だけ解析し直す
+        self.service.cache["user-0"]["recent_samples"] = [f"架空の会話{i}" for i in range(STATS_PERSONALITY_MIN_SAMPLES)]
+        caption, images = await self.dashboard("personality")
+        self.assertEqual(self.gemini.generate.await_count, 2)
+        self.assertEqual(images, ["stats_personality.png"])
+        self.assertIn("架空の推定", caption)
+        await self.dashboard("personality")
+        self.assertEqual(self.gemini.generate.await_count, 2)
+
+    async def test_malformed_llm_output_is_normalized_before_caching_and_drawing(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+        self.analysis = {
+            "topics": ["架空の文字列だけの話題", {"label": "架空の非数値", "weight": "高"},
+                       {"label": "", "weight": 1}, 5, {"label": "架空の数字文字列", "weight": "0.5"},
+                       {"label": "架空の負の重み", "weight": -3}],
+            "big_five": {"openness": "高い", "extraversion": 150, "agreeableness": float("nan"),
+                         "neuroticism": float("inf"), "conscientiousness": True, "unknown": 50},
+            "personality": 123,
+        }
+        caption, images = await self.dashboard("all")
+        self.assertEqual(images, ["stats_hourly.png", "stats_topics.png", "stats_personality.png"])
+        cached = self.service.cache["user-0"]["analysis"]
+        self.assertEqual(cached["topics"], [
+            {"label": "架空の文字列だけの話題", "weight": 1.0},
+            {"label": "架空の数字文字列", "weight": 0.5},
+            {"label": "架空の負の重み", "weight": 0.0},
+        ])
+        self.assertEqual(cached["big_five"], {"extraversion": 100.0})
+        self.assertEqual(cached["personality"], "")
+        self.assertIn("確定的な性格診断ではありません", caption)
+
+    async def test_previously_saved_bad_cache_and_hourly_do_not_break_drawing(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+        entry = self.service.cache["user-0"]
+        # 以前の版が型を確かめずに保存したキャッシュ（sample_count なし・TTL 内）
+        entry["analysis"] = {
+            "topics": ["架空の話題", {"label": "架空", "weight": "高"}],
+            "big_five": {"openness": "高い", "agreeableness": 70},
+            "personality": "架空の旧推定", "computed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        entry["hourly"] = [1, "x", None, float("nan"), -2]
+        caption, images = await self.dashboard("all")
+        self.gemini.generate.assert_not_awaited()
+        self.assertEqual(images, ["stats_hourly.png", "stats_topics.png", "stats_personality.png"])
+        self.assertIn("架空の旧推定", caption)
+        # 時間帯は24個の0以上の有限数に揃え、不足分を0で埋める
+        normalized = stats_service.normalize_hourly(entry["hourly"])
+        self.assertEqual(normalized, [1.0] + [0.0] * 23)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,10 @@ from persona_bot.services.auto_topic_service import AutoTopicService
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core import commands
 from persona_bot.services import content_moderator
-from persona_bot.utils.discord_helpers import is_administrator, send_long_message, send_long_reply, split_message
+from persona_bot.utils import discord_helpers
+from persona_bot.utils.discord_helpers import (
+    build_history_text, is_administrator, send_long_message, send_long_reply, split_message,
+)
 from persona_bot.views import functions_view
 from persona_bot.views import help_view
 from persona_bot.core.message_handler import MessageHandler
@@ -109,7 +112,21 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("⏰ <@11>", body)
         self.assertIn("🔁 次回は", body)
         self.assertTrue(all(len(call.args[0]) <= 2000 for call in channel.send.call_args_list))
-        self.assertTrue(all(call.kwargs["allowed_mentions"] is None for call in channel.send.call_args_list))
+        # 分割した全チャンクで、通知を許すのは依頼者本人だけ（#64）
+        for call in channel.send.call_args_list:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), {"users": [11], "parse": []})
+
+    async def test_reminder_body_cannot_ping_everyone_roles_or_other_users(self) -> None:
+        channel = SimpleNamespace(send=AsyncMock())
+        service = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), None, make_filter())
+        await service._notify({
+            "channel_id": 10, "user_id": "11",
+            "message": "@everyone @here <@&22> <@33> 架空の集合",
+            "next_remind_at": "2026-01-02T01:00:00+00:00",
+        })
+        channel.send.assert_awaited_once()
+        self.assertTrue(channel.send.call_args.args[0].startswith("⏰ <@11> "))
+        self.assertEqual(channel.send.call_args.kwargs["allowed_mentions"].to_dict(), {"users": [11], "parse": []})
 
     async def test_summary_keeps_public_channel_and_private_followup_paths_separate(self) -> None:
         text = "あ" * 4001
@@ -342,6 +359,39 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
         with patch("persona_bot.core.message_handler.BLACKLIST_MAX_VIOLATIONS", 5):
             await handler.notify_violation(message, "架空の警告")
         self.assertIn("違反が5回に達したため", message.reply.call_args.args[0])
+
+
+class AttachmentLabelTests(unittest.TestCase):
+    """会話履歴の添付表記と、対応形式の案内を確認する（#65）。"""
+
+    @staticmethod
+    def attachment(filename: str, content_type: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(filename=filename, content_type=content_type)
+
+    def history_line(self, *attachments) -> str:
+        bot = SimpleNamespace(id=99)
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=11), content="架空の発言", attachments=list(attachments),
+        )
+        return build_history_text([message], bot)
+
+    def test_history_distinguishes_images_from_other_files(self) -> None:
+        cases = {
+            "画像のみ": ((self.attachment("a.png", "image/png"),), "ユーザーの質問: 架空の発言 [画像添付あり]"),
+            "拡張子だけの画像": ((self.attachment("a.webp"),), "ユーザーの質問: 架空の発言 [画像添付あり]"),
+            "文書のみ": ((self.attachment("a.pdf", "application/pdf"),), "ユーザーの質問: 架空の発言 [添付ファイルあり]"),
+            "両方": ((self.attachment("a.png", "image/png"), self.attachment("a.txt")),
+                     "ユーザーの質問: 架空の発言 [画像添付あり] [添付ファイルあり]"),
+            "添付なし": ((), "ユーザーの質問: 架空の発言"),
+        }
+        for name, (attachments, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self.history_line(*attachments), expected)
+
+    def test_supported_attachment_guide_lists_images_and_documents_from_constants(self) -> None:
+        describe = discord_helpers.describe_supported_attachments
+        self.assertEqual(describe(), "画像（gif / jpeg / jpg / png / webp）と文書（csv / md / pdf / txt）")
+        self.assertEqual(describe(documents=False), "画像（gif / jpeg / jpg / png / webp）")
 
 
 if __name__ == "__main__":

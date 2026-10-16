@@ -12,12 +12,12 @@ from persona_bot.core.app_state import BotState, ResponseSettings
 from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.constants import (
     BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
-    HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES,
+    HISTORY_LIMIT, IMAGE_ONLY_QUESTION, MAX_DOCUMENT_SIZE_BYTES,
 )
 from persona_bot.services.content_moderator import screen_bot_response
 from persona_bot.utils.discord_helpers import (
-    attachment_is_image, clean_message_content, fetch_channel_history_text,
-    format_grounding_sources, is_supported_document_attachment,
+    attachment_is_image, clean_message_content, describe_supported_attachments,
+    fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
     is_supported_message_channel, load_image_attachments, send_long_reply,
 )
 from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
@@ -68,6 +68,11 @@ class MessageHandler:
                 f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
                 "以降のメッセージは無視されます。"
             )
+        elif count >= BLACKLIST_MAX_VIOLATIONS:
+            # 並行して届いた別の違反で既にブロック済み（record_violation は回数を増やさず
+            # just_blocked=False を返す）。そちらが 🚫 の案内を返しているため、「あと0回」の
+            # ような食い違った警告も二重の案内も出さない（ブロック中の発言は黙って破棄する）。
+            print(f"違反記録: 既にブロック済みのため警告を省略します (user_id={message.author.id})")
         else:
             remaining = BLACKLIST_MAX_VIOLATIONS - count
             await message.reply(f"⚠️ {notice}（あと{remaining}回で応答を停止します）")
@@ -76,6 +81,11 @@ class MessageHandler:
         if self.client.user is None:
             return
         if message.author == self.client.user or message.author.bot:
+            return
+        # ブロック中のユーザーは、活動の観測より前に黙って破棄する。後に置くと、無視している
+        # はずの発言で自発会話の沈黙タイマーが戻り、自律配信の話したいゲージや無応答での
+        # 退出まで左右されてしまう。
+        if self.blacklist.is_blocked(message.author.id):
             return
         is_dm = isinstance(message.channel, discord.DMChannel)
         # DM はギルドに属さないため guild_id=None として「全DM共有」の設定スロットへ収束させる。
@@ -100,9 +110,6 @@ class MessageHandler:
         # からの発言はコメントとして認めない（idea.md）ので、判定はチャンネル一致で行う。
         is_autonomous_comment = self.autonomous.is_comment_channel(message.channel.id, guild_id)
         if not accepts_normally and not is_autonomous_comment:
-            return
-
-        if self.blacklist.is_blocked(message.author.id):
             return
 
         question = clean_message_content(message, self.client.user)
@@ -161,7 +168,7 @@ class MessageHandler:
         ]
 
         if unsupported_attachments:
-            await message.reply("未対応の添付ファイルが含まれています。pdf / txt / csv / md のみ対応しています。")
+            await message.reply(f"未対応の添付ファイルが含まれています。{describe_supported_attachments()}に対応しています。")
             return
 
         if document_attachments:
@@ -253,7 +260,15 @@ class MessageHandler:
             user_id = str(message.author.id)
             image_objects = await load_image_attachments(message.attachments)
             if not question:
-                question = "この画像について説明・反応してください。"
+                if not image_objects:
+                    # 画像だけの発言で、どの画像も読み込めなかった。質問も画像も無いまま
+                    # Gemini を呼ぶと、見えていない画像への反応を作り話で返してしまうため断る。
+                    await message.reply(
+                        "画像を読み込めませんでした。"
+                        f"{describe_supported_attachments(documents=False)}の画像か確認して、もう一度送ってください。"
+                    )
+                    return None
+                question = IMAGE_ONLY_QUESTION
 
             history_text = await fetch_channel_history_text(
                 message.channel,

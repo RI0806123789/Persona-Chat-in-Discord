@@ -36,6 +36,22 @@ def attachment_is_image(attachment: discord.Attachment) -> bool:
     return content_type.startswith("image/") or suffix in IMAGE_EXTENSIONS
 
 
+def describe_supported_attachments(*, documents: bool = True) -> str:
+    """対応している添付の拡張子を、利用者向けの案内文として返す。
+
+    案内に拡張子を直書きすると、受け付ける形式を変えたときに文言だけが古いまま残るため、
+    判定に使っている IMAGE_EXTENSIONS / SUPPORTED_DOCUMENT_EXTENSIONS から組み立てる
+    （集合は順序を持たないので、表示順を固定するために並べ替える）。
+    """
+    def join(extensions: set[str]) -> str:
+        return " / ".join(sorted(extension.lstrip(".") for extension in extensions))
+
+    text = f"画像（{join(IMAGE_EXTENSIONS)}）"
+    if documents:
+        text += f"と文書（{join(SUPPORTED_DOCUMENT_EXTENSIONS)}）"
+    return text
+
+
 def clean_message_content(message: discord.Message, bot_user: Any) -> str:
     content = message.content.strip()
     if bot_user is None:
@@ -48,8 +64,12 @@ def build_history_text(messages: Sequence[discord.Message], bot_user: Any) -> st
     for history_message in messages:
         role = "BOTの回答" if history_message.author == bot_user else "ユーザーの質問"
         clean_content = clean_message_content(history_message, bot_user)
-        if history_message.attachments:
+        # 画像と文書などを区別して書く（すべて「画像」と書くと、PDF を添えた発言まで
+        # モデルが画像付きと誤解して応答してしまう）。
+        if any(attachment_is_image(attachment) for attachment in history_message.attachments):
             clean_content += " [画像添付あり]"
+        if not all(attachment_is_image(attachment) for attachment in history_message.attachments):
+            clean_content += " [添付ファイルあり]"
         lines.append(f"{role}: {clean_content}")
     return "\n".join(lines)
 

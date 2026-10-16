@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.core.background import spawn
-from persona_bot.config.constants import DOCUMENT_SUMMARY_LIMIT
+from persona_bot.config.constants import DOCUMENT_SUMMARY_LIMIT, MEMORY_COMPACT_MAX_FAILURES
 from persona_bot.core.database import Database
 from persona_bot.services import memory_service
 from persona_bot.services.memory_service import MemoryService, default_projects_memory
@@ -124,6 +124,48 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.service._compact_memory = AsyncMock(side_effect=compact)
         await self.service.flush_if_needed(force=True)
         self.assertEqual(load_json_file(self.projects_path, {}), before)
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
+
+
+class CompactionFailureCountTests(unittest.IsolatedAsyncioTestCase):
+    """プロンプトブロックでログを消したら、連続失敗の回数も戻すことを確認する（#66）。"""
+
+    async def asyncSetUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        paths = patch.multiple(
+            memory_service, MEMORY_DIR=root,
+            PROFILE_MEMORY_PATH=root / "profile.json", PROJECTS_MEMORY_PATH=root / "projects.json",
+        )
+        paths.start()
+        self.addCleanup(paths.stop)
+        quiet = patch("builtins.print")
+        quiet.start()
+        self.addCleanup(quiet.stop)
+        self.db = Database(root / "bot.db")
+        self.db.initialize()
+        self.addCleanup(self.db.close)
+        self.service = MemoryService(None, None, self.db)
+
+    async def flush_once(self, error: Exception) -> None:
+        self.service._compact_memory = AsyncMock(side_effect=error)
+        entries = self.db.pending_fetch_entries("test-user")
+        await self.service._flush_user("test-user", entries)
+
+    async def test_prompt_block_resets_failure_count_for_new_logs(self) -> None:
+        await self.service.append_pending_log("test-user", "架空の質問1", "架空の応答")
+        await self.flush_once(RuntimeError("架空の一時エラー"))
+        self.assertEqual(self.service._compact_fail_count["test-user"], 1)
+        await self.flush_once(memory_service._PromptBlockedError("架空のブロック"))
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
+        self.assertEqual(self.service._compact_fail_count.get("test-user", 0), 0)
+        # 新しいログは、上限未満の一時エラーでは消えない
+        await self.service.append_pending_log("test-user", "架空の質問2", "架空の応答")
+        for _ in range(MEMORY_COMPACT_MAX_FAILURES - 1):
+            await self.flush_once(RuntimeError("架空の一時エラー"))
+        self.assertEqual(len(self.db.pending_fetch_entries("test-user")), 1)
+        await self.flush_once(RuntimeError("架空の一時エラー"))
         self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
 
 

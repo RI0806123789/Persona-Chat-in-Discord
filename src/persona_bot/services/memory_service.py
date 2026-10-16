@@ -298,6 +298,9 @@ class MemoryService:
             print(f"記憶圧縮: 処理不能な pending_log をクリアします (user_id={user_id})。")
             async with self.io_lock:
                 await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+            # 失敗回数は「今のログ」を何回圧縮し損ねたか。消したログの分を持ち越すと、
+            # 次の新しいログが一時エラー1回で上限に達し、圧縮されないまま消されてしまう。
+            self._compact_fail_count[user_id] = 0
             return
         except Exception as error:
             await self._register_compact_failure(
