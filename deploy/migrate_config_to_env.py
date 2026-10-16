@@ -44,7 +44,7 @@ REQUIRED_KEYS = ("API_KEY_GEMINI", "TOKEN_DISCORD")
 
 # config.py（コミット済みのテンプレート）に入っているプレースホルダ。
 # これを .env へ書き写すと「設定したつもりで動かない」状態になるため未設定として扱う。
-# src/settings_loader.py の _PLACEHOLDER_VALUES と同じ値を持つこと。
+# src/persona_bot/config/settings_loader.py の _PLACEHOLDER_VALUES と同じ値を持つこと。
 PLACEHOLDER_VALUES = {
     "YOUR_GEMINI_API_KEY",
     "YOUR_DISCORD_BOT_TOKEN",

@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app_state import BotState
-import database
-from database import Database, SCHEMA_VERSION
+from persona_bot.core.app_state import BotState
+from persona_bot.core import database
+from persona_bot.core.database import Database, SCHEMA_VERSION
 
 
 class DatabaseInitializationTests(unittest.TestCase):
@@ -134,7 +134,7 @@ class DatabaseInitializationTests(unittest.TestCase):
 import os
 import sys
 sys.path.insert(0, sys.argv[2])
-import database
+from persona_bot.core import database
 db = database.Database(sys.argv[1])
 db._conn.create_function("stop_migration", 0, lambda: os._exit(17))
 statements = database._MIGRATIONS[6]

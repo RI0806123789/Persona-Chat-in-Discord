@@ -15,10 +15,10 @@ matplotlib.use("Agg")
 from matplotlib import font_manager
 import matplotlib.pyplot as plt
 
-import constants
-import graph_rendering
-from stats_service import StatsService
-from usage_graph import UsageTracker
+from persona_bot.config import constants
+from persona_bot.utils import graph_rendering
+from persona_bot.services.stats_service import StatsService
+from persona_bot.utils.usage_graph import UsageTracker
 
 
 class GraphFontConfigurationTests(unittest.TestCase):

@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from background import spawn
-from app_state import BotState
-import document_service
-from document_service import DocumentService
+from persona_bot.core.background import spawn
+from persona_bot.core.app_state import BotState
+from persona_bot.services import document_service
+from persona_bot.services.document_service import DocumentService
 
 
 class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):

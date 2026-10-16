@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app_state import BotState
-from discord_helpers import fetch_channel_history_text
-from settings_view import ResetButton, SettingsView
+from persona_bot.core.app_state import BotState
+from persona_bot.utils.discord_helpers import fetch_channel_history_text
+from persona_bot.views.settings_view import ResetButton, SettingsView
 
 
 class ConversationResetTests(unittest.IsolatedAsyncioTestCase):

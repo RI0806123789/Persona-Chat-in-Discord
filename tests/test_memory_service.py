@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from background import spawn
-from constants import DOCUMENT_SUMMARY_LIMIT
-from database import Database
-import memory_service
-from memory_service import MemoryService, default_projects_memory
-from storage import load_json_file, write_json_file
+from persona_bot.core.background import spawn
+from persona_bot.config.constants import DOCUMENT_SUMMARY_LIMIT
+from persona_bot.core.database import Database
+from persona_bot.services import memory_service
+from persona_bot.services.memory_service import MemoryService, default_projects_memory
+from persona_bot.utils.storage import load_json_file, write_json_file
 
 
 class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):

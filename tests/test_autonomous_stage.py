@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import autonomous_stage
-from autonomous_stage import pick_channel, prepare_stage
+from persona_bot.services import autonomous_stage
+from persona_bot.services.autonomous_stage import pick_channel, prepare_stage
 
 
 class AutonomousChannelSelectionTests(unittest.TestCase):

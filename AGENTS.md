@@ -4,7 +4,7 @@
 
 ## プロジェクト構成
 
-- `src/`：Pythonのボット本体。`bot.py`が設定とサービスを配線し、`database.py`がSQL、`prompting.py`がプロンプトを担当する。モジュールはパッケージ化されていない。
+- `src/`：Pythonのボット本体。`bot.py`が設定とサービスを配線し、`persona_bot/`を設定（`config/`）・中核処理（`core/`）・機能（`services/`）・画面（`views/`）・音声（`audio/`）・共通処理（`utils/`）に分ける。SQLは`core/database.py`、プロンプトは`services/prompting.py`が担当する。
 - `prompts/`：ペルソナ。`assets/`・`docs/`：素材と図。`deploy/`：運用設定例。`.github/`：Issue・PRテンプレート。
 - `memory/`・`ng/`：実行時の記憶とモデレーション関連データ。実データを検証やコミットに含めない。
 

@@ -64,12 +64,12 @@ python -m pip check
 # 外部通信・シークレット・実データ不要の回帰テスト
 python -B -m unittest discover -s tests -v
 # src/ と deploy/ の全 .py の構文確認（モジュールは起動しない）
-python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 # 個別モジュールの動作確認の例（src を import パスに足す）
-python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; assert [len(p) for p in split_message('あ' * 4001)] == [2000, 2000, 1]; print('メッセージ分割: OK')"
+python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.discord_helpers import split_message; assert [len(p) for p in split_message('あ' * 4001)] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
-確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
+確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`persona_bot.core.message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
 
 ```bash
 # 1. 依存関係のインストール (Python 3.10+)
@@ -92,7 +92,16 @@ cd src
 python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 ```
 
-**必ず `src/` の中から実行すること。** モジュール群はパッケージ化されていないフラットな構成（`__init__.py` なし）で、互いをベア名でインポートし合う（`from app_state import BotState`）。プロンプトのパスも `src/` を基準に解決される（「パス解決」の項を参照）。
+起動は従来どおり **`src/` の中から `python bot.py`** とする。`bot.py` が配線を担当し、各モジュールは `persona_bot/` パッケージ内で用途別に分ける。内部のimportは `from persona_bot.core.app_state import BotState` のようにパッケージ名から指定する。各 `__init__.py` は説明だけを置き、サービスの生成や設定読込を行わない。プロンプトの相対パスは引き続き `src/` を基準に解決する（「パス解決」の項を参照）。
+
+| フォルダ（`src/persona_bot/` 内） | 担当 |
+| --- | --- |
+| `config/` | 定数、選択肢、APIキー読込、パス解決 |
+| `core/` | 状態、Discordクライアント、コマンド、メッセージ処理、バックグラウンド処理、SQLite |
+| `services/` | Gemini、プロンプト、記憶、親密度、モデレーション、自発会話、自律行動、文書、統計、リマインダー、評価 |
+| `views/` | 機能パネルと共通UI部品 |
+| `audio/` | TTSと音声の加工 |
+| `utils/` | Discord送信、JSON入出力、時刻、グラフ描画 |
 
 ## サーバー運用 (`deploy/`)
 
@@ -368,7 +377,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ## 規約と落とし穴
 
-- **パス解決**（`constants.py`, `paths.py`）: `BASE_DIR = src/`、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。
+- **パス解決**（`persona_bot/config/constants.py`, `persona_bot/config/paths.py`）: `BASE_DIR = src/`（`constants.py` の `Path(__file__).resolve().parents[2]`）、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。
 - **設定（APIキー）**: `settings_loader.load_settings()` はプロジェクトルート直下の `.env`（パスは `constants.ENV_FILE_PATH`。**絶対パスで解決すること** — ボットは `src/` から起動するため、カレントディレクトリ基準の相対探索では見つけられない）を `python-dotenv` で読み込み、`.API_KEY_GEMINI` / `.TOKEN_DISCORD` を持つ `Settings` データクラスを返す。旧 `config.py` / `config_private.py` は ver0.1.6 で削除済み。
   - **`load_dotenv(override=False)` を変えないこと**: OS の環境変数が `.env` より優先される。systemd の `EnvironmentFile=` や Docker の `--env-file` へ移行できるようにするための挙動で、逆にするとサーバーに残った古い `.env` が黙って優先され「直したはずのキーが反映されない」事故になる。
   - **未設定なら起動を止める**: ファイル無し・変数無し・空文字・`.env.example` のプレースホルダのまま、のいずれでも `キー未設定` を出力して `SettingsError` を送出する。`load_settings()` は `bot.py` のトップレベルで呼ばれるためボットは起動しない。キーが無いまま起動すると「Discord へは接続できるが Gemini の呼び出しだけ全滅する」という切り分けの難しい状態になるため、あえて失敗させている。

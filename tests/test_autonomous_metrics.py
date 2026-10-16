@@ -10,11 +10,11 @@ import unittest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from autonomous_metrics import (
+from persona_bot.services.autonomous_metrics import (
     compute_talk_desire, describe_quiet_hours, is_quiet_hours,
     start_retry_wait_minutes, updated_activity_samples,
 )
-from constants import AUTONOMOUS_ACTIVITY_SAMPLES_MAX, AUTONOMOUS_ACTIVITY_WINDOW_MINUTES
+from persona_bot.config.constants import AUTONOMOUS_ACTIVITY_SAMPLES_MAX, AUTONOMOUS_ACTIVITY_WINDOW_MINUTES
 
 
 class AutonomousMetricsTests(unittest.TestCase):
@@ -29,8 +29,8 @@ class AutonomousMetricsTests(unittest.TestCase):
     def test_import_needs_no_discord_or_guild_settings(self) -> None:
         result = subprocess.run(
             [sys.executable, "-B", "-c",
-             "import sys; sys.modules['discord'] = None; sys.modules['app_state'] = None; "
-             "sys.path.insert(0, sys.argv[1]); import autonomous_metrics", str(SRC)],
+             "import sys; sys.modules['discord'] = None; sys.modules['persona_bot.core.app_state'] = None; "
+             "sys.path.insert(0, sys.argv[1]); from persona_bot.services import autonomous_metrics", str(SRC)],
             capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

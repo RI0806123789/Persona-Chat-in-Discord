@@ -12,10 +12,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from constants import REMINDER_MAX_PENDING_PER_USER
-from database import Database
-import reminder_service
-from reminder_service import ReminderService
+from persona_bot.config.constants import REMINDER_MAX_PENDING_PER_USER
+from persona_bot.core.database import Database
+from persona_bot.services import reminder_service
+from persona_bot.services.reminder_service import ReminderService
 
 
 class ReminderRegistrationTests(unittest.IsolatedAsyncioTestCase):

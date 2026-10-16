@@ -18,12 +18,12 @@ from pypdf.errors import PdfReadError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from bot_client import PersonaClient
-from content_moderator import ContentModerator
-from document_service import validate_pdf_file
-from memory_service import MemoryService, _PromptBlockedError
-from storage import get_prompt_block_reason, safe_response_text
-from usage_graph import UsageTracker
+from persona_bot.core.bot_client import PersonaClient
+from persona_bot.services.content_moderator import ContentModerator
+from persona_bot.services.document_service import validate_pdf_file
+from persona_bot.services.memory_service import MemoryService, _PromptBlockedError
+from persona_bot.utils.storage import get_prompt_block_reason, safe_response_text
+from persona_bot.utils.usage_graph import UsageTracker
 
 
 def json_response(text: str) -> dict:
@@ -144,7 +144,7 @@ class SdkWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 1)
 
     async def test_user_cancellation_propagates_out_of_moderation(self) -> None:
-        with patch("content_moderator.generate_content", new=AsyncMock(side_effect=asyncio.CancelledError())):
+        with patch("persona_bot.services.content_moderator.generate_content", new=AsyncMock(side_effect=asyncio.CancelledError())):
             with self.assertRaises(asyncio.CancelledError):
                 await self.moderator.check("架空の入力")
 

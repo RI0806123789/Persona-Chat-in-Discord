@@ -61,13 +61,13 @@ python -m pip check
 全Pythonソースの構文を、モジュールを起動せずに確認します。このコマンドは `.env`、実際のDB、Discord、Geminiを使わず、コンパイル結果もファイルへ保存しません。
 
 ```bash
-python -B -c "from pathlib import Path; paths = sorted(Path('src').glob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 ```
 
 ローカル処理の例として、Discord向けのメッセージ分割を確認できます。
 
 ```bash
-python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
+python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.discord_helpers import split_message; parts = split_message('あ' * 4001); assert [len(p) for p in parts] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
 文書処理・記憶圧縮・会話リセット・自律行動・会話統計などの回帰テストは標準ライブラリの `unittest` で実行できます。
@@ -76,7 +76,7 @@ python -B -c "import sys; sys.path.insert(0, 'src'); from discord_helpers import
 python -B -m unittest discover -s tests -v
 ```
 
-APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
+APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `persona_bot.core.message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
 
 [回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.10／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
 
@@ -90,8 +90,8 @@ APIキー・`.env` は不要です。外部サービスの呼び出しはモッ�
 
 - 変数・関数・クラス名は英語を使い、既存コードの命名とインデントに合わせる。
 - コメント、ドキュメント、ユーザー向け文言、ログは日本語で書く。
-- モデル名、タイムアウト、上限などの調整値は `src/constants.py` に集約する。
-- Geminiの呼び出しはサービス層、SQLは `src/database.py`、プロンプトの組み立ては `src/prompting.py` に置く。
+- モデル名、タイムアウト、上限などの調整値は `src/persona_bot/config/constants.py` に集約する。
+- Geminiの呼び出しはサービス層、SQLは `src/persona_bot/core/database.py`、プロンプトの組み立ては `src/persona_bot/services/prompting.py` に置く。
 - サーバーごとの設定は `GuildSettings` で扱い、ユーザーごとの記憶を混ぜない。
 - バックグラウンド処理の起動には `background.spawn` を使う。
 - DBの変更は既存スキーマを直接書き換えず、マイグレーションと保存・復元処理を揃える。

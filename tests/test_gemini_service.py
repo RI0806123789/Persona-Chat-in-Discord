@@ -16,9 +16,9 @@ from google.genai import errors, types
 import httpx
 from PIL import Image
 
-import gemini_service
-from gemini_service import GeminiService
-from genai_client import close_genai_client, create_genai_client
+from persona_bot.services import gemini_service
+from persona_bot.services.gemini_service import GeminiService
+from persona_bot.services.genai_client import close_genai_client, create_genai_client
 
 
 def api_error(code: int, message: str) -> errors.APIError:
@@ -433,7 +433,7 @@ class GeminiSdkTransportTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "example.txt"
             path.write_text("架空の文書", encoding="utf-8")
-            with patch("genai_client.httpx.AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
+            with patch("persona_bot.services.genai_client.httpx.AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
                 client = create_genai_client("YOUR_API_KEY")
             try:
                 with patch("google.genai._api_client.time.sleep", side_effect=AssertionError("同期sleepは禁止です。")), \
@@ -461,7 +461,7 @@ class GeminiSdkTransportTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "example.txt"
             path.write_text("架空の文書", encoding="utf-8")
-            with patch("genai_client.httpx.AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
+            with patch("persona_bot.services.genai_client.httpx.AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
                 client = create_genai_client("YOUR_API_KEY")
             try:
                 # SDKのローカル初期化・ファイル準備が終わり、転送待機へ到達できる余裕を持つ。

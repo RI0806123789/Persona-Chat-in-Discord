@@ -14,16 +14,16 @@ from zoneinfo import ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from background import spawn
-from constants import STATS_RECENT_SAMPLES_MAX
-from database import Database
-from stats_service import StatsService
+from persona_bot.core.background import spawn
+from persona_bot.config.constants import STATS_RECENT_SAMPLES_MAX
+from persona_bot.core.database import Database
+from persona_bot.services.stats_service import StatsService
 
 
 class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         # OSのタイムゾーンDBやtzdataの有無に依存させず、日本時間の集計を検証する。
-        timezone_patch = patch("stats_service.resolve_timezone", return_value=timezone(timedelta(hours=9)))
+        timezone_patch = patch("persona_bot.services.stats_service.resolve_timezone", return_value=timezone(timedelta(hours=9)))
         timezone_patch.start()
         self.addCleanup(timezone_patch.stop)
         directory = tempfile.TemporaryDirectory(prefix="stats-test-")
@@ -94,10 +94,10 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record, StatsService(self.db, self.gemini).cache["user-0"])
 
     async def test_missing_timezone_data_records_in_utc(self) -> None:
-        from timeutil import resolve_timezone
+        from persona_bot.utils.timeutil import resolve_timezone
 
-        with patch("stats_service.resolve_timezone", side_effect=resolve_timezone):
-            with patch("timeutil.ZoneInfo", side_effect=ZoneInfoNotFoundError("架空の欠落")):
+        with patch("persona_bot.services.stats_service.resolve_timezone", side_effect=resolve_timezone):
+            with patch("persona_bot.utils.timeutil.ZoneInfo", side_effect=ZoneInfoNotFoundError("架空の欠落")):
                 service = StatsService(self.db, self.gemini)
         self.assertTrue(await service.record("fallback-user", "架空", "UTCで集計", self.when))
         record = self.db.stats_load_all()["fallback-user"]

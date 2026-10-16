@@ -16,10 +16,10 @@ class MessageHandlerImportTests(unittest.TestCase):
             import sys
             from unittest.mock import patch
             sys.path.insert(0, sys.argv[1])
-            with patch('settings_loader.load_settings', side_effect=AssertionError('設定読込は禁止')), \\
-                 patch('database.Database', side_effect=AssertionError('実DBの生成は禁止')), \\
+            with patch('persona_bot.config.settings_loader.load_settings', side_effect=AssertionError('設定読込は禁止')), \\
+                 patch('persona_bot.core.database.Database', side_effect=AssertionError('実DBの生成は禁止')), \\
                  patch('socket.socket.connect', side_effect=AssertionError('外部通信は禁止')):
-                from message_handler import MessageHandler
+                from persona_bot.core.message_handler import MessageHandler
                 assert 'bot' not in sys.modules
             """)
         environment = os.environ.copy()

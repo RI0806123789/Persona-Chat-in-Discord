@@ -15,16 +15,16 @@ import discord
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app_state import BotState
-from background import spawn
-from blacklist_service import BlacklistService
-from database import Database
-from functions_view import GraphButton
-import memory_service
-from memory_service import MemoryService, default_projects_memory
-from stats_service import StatsService
-from storage import load_json_file, write_json_file
-from usage_graph import UsageTracker
+from persona_bot.core.app_state import BotState
+from persona_bot.core.background import spawn
+from persona_bot.services.blacklist_service import BlacklistService
+from persona_bot.core.database import Database
+from persona_bot.views.functions_view import GraphButton
+from persona_bot.services import memory_service
+from persona_bot.services.memory_service import MemoryService, default_projects_memory
+from persona_bot.services.stats_service import StatsService
+from persona_bot.utils.storage import load_json_file, write_json_file
+from persona_bot.utils.usage_graph import UsageTracker
 
 
 class EventLoopIOTests(unittest.IsolatedAsyncioTestCase):
@@ -95,7 +95,7 @@ class EventLoopIOTests(unittest.IsolatedAsyncioTestCase):
     async def test_blacklist_write_does_not_block_heartbeat(self) -> None:
         service = BlacklistService(self.root / "blacklist.json")
         operation, threads, progressed = self.blocking_probe(None)
-        with patch("blacklist_service.write_json_file", side_effect=operation):
+        with patch("persona_bot.services.blacklist_service.write_json_file", side_effect=operation):
             result = await service.record_violation(11, "架空の利用者")
         self.assertEqual(result, (1, False))
         self.assertTrue(progressed)
@@ -192,7 +192,7 @@ class EventLoopIOTests(unittest.IsolatedAsyncioTestCase):
         service = BlacklistService(path)
         await service.record_violation(11, "架空")
         original = path.read_bytes()
-        with patch("blacklist_service.write_json_file", side_effect=OSError("架空の障害")):
+        with patch("persona_bot.services.blacklist_service.write_json_file", side_effect=OSError("架空の障害")):
             with self.assertRaises(OSError):
                 await service.record_violation(11, "架空")
         self.assertEqual(path.read_bytes(), original)
