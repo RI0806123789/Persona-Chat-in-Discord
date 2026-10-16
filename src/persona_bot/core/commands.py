@@ -8,7 +8,7 @@ from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
-from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.utils.discord_helpers import is_administrator, reject_blocked_interaction
 from persona_bot.views.functions_view import FunctionsView
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.ng_word_service import NgWordFilter
@@ -32,6 +32,8 @@ def register_commands(
 
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
     async def functions(interaction: discord.Interaction) -> None:
+        if await reject_blocked_interaction(interaction, blacklist.is_blocked):
+            return
         # ブロック解除ボタンの表示可否を決めるため、実行者が管理者かどうかを判定する
         is_admin = is_administrator(interaction.user)
         # ペルソナ・モデル等はサーバー（ギルド）ごとに独立している。DM では guild_id が
@@ -47,6 +49,8 @@ def register_commands(
 
     @tree.command(name="join", description="ボットがボイスチャンネルに参加します")
     async def join(interaction: discord.Interaction) -> None:
+        if await reject_blocked_interaction(interaction, blacklist.is_blocked):
+            return
         member = interaction.user
         if not isinstance(member, discord.Member) or member.voice is None or member.voice.channel is None:
             await interaction.response.send_message("先にボイスチャンネルに参加してください。")
@@ -124,6 +128,8 @@ def register_commands(
         description="ボットがボイスチャンネルから退出します（自律行動の配信もここで止められます）",
     )
     async def leave(interaction: discord.Interaction) -> None:
+        if await reject_blocked_interaction(interaction, blacklist.is_blocked):
+            return
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("ボットはボイスチャンネルに参加していません。")

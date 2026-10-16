@@ -242,6 +242,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ### スラッシュコマンド (`commands.py`)
 
+`/functions`・`/join`・`/leave` は副作用の前に `reject_blocked_interaction` でブラックリストを確認する。拒否は本人だけに通知する。パネルも `PanelView.interaction_check` で毎回確認し、開いた後のブロックを反映する。`FunctionsView` が渡す `blocked_user_check` を `swap_panel` で引き継ぐこと。サブパネルへ渡し忘れると開いたままの画面から操作できてしまう。
+
 すべてのコマンドは `register_commands` で登録され、`on_ready` で同期される。全一覧: `/functions`（機能ハブ。エフェメラル）、`/join` + `/leave`（ボイスチャンネル）。**`/join` と `/leave` はどちらも先に `autonomous.stop_session()` を呼ぶ** — 自律行動でボットが自分から通話に入っている可能性があり、素の `disconnect` だけで済ませるとボットが開いたステージ枠が「配信中」の看板を出したまま残る。`/leave` での強制退出は自律行動の緊急停止手段でもある（idea.md の要件）。`/join` は配信を止めた後も同じチャンネルへ接続中なら、切り直さずにその接続を使う（切り直すと読み上げ中の音声とキューが失われる）。接続の待ち時間は `VOICE_CONNECT_TIMEOUT_SECONDS`。`/functions` はハブパネルを開き、ボタンで各機能へ分岐する: **⚙️ キャラ設定**（`SettingsView` に変身）、**📋 会話要約**（`SummaryView` に変身）、**📈 会話統計**（`StatsView` に変身。ユーザー別ダッシュボード。管理者はここから 👍 フィードバック集計も見られる）、**💬 自発会話**（`AutoTopicView` に変身。自発的な話題提供と 🎙️ 自律行動の ON/OFF・しきい値設定。「ボットが自分から話し出す」系の入口はここに統一している）、**⏰ リマインダー**（`ReminderView` に変身。本人の予定の一覧・取り消し）、**📊 グラフ**（利用トークングラフをその場で表示）、**🔄 NGワード再読込**、**🔍 Google検索**（グラウンディングのその場トグル。確定なしで即そのサーバーの `GuildSettings` に反映）、**❓ 使い方**（`HelpView` に変身。会話のしかたと全機能の説明。権限制限なし）、**🔒 統計プライバシー**（`StatsPrivacyView` に変身。本人の会話統計の収集停止・蓄積データ削除）、**🚫 ブロック解除**（**管理者専用**。ブロック中ユーザーの選択メニューから解除。管理者以外にはボタン自体を非表示）。旧コマンド（`/status`、`/summarize`、`/graph`、`/ng_reload`、`/unblock`、および `/ai`、`/set`、`/gemini`、`/setting`、`/reset`）は削除済み — 設定・要約・利用グラフ・NG再読込・ブロック解除は `/functions` ハブに、テキストチャットは mention モードの `on_message` パイプラインに統合された。
 
 ### キャラ設定 UI (`settings_view.py`, `commands.py`, `choices.py`)
@@ -329,6 +331,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
+
+`RunStatsButton` の説明文は `split_message` で分割し、最初を元パネル、続きを本人だけのfollowupへ送る。画像のFile・バッファは引き続き `finally` で回収する。`FeedbackButton` は権限・サーバー・サービスの確認後、集計より前に本人限定の応答をdeferし、結果を分割してfollowupへ送る。集計後も管理者権限を再確認し、失敗は本人だけへ案内する。
 
 `RunStatsButton` は生成とFile作成も `try` の対象にし、生成失敗時は「集計中」の元パネルをエラー表示へ更新する。成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じ、Fileの作成途中で失敗した場合も作成済みの分を回収する。他人の統計を表示する場合は生成前と送信直前に管理者権限を再確認し、対象ユーザー選択とブロック解除のSelectも操作時に再確認する。本人の統計は引き続き管理者権限なしで表示できる。
 

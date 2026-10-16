@@ -118,7 +118,7 @@ class UnblockPermissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_permission_is_rechecked_before_unblocking(self) -> None:
         for admin in (False, True):
             with self.subTest(admin=admin):
-                blacklist = SimpleNamespace(unblock=AsyncMock(return_value=True))
+                blacklist = SimpleNamespace(unblock=AsyncMock(return_value=True), is_blocked=Mock(return_value=False))
                 view = UnblockView(blacklist, [{"user_id": 22, "user_name": "架空の対象"}])
                 self.addCleanup(view.stop)
                 select = next(item for item in view.children if isinstance(item, UnblockSelect))

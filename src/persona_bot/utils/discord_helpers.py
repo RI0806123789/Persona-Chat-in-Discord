@@ -2,7 +2,7 @@ import io
 import re
 from datetime import datetime, tzinfo
 from pathlib import Path
-from typing import Any, Sequence, TypeGuard
+from typing import Any, Callable, Sequence, TypeGuard
 
 import discord
 from PIL import Image
@@ -400,6 +400,18 @@ def is_administrator(user: Any) -> bool:
     guild_permissions で権限を確認できないため。
     """
     return isinstance(user, discord.Member) and user.guild_permissions.administrator
+
+
+async def reject_blocked_interaction(
+    interaction: discord.Interaction, is_blocked: Callable[[int], bool],
+) -> bool:
+    """ブロック中なら本人だけに拒否を通知し、処理を中止するためTrueを返す。"""
+    if not is_blocked(interaction.user.id):
+        return False
+    await interaction.response.send_message(
+        "利用が制限されているため、この操作は実行できません。", ephemeral=True,
+    )
+    return True
 
 
 def format_grounding_sources(sources: list[dict[str, str]]) -> str:

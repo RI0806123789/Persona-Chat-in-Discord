@@ -298,7 +298,9 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
         callbacks = {}
         tree = SimpleNamespace(command=lambda **kwargs: lambda function: callbacks.setdefault(kwargs["name"], function))
         state = SimpleNamespace(get_guild=Mock(return_value=object()))
-        commands.register_commands(tree, state, *([None] * 8))
+        commands.register_commands(tree, state, None, None,
+                                   SimpleNamespace(is_blocked=Mock(return_value=False)),
+                                   None, None, None, None, None)
         user = make_member(admin=True)
         interaction = make_interaction(user=user)
         interaction.guild_id = 1
