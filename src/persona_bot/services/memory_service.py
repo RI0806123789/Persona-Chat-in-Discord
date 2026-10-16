@@ -67,9 +67,6 @@ class MemoryService:
         # 記憶圧縮の連続失敗回数をユーザー別に数える（あるユーザーの失敗が
         # 他ユーザーの pending_log クリア判定に影響しないようにする）。
         self._compact_fail_count: dict[str, int] = {}
-        # 文書要約は末尾の上限件数しか保存しないため、件数では追加を検出できない。
-        # 単一プロセス内の更新世代をユーザー別に数え、io_lock の下で読み書きする。
-        self._document_summary_versions: dict[str, int] = {}
 
     def ensure_storage(self) -> None:
         # プロフィール記憶は DB の profile テーブルが本体（ユーザー別）。profile.json は
@@ -217,7 +214,6 @@ class MemoryService:
         summaries.append(summary_data)
         user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
         write_json_file(PROJECTS_MEMORY_PATH, wrapper)
-        self._document_summary_versions[user_id] = self._document_summary_versions.get(user_id, 0) + 1
 
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
@@ -268,7 +264,12 @@ class MemoryService:
         会話ログ追記を数十秒ブロックしないため）。そのぶん「待っている間に増えたもの」を
         巻き込まないよう、次の2点を守ること:
           - pending_log の削除は圧縮に使った行の最大 id までに限定する。
-          - projects.json は書き込み直前に読み直し、増えた文書要約を継ぎ足す。
+          - projects.json は書き込み直前に読み直し、文書要約はその最新の一覧を引き継ぐ。
+
+        **文書要約（document_summaries）は LLM へ渡さない。** 圧縮プロンプトは
+        「不要な古い情報は削除」と指示するため、渡すと LLM の判断ひとつで要約が
+        消えたり別のキーへ書き換えられたりして、元に戻せなくなる。要約は
+        `store_document_summary` が件数の上限まで管理しているので、圧縮では触らない。
         """
         pending_text = self._format_pending_entries(entries)
         # 圧縮対象に含まれた行の最大 id。削除範囲はここまでに限定する
@@ -278,10 +279,11 @@ class MemoryService:
         async with self.io_lock:
             profile_snapshot = await run_in_thread(self._db.profile_load, user_id)
             wrapper = await run_in_thread(self._load_projects_wrapper)
-            # スナップショットと同じロック区間で世代を記録する。
-            # 圧縮中に上限から押し出された要約があっても、追加件数を失わない。
-            document_summary_version = self._document_summary_versions.get(user_id, 0)
-        projects_snapshot = self._user_projects(wrapper, user_id)
+        projects_snapshot = {
+            key: value
+            for key, value in self._user_projects(wrapper, user_id).items()
+            if key != "document_summaries"
+        }
         profile_text = json.dumps(profile_snapshot, ensure_ascii=False, indent=2)
         projects_text = json.dumps(projects_snapshot, ensure_ascii=False, indent=2)
 
@@ -323,13 +325,26 @@ class MemoryService:
             # 圧縮前のスナップショットではなく読み直すのは、待っている間に別経路
             # （文書要約の保存）が同じファイルを更新している可能性があるため。
             wrapper = await run_in_thread(self._load_projects_wrapper)
-            await run_in_thread(
-                self._save_compacted_projects, wrapper, user_id, projects_data, document_summary_version,
-            )
+            await run_in_thread(self._save_compacted_projects, wrapper, user_id, projects_data)
             await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
 
-    def _save_compacted_projects(self, wrapper, user_id, projects_data, document_summary_version) -> None:
-        self._merge_new_document_summaries(wrapper, user_id, projects_data, document_summary_version)
+    def _save_compacted_projects(
+        self, wrapper: dict[str, Any], user_id: str, projects_data: dict[str, Any],
+    ) -> None:
+        """圧縮結果でこのユーザーのスライスを差し替える。文書要約は最新の一覧を引き継ぐ。
+
+        **呼び出し側が io_lock を保持していること**（この関数はロックを取らない）。
+
+        `wrapper` は書き込み直前に読み直したものなので、圧縮前からある要約も、
+        `_compact_memory` を待っている間に `store_document_summary` が追記した要約も
+        そのまま含まれる。LLM には要約を渡していないため、出力に同名のキーがあっても
+        作り話として捨てる。既存の値は型が崩れていても書き換えずに残す
+        （読み出し側の `_build_contexts` が不正な型を読み飛ばす）。
+        """
+        projects_data.pop("document_summaries", None)
+        latest = self._user_projects(wrapper, user_id)
+        if "document_summaries" in latest:
+            projects_data["document_summaries"] = latest["document_summaries"]
         wrapper["users"][user_id] = projects_data
         write_json_file(PROJECTS_MEMORY_PATH, wrapper)
 
@@ -348,35 +363,6 @@ class MemoryService:
             except (KeyError, TypeError, ValueError):
                 continue
         return max(ids) if ids else 0
-
-    def _merge_new_document_summaries(
-        self,
-        wrapper: dict[str, Any],
-        user_id: str,
-        projects_data: dict[str, Any],
-        previous_version: int,
-    ) -> None:
-        """圧縮中に追記された文書要約を、LLM の出力（projects_data）へ継ぎ足す。
-
-        **呼び出し側が io_lock を保持していること**（この関数はロックを取らない）。
-
-        `_compact_memory` を待っている間に `store_document_summary` が
-        document_summaries へ追記していると、LLM 出力での丸ごと差し替えでその分が
-        消えてしまう。圧縮前からの更新世代の差で追加件数を求め、末尾から拾い直す。
-        世代は実行中の圧縮にだけ必要で、プロセス再起動後には引き継がない。
-        型が期待どおりでなければ安全側に倒して何もしない。
-        """
-        added_count = self._document_summary_versions.get(user_id, 0) - previous_version
-        latest = self._user_projects(wrapper, user_id).get("document_summaries")
-        if not isinstance(latest, list) or added_count <= 0:
-            return
-
-        merged = projects_data.get("document_summaries")
-        if not isinstance(merged, list):
-            merged = []
-        merged.extend(latest[-added_count:])
-        # 既存の store_document_summary と同じく、新しい方から上限件数だけ残す。
-        projects_data["document_summaries"] = merged[-DOCUMENT_SUMMARY_LIMIT:]
 
     @staticmethod
     def _format_pending_entries(entries: list[dict[str, Any]]) -> str:

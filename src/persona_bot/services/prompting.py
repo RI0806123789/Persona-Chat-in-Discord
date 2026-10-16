@@ -260,7 +260,9 @@ def build_memory_compaction_prompt(
     Args:
         pending_text: 圧縮対象の一時ログを整形したテキスト。
         profile_text: 既存のプロフィール記憶（JSON 文字列）。
-        projects_text: 既存のプロジェクト記憶（JSON 文字列）。
+        projects_text: 既存のプロジェクト記憶（JSON 文字列）。文書要約
+            （document_summaries）は呼び出し側が除いてから渡す。この指示の
+            「不要な古い情報は削除」で要約が消えないようにするため。
         anniversary_key: 記念日を保存させる profile 内のキー名
             （呼び出し側が `constants.ANNIVERSARY_PROFILE_KEY` を渡す。
             このモジュールは constants を import しないため引数で受け取る）。
