@@ -321,6 +321,7 @@ class UnblockView(PanelView):
         )
         self.blacklist = blacklist
         self.blocked_users = blocked_users
+        self.blocked_user_check = blacklist.is_blocked
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
 
@@ -365,6 +366,7 @@ class FunctionsView(PanelView):
         self.ng_filter = ng_filter
         self.blacklist = blacklist
         self.gemini = gemini
+        self.blocked_user_check = blacklist.is_blocked
         self.moderator = moderator
         self.stats = stats
         self.reminders = reminders

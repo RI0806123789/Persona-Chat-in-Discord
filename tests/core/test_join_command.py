@@ -25,7 +25,9 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
             return register
 
         self.autonomous = SimpleNamespace(stop_session=AsyncMock(return_value=False))
-        register_commands(SimpleNamespace(command=command), BotState(), *([None] * 7), self.autonomous)
+        register_commands(SimpleNamespace(command=command), BotState(), None, None,
+                          SimpleNamespace(is_blocked=Mock(return_value=False)),
+                          None, None, None, None, self.autonomous)
         self.channel = self.make_channel(20)
         self.guild = SimpleNamespace(id=1, me=object(), voice_client=None)
         self.interaction = SimpleNamespace(

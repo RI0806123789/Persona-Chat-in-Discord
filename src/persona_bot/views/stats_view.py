@@ -2,7 +2,7 @@ import discord
 from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS
-from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.utils.discord_helpers import is_administrator, split_message
 from persona_bot.services.feedback_service import FeedbackService, get_default_service
 from persona_bot.services.stats_service import StatsService
 from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, send_graph_ephemeral
@@ -98,7 +98,10 @@ class RunStatsButton(ui.Button):
             # 途中の生成失敗でも、それまでに作成したFileをfinallyで回収する。
             for filename, buffer in images:
                 files.append(discord.File(buffer, filename=filename))
-            await interaction.edit_original_response(content=caption)
+            chunks = split_message(caption)
+            await interaction.edit_original_response(content=chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk, ephemeral=True)
             if files:
                 # グラフ画像は本人だけに見えるエフェメラルの followup として送る。
                 await interaction.followup.send(files=files, ephemeral=True)
@@ -189,8 +192,18 @@ class FeedbackButton(ui.Button):
             return
 
         # パネルは残したまま、集計を新しいエフェメラルメッセージとして送る。
-        summary = await feedback.build_summary_text(interaction.guild_id)
-        await interaction.response.send_message(summary, ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            summary = await feedback.build_summary_text(interaction.guild_id)
+            # 集計の待機中に権限を失った場合も、管理者用の結果を送らない。
+            if not is_administrator(interaction.user):
+                await interaction.followup.send("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
+                return
+            for chunk in split_message(summary):
+                await interaction.followup.send(chunk, ephemeral=True)
+        except Exception as error:
+            print(f"フィードバックの集計・送信中にエラー: {error}")
+            await interaction.followup.send("エラー: フィードバックの表示に失敗しました。", ephemeral=True)
 
 
 class StatsView(PanelView):

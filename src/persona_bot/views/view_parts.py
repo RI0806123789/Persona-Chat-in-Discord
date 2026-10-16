@@ -5,6 +5,7 @@ import discord
 from discord import ui
 
 from persona_bot.config.constants import VIEW_TIMEOUT_SECONDS
+from persona_bot.utils.discord_helpers import reject_blocked_interaction
 
 # ハブ（機能パネル）を再生成する呼び出し可能オブジェクトの型。
 # functions_view を直接 import すると循環参照になるため、呼び出し側から
@@ -31,6 +32,13 @@ class PanelView(ui.View):
         self.message: discord.InteractionMessage | None = None
         # タイムアウトしたときにユーザーへ表示する文言（パネルごとに変える）。
         self.timeout_notice: str = timeout_notice
+        self.blocked_user_check: Callable[[int], bool] | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """パネルを開いた後にブロックされた利用者も、操作のたびに拒否する。"""
+        if self.blocked_user_check is None:
+            return True
+        return not await reject_blocked_interaction(interaction, self.blocked_user_check)
 
     async def on_timeout(self) -> None:
         """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
@@ -110,6 +118,7 @@ async def swap_panel(
         panel:       差し替え先のサブパネル。
         content:     差し替え後のメッセージ本文（通常は panel.build_preview()）。
     """
+    panel.blocked_user_check = getattr(hub, "blocked_user_check", None)
     await interaction.response.edit_message(content=content, view=panel)
     # ハブは役目を終えたので停止する。止めないとハブのタイムアウト処理が
     # 後からメッセージを誤って上書きする（同じメッセージを共有しているため、

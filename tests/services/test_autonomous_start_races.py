@@ -206,7 +206,7 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
     async def test_leave_while_connection_is_pending_stops_the_attempt(self) -> None:
         commands = self.make_commands()
         interaction = SimpleNamespace(
-            guild=self.guild, user="架空の利用者", response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            guild=self.guild, user=SimpleNamespace(id=11), response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
         )
 
@@ -229,7 +229,9 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
                 return callback
             return register
 
-        register_commands(SimpleNamespace(command=command), self.state, *([None] * 7), self.service)
+        register_commands(SimpleNamespace(command=command), self.state, None, None,
+                          SimpleNamespace(is_blocked=Mock(return_value=False)),
+                          None, None, None, None, self.service)
         return commands
 
     async def test_join_during_start_keeps_the_human_requested_connection(self) -> None:
