@@ -116,7 +116,7 @@ def register_commands(
     )
     async def leave(interaction: discord.Interaction) -> None:
         guild = interaction.guild
-        if guild is None or guild.voice_client is None:
+        if guild is None:
             await interaction.response.send_message("ボットはボイスチャンネルに参加していません。")
             return
 
@@ -129,6 +129,10 @@ def register_commands(
         stopped = await autonomous.stop_session(guild.id, reason=f"/leave（{interaction.user}）")
         if stopped:
             await interaction.followup.send("退出しました。（自律行動の配信を停止しました）")
+            return
+
+        if guild.voice_client is None:
+            await interaction.followup.send("ボットはボイスチャンネルに参加していません。")
             return
 
         try:

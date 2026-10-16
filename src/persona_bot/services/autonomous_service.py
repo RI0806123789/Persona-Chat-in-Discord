@@ -37,6 +37,7 @@ VoiceClient を持たせない。持たせると、管理者にキックされ�
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -96,6 +97,13 @@ from persona_bot.audio.voice import speak_text
 _NO_MENTIONS = discord.AllowedMentions.none()
 
 
+@dataclass
+class _StartAttempt:
+    """開始待機中の停止要求。接続そのものは保持せず、同時開始も抑止する。"""
+
+    stopped: bool = False
+
+
 class AutonomousService:
     """自律行動（ボイス/ステージでの配信）を管理するサービス。
 
@@ -123,6 +131,7 @@ class AutonomousService:
         self._moderator = moderator
         self._ng_filter = ng_filter
         self._usage = usage
+        self._starting: dict[int, _StartAttempt] = {}
 
     # ==========================================================================
     # on_message から呼ばれる入口
@@ -238,7 +247,8 @@ class AutonomousService:
                 return None
 
             history_text = await fetch_channel_history_text(
-                channel, None, self._client.user, AUTONOMOUS_HISTORY_LIMIT
+                channel, guild_settings.channel_reset_points.get(channel.id),
+                self._client.user, AUTONOMOUS_HISTORY_LIMIT,
             )
             full_prompt = build_autonomous_reply_prompt(
                 persona_prompt,
@@ -438,6 +448,19 @@ class AutonomousService:
     # ==========================================================================
 
     async def _start_session(self, guild: discord.Guild, guild_settings: GuildSettings) -> None:
+        """開始要求を登録し、未登録セッションへの停止要求と多重開始を扱う。"""
+        if guild.id in self._starting or guild_settings.autonomous_session is not None:
+            return
+        attempt = _StartAttempt()
+        self._starting[guild.id] = attempt
+        try:
+            await self._connect_session(guild, guild_settings, attempt)
+        finally:
+            self._starting.pop(guild.id, None)
+
+    async def _connect_session(
+        self, guild: discord.Guild, guild_settings: GuildSettings, attempt: _StartAttempt,
+    ) -> None:
         """チャンネルを1つ選んで接続し、配信を開始する。
 
         失敗した経路では必ず `_record_start_failure` を通すこと。ゲージは失敗しても
@@ -452,7 +475,7 @@ class AutonomousService:
 
         is_stage = isinstance(channel, discord.StageChannel)
         try:
-            await channel.connect(timeout=AUTONOMOUS_CONNECT_TIMEOUT_SECONDS)
+            voice_client = await channel.connect(timeout=AUTONOMOUS_CONNECT_TIMEOUT_SECONDS)
         # Forbidden は HTTPException の派生クラスなので必ず先に捕まえる。
         except discord.Forbidden:
             print(f"自律行動: {channel.name} への接続を拒否されました（権限不足）。")
@@ -467,9 +490,17 @@ class AutonomousService:
             self._record_start_failure(guild_settings)
             return
 
+        # 接続待機中の停止・無効化・静音時間への突入や、接続の差し替えを取り直す。
+        if not self._can_finish_start(guild, guild_settings, attempt, voice_client, channel.id):
+            if voice_client is not None:
+                await wait_for_cleanup(
+                    autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
+                    label="自律行動の接続後の開始中止",
+                )
+            self._record_interrupted_start(guild_settings, attempt)
+            return
+
         stage_instance_id = None
-        # 準備待機中に /join で別の接続へ差し替わっても、開始時の接続だけを対象にする。
-        voice_client = guild.voice_client
         if is_stage:
             try:
                 stage_instance_id = await autonomous_stage.prepare_stage(guild, channel)
@@ -492,10 +523,6 @@ class AutonomousService:
                 self._record_start_failure(guild_settings)
                 return
 
-        # ここまで来たら開始成功。失敗の記録は消して、次回は待たずに出られるようにする。
-        guild_settings.autonomous_start_failures = 0
-        guild_settings.autonomous_start_retry_at = None
-
         now = datetime.now(timezone.utc)
         session = AutonomousSession(
             channel_id=channel.id,
@@ -508,11 +535,44 @@ class AutonomousService:
             # 第一声を作っている間に独り言が重ならないよう、最初から busy にしておく。
             busy=True,
         )
+        # ステージ準備も待機を伴う。条件が変わっていれば、未登録の所有枠と元の接続を片付ける。
+        if not self._can_finish_start(guild, guild_settings, attempt, voice_client, channel.id):
+            await wait_for_cleanup(
+                autonomous_stage.finish_session_cleanup(
+                    guild.id, guild_settings, session, channel, guild, voice_client,
+                ),
+                label="自律行動の準備後の開始中止",
+            )
+            self._record_interrupted_start(guild_settings, attempt)
+            return
+
+        # ここまで来たら開始成功。失敗の記録は消して、次回は待たずに出られるようにする。
+        guild_settings.autonomous_start_failures = 0
+        guild_settings.autonomous_start_retry_at = None
         guild_settings.autonomous_session = session
         kind = "ステージ" if is_stage else "ボイスチャンネル"
         print(f"自律行動: {kind}「{channel.name}」で配信を開始しました（guild={guild.id}）。")
 
         spawn(self._speak_opening(guild, guild_settings, session, channel), label="自律行動の第一声")
+
+    @staticmethod
+    def _can_finish_start(
+        guild: discord.Guild, guild_settings: GuildSettings, attempt: _StartAttempt,
+        voice_client: discord.VoiceClient | None, channel_id: int,
+    ) -> bool:
+        """待機後も開始要求が有効で、元の接続・チャンネルを所有しているか。"""
+        return bool(
+            not attempt.stopped and guild_settings.autonomous_enabled and not is_quiet_hours()
+            and guild_settings.autonomous_session is None
+            and voice_client is not None and guild.voice_client is voice_client
+            and voice_client.is_connected() and getattr(voice_client.channel, "id", None) == channel_id
+        )
+
+    def _record_interrupted_start(self, guild_settings: GuildSettings, attempt: _StartAttempt) -> None:
+        """利用者の停止や時間帯制限は失敗にせず、接続異常では既存の再試行待ちを保つ。"""
+        if (not attempt.stopped and guild_settings.autonomous_enabled and not is_quiet_hours()
+                and guild_settings.autonomous_session is None):
+            self._record_start_failure(guild_settings)
 
     def _record_start_failure(self, guild_settings: GuildSettings) -> None:
         """配信の開始に失敗したことを記録し、次に試すまでの待ち時間を設定する。
@@ -543,7 +603,7 @@ class AutonomousService:
         reason: str,
         notice: str | None = None,
     ) -> bool:
-        """進行中の配信を終了する。終了したら True、そもそも配信していなければ False。
+        """配信と開始待機を停止する。停止対象があれば True、無ければ False。
 
         `/leave`・`/join` からも呼ばれる（人の操作による強制終了）。
 
@@ -556,8 +616,16 @@ class AutonomousService:
             notice: 配信チャンネルへ残す締めの一言（None なら何も投稿しない）。
         """
         guild_settings = self._state.get_guild(guild_id)
+        starting = self._starting.get(guild_id)
+        if starting is not None:
+            # connect()がまだ戻っていない場合にも、後着するセッションの登録を止める。
+            starting.stopped = True
         session = guild_settings.autonomous_session
         if session is None:
+            if starting is not None:
+                self._clear_session(guild_settings)
+                print(f"自律行動: 配信の開始を中止します（guild={guild_id} / 理由: {reason}）。")
+                return True
             return False
 
         # 待機中に /join や別の配信へ接続が差し替わっても、その接続を切らない。
@@ -636,7 +704,8 @@ class AutonomousService:
             persona_prompt = self._load_persona(response_settings)
             if persona_prompt is not None:
                 history_text = await fetch_channel_history_text(
-                    channel, None, self._client.user, AUTONOMOUS_HISTORY_LIMIT
+                    channel, guild_settings.channel_reset_points.get(channel.id),
+                    self._client.user, AUTONOMOUS_HISTORY_LIMIT,
                 )
                 full_prompt = build_autonomous_opening_prompt(
                     persona_prompt, getattr(channel, "name", ""), history_text
@@ -680,7 +749,8 @@ class AutonomousService:
                 return
 
             history_text = await fetch_channel_history_text(
-                channel, None, self._client.user, AUTONOMOUS_HISTORY_LIMIT
+                channel, guild_settings.channel_reset_points.get(channel.id),
+                self._client.user, AUTONOMOUS_HISTORY_LIMIT,
             )
             full_prompt = build_autonomous_monologue_prompt(
                 persona_prompt, history_text, session.turn_count

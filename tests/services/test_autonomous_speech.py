@@ -221,6 +221,17 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gemini.generate.await_args.args[1], "old-model")
         self.assertTrue(self.gemini.generate.await_args.kwargs["grounding"])
 
+    async def test_all_speech_paths_pass_the_channel_reset_boundary(self) -> None:
+        self.settings.channel_reset_points[10] = 77
+        for kind in ("opening", "monologue", "comment"):
+            with self.subTest(kind=kind):
+                self.history.reset_mock()
+                if kind == "comment":
+                    await self.service.handle_comment(self.make_comment(), "架空のコメント", self.settings)
+                else:
+                    await self.speak(kind)
+                self.assertEqual(self.history.await_args.args[1], 77)
+
 
 if __name__ == "__main__":
     unittest.main()
