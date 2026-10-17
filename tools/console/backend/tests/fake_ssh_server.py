@@ -597,4 +597,3 @@ async def start_fake_server(
     write_known_hosts(key_dir, host, actual_port)
     live_task = asyncio.get_running_loop().create_task(bot.live_loop(live_interval))
     return acceptor, bot, actual_port, live_task
-
