@@ -1332,6 +1332,11 @@ code {
   background: var(--md-sys-color-tertiary-container);
   color: var(--md-sys-color-on-tertiary-container);
 }
+/* 見本の値のままの接続先（色だけに頼らず「要設定」の文字で示す） */
+.m3-tag.is-unset {
+  background: var(--md-custom-warning-container);
+  color: var(--md-custom-on-warning-container);
+}
 
 .m3-stat {
   display: flex;

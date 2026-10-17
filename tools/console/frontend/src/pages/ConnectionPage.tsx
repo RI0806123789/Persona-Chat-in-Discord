@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
+import { UnsetTag } from "../components/TopBar";
 import { Button, Card, EmptyState, InlineError, Notice, StatusChip } from "../components/ui";
 import { formatDateTime, formatRelative } from "../format";
 import { usePolling } from "../hooks";
@@ -70,6 +71,7 @@ export function ConnectionPage({
                     <span className={`m3-tag ${profile.environment === "production" ? "is-prod" : "is-dev"}`}>
                       {profile.environment === "production" ? "本番" : "開発"}
                     </span>
+                    <UnsetTag profile={profile} />
                     {isCurrent && <StatusChip tone="good" label="接続中" pulse />}
                   </span>
                   <span className="body-medium mono">

@@ -5,6 +5,7 @@
 （ブラウザから任意のホストを指定できると、このバックエンドを踏み台にされる危険があるため）
 
 profiles.json があればそれを、無ければ profiles.example.json を読む。
+見本の値（YOUR_ で始まる文字列）が残っている接続先には接続しない（unset_fields で見分ける）。
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ ENVIRONMENTS = ("development", "production")
 
 # サービス名に使ってよい文字（シェルに渡すため、記号を厳しく制限する）
 _SAFE_SERVICE_NAME = re.compile(r"^[A-Za-z0-9@._-]+$")
+
+# 見本（profiles.example.json）で「書き換えてください」の印にしている値。.env.example の YOUR_GEMINI_API_KEY と同じ流儀。
+# ★ 見本の仮の値のまま接続させないこと: 仮のホスト名を DNS が偶然引けると、知らないサーバーへつなぎに行ってしまう
+#   （ホスト鍵の照合でログイン前に止まるが、接続しに行った記録は相手に残る）。
+# 見本の値の書き方を変えたら、この形と examples/ の見本もそろえて直すこと。
+_PLACEHOLDER = re.compile(r"YOUR_[A-Z0-9_]+")
 
 
 class ProfileError(Exception):
@@ -44,6 +51,18 @@ class Profile:
     journal_sudo: bool
     note: str
 
+    @property
+    def unset_fields(self) -> list[str]:
+        """見本の値（YOUR_...）のまま書き換えられていない項目の名前。空なら設定済み。"""
+        values = {
+            "host": self.host,
+            "username": self.username,
+            "key_path": self.key_path,
+            "known_hosts": self.known_hosts,
+            "bot_dir": self.bot_dir,
+        }
+        return [name for name, value in values.items() if value and _PLACEHOLDER.search(value)]
+
     def public_dict(self) -> dict:
         """画面へ返す情報。鍵ファイルの場所は返さない。"""
         return {
@@ -56,6 +75,7 @@ class Profile:
             "service": self.service,
             "bot_dir": self.bot_dir,
             "note": self.note,
+            "unset_fields": self.unset_fields,
         }
 
 

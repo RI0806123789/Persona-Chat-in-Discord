@@ -13,6 +13,9 @@ export interface Profile {
   service: string;
   bot_dir: string;
   note: string;
+  /** 見本の値（YOUR_...）のまま書き換えられていない項目。空でなければ、バックエンドは接続を断る。
+   *  古いバックエンドは返さないので、読むときは profiles.ts の unsetFieldsOf を通す */
+  unset_fields?: string[];
 }
 
 export interface ProfilesResponse {

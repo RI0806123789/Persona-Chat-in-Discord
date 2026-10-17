@@ -126,6 +126,7 @@ SSH 経由でボットを見守る開発者用の画面（React + TypeScript の
 - **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
 - **実行できるコマンドは `backend/remote_commands.py` のホワイトリストだけ。** 画面から届いた文字列をコマンドに埋め込まない。ホスト鍵の検証を切らない（`known_hosts=None` にしない）。127.0.0.1 だけで待ち受け、専用ヘッダー・Host・Origin を確かめる。
 - **自動の確認で本番の接続先へつながないこと。** 画面の確認は `backend/dev_ssh_server.py`（模擬 SSH サーバー）で行う。実際の接続先の `backend/profiles.json` と模擬サーバーの鍵 `backend/.dev/` は Git 管理外。
+- **見本（`backend/profiles.example.json`・`examples/ssh_config.example`・`examples/sudoers.example`）の書き換える値は `YOUR_` で始める**（`.env.example` と同じ流儀）。`profiles.py` の `_PLACEHOLDER` がこの形の値が残った接続先を見分け、バックエンドは接続を断る（仮のホスト名を DNS が偶然引いて、知らないサーバーへつなぎに行かないように）。見本の値の書き方を変えたら、`_PLACEHOLDER`・3つの見本・`tests/test_profiles.py` をそろえて直すこと。実際の値は見本ではなく `backend/profiles.json`（Git 管理外）に書く。
 - **依存は公開から2週間以上たった版に固定する**（`frontend/package.json` は完全一致。`.npmrc` の `save-exact`）。依存の追加は、ボットと同じく事前に相談する。
 - **伏せ字モード（`frontend/src/privacy.ts`）:** 画面が知っているホスト名・ボット名・サーバー名などを集め、エラー文・ログ・コマンド履歴の中からも探して隠す。秘密になりうる値を新しく表示したら `collectSecrets` に足すこと。ログの会話は、ボットの `usage_graph.log_snapshot` の書式（`User (…)：` から `AI：` の応答と区切り線まで）で見分けているので、**この書式を変えたら `privacy.ts`・`backend/dev_ssh_server.py`・`backend/remote_scripts/insights.py`（`User (` と `Total token count` を数える）も合わせて直す**。
 - **動き:** CSS の `--spring-*` は `frontend/src/theme/motion.ts` がばねの物理計算から作り、最初の描画より前に書き込む（CSS に静的な値は無い）。跳ねない Standard が既定（利用者の好み）。

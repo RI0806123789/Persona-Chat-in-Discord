@@ -15,6 +15,7 @@ import { LogsPage } from "./pages/LogsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
+import { unsetFieldsOf } from "./profiles";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
 import type { ConnectionState, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
 
@@ -253,6 +254,21 @@ function Console() {
   // ---- 接続・切断
   const handleConnect = useCallback(async () => {
     if (!selectedProfileId) return;
+    // 見本の値のままの接続先は、バックエンドも断るが、要求を送る前に直し方を案内する
+    const target = profiles.find((p) => p.id === selectedProfileId);
+    const unset = unsetFieldsOf(target);
+    if (target && unset.length > 0) {
+      notify({
+        tone: "critical",
+        title: `「${target.label}」はまだ設定されていません`,
+        // 見本（Git に含まれる）へ実際の接続先を書かせないよう、見本を読んでいるときはコピーから案内する
+        detail:
+          profilesSource === "profiles.json"
+            ? `backend/profiles.json の YOUR_ で始まる値（${unset.join("・")}）を書き換えてください。手順は tools/console/README.md にあります。`
+            : `backend/profiles.example.json を backend/profiles.json にコピーし、YOUR_ で始まる値（${unset.join("・")}）を書き換えてください。手順は tools/console/README.md にあります。`,
+      });
+      return;
+    }
     setConnecting(true);
     try {
       const state = await api.connect(selectedProfileId);
@@ -269,7 +285,7 @@ function Console() {
     } finally {
       setConnecting(false);
     }
-  }, [selectedProfileId, applyConnection, notify, refreshConnection]);
+  }, [selectedProfileId, profiles, profilesSource, applyConnection, notify, refreshConnection]);
   // 通知の「再試行」からは、その時点の最新の接続処理を呼ぶ
   const handleConnectRef = useRef(handleConnect);
   handleConnectRef.current = handleConnect;
@@ -463,6 +479,7 @@ function Console() {
             page={pageDef}
             connection={connection}
             profiles={profiles}
+            profilesSource={profilesSource}
             selectedProfileId={selectedProfileId}
             onSelectProfile={setSelectedProfileId}
             onConnect={() => void handleConnect()}

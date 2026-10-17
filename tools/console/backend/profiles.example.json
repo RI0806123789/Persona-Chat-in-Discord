@@ -1,4 +1,13 @@
 {
+  "_使い方": [
+    "このファイルは Git に含まれる見本です。実際の接続先は、同じフォルダの profiles.json（Git 管理外）に書きます。",
+    "1. このファイルをコピーして profiles.json を作る（PowerShell: Copy-Item profiles.example.json profiles.json）。",
+    "2. YOUR_ で始まる値を、自分の環境の値に書き換える。YOUR_ が残っている接続先には接続しません。",
+    "3. host に ~/.ssh/config の Host 名を書くと、HostName・User・IdentityFile はそこから読みます（見本: ../examples/ssh_config.example）。",
+    "4. 初めての接続先は、先に PowerShell で ssh <Host 名> を実行し、フィンガープリントを確かめて known_hosts に登録しておく。",
+    "profiles.json が無いあいだは、このファイルを読みます（開発用の模擬サーバーの dev だけは、そのまま使えます）。",
+    "項目の説明は tools/console/README.md の「接続先の設定（profiles.json）」にあります。"
+  ],
   "profiles": [
     {
       "id": "dev",
@@ -17,18 +26,18 @@
     },
     {
       "id": "prod",
-      "label": "本番サーバー（Oracle Cloud）",
+      "label": "本番サーバー",
       "environment": "production",
-      "host": "persona-bot",
+      "host": "YOUR_SSH_HOST",
       "port": null,
       "username": null,
       "key_path": null,
       "known_hosts": null,
       "use_ssh_config": true,
       "service": "bot",
-      "bot_dir": "/home/ubuntu/Persona-Chat-in-Discord",
+      "bot_dir": "/home/YOUR_SSH_USER/Persona-Chat-in-Discord",
       "journal_sudo": false,
-      "note": "host には ~/.ssh/config の Host 名（または IP）を書く。初回は PowerShell で ssh を1回実行し、known_hosts に登録しておく。"
+      "note": "host は ~/.ssh/config の Host 名、bot_dir はサーバー上のボットのフォルダ（絶対パス）。"
     }
   ]
 }

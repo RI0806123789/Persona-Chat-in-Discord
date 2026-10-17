@@ -1,0 +1,25 @@
+# =============================================================================
+# Persona Bot Console — ~/.ssh/config の見本
+#
+# このファイルは Git に含まれる見本です。手元の PC の ~/.ssh/config（Windows では
+# C:\Users\<ユーザー名>\.ssh\config）に、下の Host のまとまりを書き足して使います。
+# YOUR_ で始まる値を、自分の環境の値に書き換えてください。
+#
+# - Host の名前（YOUR_SSH_HOST）は、backend/profiles.json の prod の "host" と同じにする。
+#   ダッシュボードは HostName・User・IdentityFile をここから読む（"use_ssh_config": true のとき）。
+# - 秘密鍵は手元の ~/.ssh に置き、リポジトリの中には置かないこと。
+# - 初めて接続する前に、PowerShell で ssh YOUR_SSH_HOST を1回実行し、表示される
+#   フィンガープリントがサーバーのものと一致することを確かめてから known_hosts に登録する。
+#   ダッシュボードは known_hosts に無い・鍵が違うサーバーには接続しない。
+# =============================================================================
+
+Host YOUR_SSH_HOST
+    # サーバーの IP アドレスまたはホスト名
+    HostName YOUR_SERVER_ADDRESS
+    # サーバーにログインするユーザー名
+    User YOUR_SSH_USER
+    # ログインに使う秘密鍵（例: ~/.ssh/id_ed25519）
+    IdentityFile ~/.ssh/YOUR_PRIVATE_KEY
+    # 鍵だけで認証する（パスワードの入力待ちで固まらないように）
+    IdentitiesOnly yes
+    PasswordAuthentication no

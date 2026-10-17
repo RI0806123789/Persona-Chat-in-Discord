@@ -28,7 +28,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import remote_commands as rc
 from local_repo import local_schema_version
-from profiles import ProfileError, load_profiles
+from profiles import Profile, ProfileError, load_profiles
 from ssh_session import NotConnectedError, SshError, SshSession
 
 HOST = "127.0.0.1"
@@ -104,10 +104,13 @@ def get_connection() -> dict:
 
 @app.post("/api/connect")
 async def connect(body: ConnectRequest) -> dict:
-    profiles, _ = load_profiles()
+    profiles, source = load_profiles()
     profile = profiles.get(body.profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="指定された接続先が見つかりません。")
+    if profile.unset_fields:
+        # 見本の仮の値のままでは、名前解決が偶然通った知らないサーバーへつなぎに行きかねないので断る
+        raise HTTPException(status_code=400, detail=_unset_profile_message(profile, source))
 
     await session.connect(profile)
     try:
@@ -349,6 +352,16 @@ def _last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+def _unset_profile_message(profile: Profile, source: str) -> str:
+    """見本の値のままの接続先へ接続しようとしたときの案内。"""
+    fields = "・".join(profile.unset_fields)
+    if source == "profiles.example.json":
+        how = "backend/profiles.example.json を backend/profiles.json にコピーし、YOUR_ で始まる値を書き換えてください"
+    else:
+        how = f"backend/{source} の YOUR_ で始まる値を書き換えてください"
+    return f"接続先「{profile.label}」は見本の値のままです（{fields}）。{how}（書き換えたら接続し直すだけで反映されます）。"
+
+
 def _sudo_password_message(username: str | None, service: str) -> str:
     """sudo にパスワードが要る環境向けの案内。許可するのは起動・停止・再起動の3つだけにする例を示す。"""
     user = username or "<ユーザー名>"
@@ -356,7 +369,7 @@ def _sudo_password_message(username: str | None, service: str) -> str:
     return (
         "sudo にパスワードが必要なため実行できませんでした。サーバーで sudo visudo -f /etc/sudoers.d/persona-bot-console を開き、"
         f"「{user} ALL=(root) NOPASSWD: {commands}」の1行を書くと、この3つの操作だけをパスワードなしで許可できます"
-        "（systemctl の場所は which systemctl で確かめてください）。"
+        "（systemctl の場所は which systemctl で確かめてください。見本: tools/console/examples/sudoers.example）。"
     )
 
 

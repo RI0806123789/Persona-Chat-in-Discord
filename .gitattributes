@@ -6,3 +6,7 @@
 # そこへコピーされる .example 側を LF に保てば実害を防げる。
 deploy/*.service      text eol=lf
 deploy/*.service.example text eol=lf
+
+# ダッシュボード（tools/console）のサーバー向けの見本も LF に固定する。
+# sudoers.example を CRLF のまま貼ると、visudo が構文エラーにする（sudo の設定は壊すと復旧が難しい）。
+tools/console/examples/*.example text eol=lf

@@ -90,11 +90,43 @@ cd tools\console
 
 ## 本番サーバーにつなぐ
 
-`backend\profiles.example.json` を `backend\profiles.json`（Git 管理外）へコピーし、`prod` の `host` に `~/.ssh/config` の Host 名を書きます（HostName・User・IdentityFile はそこから読みます）。
+開発用の模擬サーバー（`dev`）は、何も設定しなくても使えます。本番などの実際のサーバーへは、次の見本をコピーして、自分の環境の値に書き換えてから接続します。
+見本はどれも Git に含まれます。**実際の値は、見本ではなくコピーした先に書いてください**（コピー先は Git に入りません）。
 
-- ダッシュボードは `~/.ssh/known_hosts` とホスト鍵を照合し、未登録・不一致なら接続しません（なりすまし対策）。初めての接続先は、先に PowerShell で `ssh <Host 名>` を実行してフィンガープリントを確かめ、登録してください。
-- 起動・停止・再起動にはパスワードなしの sudo が要ります。許可していない環境で操作すると、起動・停止・再起動の3つだけを許可する sudoers の1行を画面に案内します。
-- 本番に接続している間は、画面上端の帯と警告のバナーが出続けます。
+| 見本 | コピー先 | 書く場所 |
+| --- | --- | --- |
+| `backend/profiles.example.json` | `backend/profiles.json` | 手元の PC（Git 管理外） |
+| `examples/ssh_config.example` | `~/.ssh/config`（Windows は `C:\Users\<ユーザー名>\.ssh\config`）に書き足す | 手元の PC |
+| `examples/sudoers.example` | `/etc/sudoers.d/persona-bot-console`（`sudo visudo -f` で編集） | ボットのサーバー |
+
+見本の **`YOUR_` で始まる値**が「書き換える場所」の印です（ボットの `.env.example` と同じ流儀）。
+`YOUR_` が残っている接続先には、バックエンドが接続しません。画面では接続先に「要設定」の札が付き、直し方を案内します。
+見本の仮のホスト名をネットワークがたまたま引けてしまい、知らないサーバーへつなぎに行くことを防ぐためです。
+
+### 手順
+
+1. **SSH の設定（手元の PC）:** `examples/ssh_config.example` の `Host` のまとまりを `~/.ssh/config` に書き足し、`YOUR_SSH_HOST`（Host 名）・`YOUR_SERVER_ADDRESS`・`YOUR_SSH_USER`・`YOUR_PRIVATE_KEY` を書き換えます。
+2. **ホスト鍵の登録:** PowerShell で `ssh <Host 名>` を1回実行し、表示されるフィンガープリントがサーバーのものと一致することを確かめてから登録します。ダッシュボードは `~/.ssh/known_hosts` に無い・鍵が違うサーバーには接続しません（なりすまし対策）。
+3. **接続先の設定（手元の PC）:** `backend` フォルダで `Copy-Item profiles.example.json profiles.json` を実行し、`profiles.json` の `prod` の `host` を手順1の Host 名に、`bot_dir` をサーバー上のボットのフォルダに書き換えます。書き換えたら、接続し直すだけで反映されます（バックエンドの再起動は要りません）。
+4. **sudo の許可（ボットのサーバー）:** 画面から起動・停止・再起動するなら、`examples/sudoers.example` の1行を、`YOUR_SSH_USER` を書き換えて `/etc/sudoers.d/persona-bot-console` に書きます。許可するのはこの3つの操作だけです。見るだけなら不要です（許可していないときに操作すると、画面に同じ1行を案内します）。
+
+本番に接続している間は、画面上端の帯と警告のバナーが出続けます。
+
+### 接続先の設定（`profiles.json`）の項目
+
+| 項目 | 内容 |
+| --- | --- |
+| `id` | 接続先の名前（画面からはこれだけが届く）。重複は不可 |
+| `label` | 画面に出す名前 |
+| `environment` | `development` か `production`。`production` だと、本番の帯・警告・危険な操作の色が付く |
+| `host` | `~/.ssh/config` の Host 名、または IP アドレス・ホスト名 |
+| `port` / `username` | `null` なら `~/.ssh/config` の値（無ければ SSH の既定）を使う |
+| `key_path` / `known_hosts` | 秘密鍵と known_hosts の場所。`null` なら `~/.ssh/config` の IdentityFile と `~/.ssh/known_hosts` を使う。相対パスは `backend/` が基準 |
+| `use_ssh_config` | `true` なら `~/.ssh/config` を読む |
+| `service` | systemd のサービス名（英数字と `@._-` だけ） |
+| `bot_dir` | サーバー上のボットのフォルダ（絶対パス）。Git の情報・`bot.db`・`ng/blacklist.json` をここから読む |
+| `journal_sudo` | ログを読む権限が無いサーバーでは `true`（`sudo -n journalctl` で読む） |
+| `note` | 画面の接続ページに出すメモ |
 
 ## 安全のための設計
 
@@ -160,7 +192,7 @@ cd tools\console
 ```powershell
 cd tools\console\backend
 $env:PYTHONIOENCODING = "utf-8"
-.venv\Scripts\python.exe -B -m unittest discover -s tests -v   # 33 件
+.venv\Scripts\python.exe -B -m unittest discover -s tests -v   # 42 件
 
 cd ..\frontend
 npm run build   # 型チェック（tsc --noEmit）+ ビルド
@@ -175,6 +207,7 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 | `test_remote_scripts.py` | 一時フォルダに作った架空のボットで `insights.py` と DB 集計を実行し、次を確かめる |
 | `test_local_repo.py` | 手元の `database.py` からスキーマの版を（import せずに）読めること・読めないときの扱い |
 | `test_app_messages.py` | sudo にパスワードが要るときの案内が、起動・停止・再起動の3つだけを許可する書き方になっていること |
+| `test_profiles.py` | 見本の値（`YOUR_`）のままの接続先を見分けること・`profiles.json` が無いときに見本を読むこと・見本どうし（接続先・SSH の設定・sudoers）が食い違っていないこと |
 
 `test_ssh_integration.py` で確かめること:
 
@@ -195,6 +228,9 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 ```
 tools/console/
 ├─ start-dev.ps1                 まとめて起動
+├─ examples/
+│  ├─ ssh_config.example         ~/.ssh/config に書き足す Host の見本
+│  └─ sudoers.example            サーバーで起動・停止・再起動だけを許可する sudoers の見本
 ├─ backend/
 │  ├─ app.py                     API（FastAPI）。画面の配信も兼ねる
 │  ├─ ssh_session.py             SSH 接続の管理（asyncssh）・コマンド履歴
@@ -202,7 +238,7 @@ tools/console/
 │  ├─ remote_scripts/insights.py サーバー側で動かす集計（Discord API・DB・ログ）
 │  ├─ local_repo.py              手元のリポジトリから読む情報（スキーマの版。import せず ast で読む）
 │  ├─ profiles.py                接続先（profiles.json）の読み込みと検証
-│  ├─ profiles.example.json      接続先の見本（dev = 模擬サーバー / prod = 本番）
+│  ├─ profiles.example.json      接続先の見本（dev = 模擬サーバー / prod = 本番。コピーして profiles.json を作る）
 │  ├─ dev_ssh_server.py          開発用の模擬 SSH サーバー（初回起動で .dev/ に鍵を作る）
 │  └─ tests/
 └─ frontend/src/

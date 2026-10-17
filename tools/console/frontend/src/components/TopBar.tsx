@@ -3,6 +3,7 @@
 import { formatRelative } from "../format";
 import type { PageDef } from "../navigation";
 import { usePrivacy } from "../privacy";
+import { unsetFieldsOf } from "../profiles";
 import { SEED_OPTIONS } from "../theme/theme";
 import type { ConnectionState, Profile } from "../types";
 import { Icon } from "./Icon";
@@ -21,6 +22,7 @@ export function TopAppBar({
   page,
   connection,
   profiles,
+  profilesSource,
   selectedProfileId,
   onSelectProfile,
   onConnect,
@@ -45,6 +47,8 @@ export function TopAppBar({
   page: PageDef;
   connection: ConnectionState | null;
   profiles: Profile[];
+  /** 接続先を読んだファイル名（profiles.json か、無ければ profiles.example.json） */
+  profilesSource: string;
   selectedProfileId: string;
   onSelectProfile: (id: string) => void;
   onConnect: () => void;
@@ -105,6 +109,7 @@ export function TopAppBar({
 
         <ProfileMenu
           profiles={profiles}
+          source={profilesSource}
           selectedProfileId={selectedProfileId}
           onSelect={onSelectProfile}
           disabled={connected || connecting}
@@ -149,11 +154,13 @@ export function TopAppBar({
 /** 接続先の選択。ブラウザ標準の選択欄の代わりに M3 のメニューを使い、本番 / 開発の札を付ける。 */
 function ProfileMenu({
   profiles,
+  source,
   selectedProfileId,
   onSelect,
   disabled,
 }: {
   profiles: Profile[];
+  source: string;
   selectedProfileId: string;
   onSelect: (id: string) => void;
   disabled: boolean;
@@ -177,7 +184,7 @@ function ProfileMenu({
         <Icon name="expand" size={22} className="m3-select-arrow" />
       </button>
       <MenuSurface controller={menu} label="接続先" className="m3-profile-menu">
-        <MenuHeading>接続先（backend/profiles.json）</MenuHeading>
+        <MenuHeading>接続先（backend/{source || "profiles.json"}）</MenuHeading>
         {profiles.map((profile) => (
           <button
             key={profile.id}
@@ -193,6 +200,7 @@ function ProfileMenu({
           >
             <EnvTag environment={profile.environment} />
             <span className="m3-menu-item-text">{profile.label}</span>
+            <UnsetTag profile={profile} />
             {profile.id === selectedProfileId && <Icon name="check" size={20} className="m3-menu-check" />}
           </button>
         ))}
@@ -201,8 +209,19 @@ function ProfileMenu({
   );
 }
 
-function EnvTag({ environment }: { environment: Profile["environment"] }) {
+export function EnvTag({ environment }: { environment: Profile["environment"] }) {
   return <span className={`m3-tag ${environment === "production" ? "is-prod" : "is-dev"}`}>{environment === "production" ? "本番" : "開発"}</span>;
+}
+
+/** 見本の値（YOUR_...）のまま書き換えられていない接続先に付ける札。 */
+export function UnsetTag({ profile }: { profile: Profile }) {
+  const unset = unsetFieldsOf(profile);
+  if (unset.length === 0) return null;
+  return (
+    <span className="m3-tag is-unset" title={`見本の値のまま: ${unset.join("・")}`}>
+      要設定
+    </span>
+  );
 }
 
 /** 表示の設定: ライト / ダーク（またはシステムに合わせる）と、配色の基準色（シード色）。 */
