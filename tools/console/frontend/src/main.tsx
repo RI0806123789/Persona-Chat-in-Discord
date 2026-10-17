@@ -6,18 +6,23 @@ import "@fontsource-variable/noto-sans-jp";
 import "material-symbols/rounded.css";
 import App from "./App";
 import "./styles.css";
+import { applyMotion } from "./theme/motion";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
 
-// 最初の描画より前に配色を決める（一瞬だけ色の無い画面が出ないように）
-function initialSeedHex(): string {
+function readStored(key: string): unknown {
   try {
-    const saved = JSON.parse(window.localStorage.getItem("pbc.seed") ?? "null") as string | null;
-    return (SEED_OPTIONS.find((seed) => seed.id === saved) ?? SEED_OPTIONS[0]).hex;
+    return JSON.parse(window.localStorage.getItem(key) ?? "null");
   } catch {
-    return SEED_OPTIONS[0].hex;
+    return null;
   }
 }
-applyTheme(initialSeedHex());
+
+// 最初の描画より前に、配色・ライト / ダーク・動きを決める（一瞬だけ違う見た目が出ないように）
+const savedSeed = readStored("pbc.seed");
+applyTheme((SEED_OPTIONS.find((seed) => seed.id === savedSeed) ?? SEED_OPTIONS[0]).hex);
+const savedTheme = readStored("pbc.theme");
+if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
+applyMotion();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

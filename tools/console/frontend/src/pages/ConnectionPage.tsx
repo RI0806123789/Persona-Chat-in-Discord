@@ -2,8 +2,9 @@ import { useCallback, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { Button, Card, EmptyState, InlineError, Notice, StatusChip } from "../components/ui";
-import { formatDateTime, formatRelative, maskIf } from "../format";
+import { formatDateTime, formatRelative } from "../format";
 import { usePolling } from "../hooks";
+import { usePrivacy } from "../privacy";
 import type { CommandRecord, ConnectionState, Profile } from "../types";
 
 const HISTORY_INTERVAL_MS = 3000;
@@ -18,7 +19,6 @@ export function ConnectionPage({
   connecting,
   onConnect,
   onDisconnect,
-  privacy,
   now,
 }: {
   profiles: Profile[];
@@ -30,9 +30,9 @@ export function ConnectionPage({
   connecting: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
-  privacy: boolean;
   now: number;
 }) {
+  const privacy = usePrivacy();
   const [history, setHistory] = useState<CommandRecord[]>([]);
   const connected = connection?.connected ?? false;
 
@@ -73,15 +73,15 @@ export function ConnectionPage({
                     {isCurrent && <StatusChip tone="good" label="接続中" pulse />}
                   </span>
                   <span className="body-medium mono">
-                    {profile.username ? `${maskIf(privacy, profile.username)}@` : ""}
-                    {maskIf(privacy, profile.host)}
+                    {profile.username ? `${privacy.mask(profile.username)}@` : ""}
+                    {privacy.mask(profile.host)}
                     {profile.port ? `:${profile.port}` : ""}
                     {!profile.username && !profile.port ? "（~/.ssh/config を参照）" : ""}
                   </span>
                   <span className="body-small muted">
-                    サービス <code>{profile.service}</code> · <code>{profile.bot_dir}</code>
+                    サービス <code>{profile.service}</code> · <code>{privacy.redact(profile.bot_dir)}</code>
                   </span>
-                  {profile.note && <span className="body-small muted">{profile.note}</span>}
+                  {profile.note && <span className="body-small muted">{privacy.redact(profile.note)}</span>}
                 </span>
               </button>
             );
@@ -115,9 +115,9 @@ export function ConnectionPage({
         {connection?.last_error && !connected && <InlineError>{connection.last_error}</InlineError>}
         <dl className="kv">
           <dt>ホスト鍵</dt>
-          <dd className="mono break">{maskIf(privacy, connection?.fingerprint)}</dd>
+          <dd className="mono break">{privacy.mask(connection?.fingerprint)}</dd>
           <dt>ホスト名</dt>
-          <dd className="mono">{maskIf(privacy, connection?.server?.hostname)}</dd>
+          <dd className="mono">{privacy.mask(connection?.server?.hostname)}</dd>
           <dt>OS</dt>
           <dd>{connection?.server?.os || "—"}</dd>
           <dt>カーネル</dt>
@@ -148,8 +148,8 @@ export function ConnectionPage({
                     <td className="nowrap">
                       <Icon name={record.ok ? "checkCircle" : "error"} size={18} filled className={record.ok ? "ok-icon" : "err-icon"} /> {record.label}
                     </td>
-                    <td className="mono command-cell" title={record.error ?? record.command}>
-                      {record.error ?? record.command}
+                    <td className="mono command-cell" title={privacy.redact(record.error ?? record.command)}>
+                      {privacy.redact(record.error ?? record.command)}
                     </td>
                     <td className="num mono">{record.exit_status ?? "—"}</td>
                     <td className="num mono">{record.duration_ms} ms</td>

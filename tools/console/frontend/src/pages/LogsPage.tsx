@@ -5,6 +5,7 @@ import { ConnectedButtonGroup, IconButton, StatusChip, type GroupOption } from "
 import { formatClock } from "../format";
 import type { LogStream } from "../hooks";
 import { LEVEL_LABELS, classifyEntries, displayMessage, type LogLevel } from "../logs";
+import { conversationLines, redactLogLine, usePrivacy } from "../privacy";
 import type { Profile } from "../types";
 import { NotConnected } from "./shared";
 
@@ -30,11 +31,19 @@ export function LogsPage({
   const [level, setLevel] = useState<LevelFilter>("all");
   const [follow, setFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const privacy = usePrivacy();
 
+  // 伏せ字モードでは、会話の本文と分かっている名前を隠した文で表示し、絞り込みもその文に対して行う
+  // （隠した中身が絞り込みの一致で分かってしまわないように）
   const withLevels = useMemo(() => {
     const levels = classifyEntries(stream.entries);
-    return stream.entries.map((entry, index) => ({ entry, level: levels[index], text: displayMessage(entry) }));
-  }, [stream.entries]);
+    const conversation = conversationLines(stream.entries);
+    return stream.entries.map((entry, index) => ({
+      entry,
+      level: levels[index],
+      text: redactLogLine(displayMessage(entry), conversation[index], privacy),
+    }));
+  }, [stream.entries, privacy]);
   const counts = useMemo(() => {
     const result: Record<LevelFilter, number> = { all: withLevels.length, error: 0, warn: 0, info: 0, system: 0 };
     for (const item of withLevels) result[item.level] += 1;

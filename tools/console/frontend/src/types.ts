@@ -121,6 +121,8 @@ export interface DbSummary {
   size_bytes?: number;
   wal_bytes?: number;
   schema_version?: number;
+  /** 手元のリポジトリの database.py にある SCHEMA_VERSION（読めなければ null） */
+  latest_schema_version?: number | null;
   tables?: Record<string, number>;
   reminders_by_status?: Record<string, number>;
   queue_by_status?: Record<string, number>;

@@ -1,7 +1,8 @@
 import { LoadingIndicator } from "../components/expressive";
 import { Icon, type IconName } from "../components/Icon";
 import { Card, Chip, InlineError, Notice, StatusChip } from "../components/ui";
-import { formatRelative, maskIf } from "../format";
+import { formatRelative } from "../format";
+import { usePrivacy } from "../privacy";
 import type { GuildSettingsView, Insights, Profile } from "../types";
 import { NotConnected } from "./shared";
 
@@ -13,7 +14,6 @@ export function GuildsPage({
   insights,
   insightsFetchedAt,
   insightsError,
-  privacy,
   now,
 }: {
   connected: boolean;
@@ -23,9 +23,9 @@ export function GuildsPage({
   insights: Insights | null;
   insightsFetchedAt: number | null;
   insightsError: string | null;
-  privacy: boolean;
   now: number;
 }) {
+  const privacy = usePrivacy();
   if (!connected) {
     return <NotConnected profile={selectedProfile} connecting={connecting} onConnect={onConnect} />;
   }
@@ -59,15 +59,15 @@ export function GuildsPage({
         <section key={`${guild.name}-${index}`} className="m3-card m3-card-filled guild-card span-6">
           <header className="guild-head">
             <span className="guild-avatar" aria-hidden="true">
-              {privacy ? "•" : guild.name.slice(0, 1)}
+              {privacy.enabled ? "•" : Array.from(guild.name)[0]}
             </span>
             <div className="guild-title">
-              <h2 className="title-large">{maskIf(privacy, guild.name)}</h2>
+              <h2 className="title-large">{privacy.mask(guild.name)}</h2>
               <div className="chips">
                 <Chip icon="group">{guild.members ?? "—"} 人</Chip>
                 <Chip icon="person">オンライン {guild.online ?? "—"}</Chip>
                 {guild.voice_channel ? (
-                  <StatusChip tone="good" icon="voice" label={`ボイス: ${maskIf(privacy, guild.voice_channel)}`} />
+                  <StatusChip tone="good" icon="voice" label={`ボイス: ${privacy.mask(guild.voice_channel)}`} />
                 ) : (
                   <StatusChip tone="neutral" label="ボイス未接続" />
                 )}

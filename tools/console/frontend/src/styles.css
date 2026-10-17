@@ -1,9 +1,10 @@
 /* ============================================================
    Persona Bot Console — Material 3 Expressive
    色: theme/theme.ts がシード色から生成する --md-sys-color-*（SchemeExpressive / 2025 年版）
-   形・文字・動き: このファイルのトークン（--md-sys-shape-* / 文字クラス / --motion-*）
-   動きは M3 Expressive のばね（spring）。利用者の好みに合わせ、跳ねの少ない Standard 方式
-   （減衰比 0.9 = 行き過ぎ 0.15%）を使い、「ぬるっと」止める。
+   形・文字: このファイルのトークン（--md-sys-shape-* / 文字クラス）
+   動き: theme/motion.ts がばね（spring）の物理計算から作る --spring-*（時間 + linear()）。
+   利用者の好みに合わせ、跳ねない Standard 方式（減衰比 0.9 = 行き過ぎ 0.15%）で「ぬるっと」止める。
+   使い分け: --spring-spatial-* = 位置・大きさ・形 / --spring-effects-* = 色・透明度
    ============================================================ */
 
 :root {
@@ -17,16 +18,6 @@
   --md-sys-shape-extra-large-increased: 32px;
   --md-sys-shape-extra-extra-large: 48px;
   --md-sys-shape-full: 9999px;
-
-  /* ---- 動き（ばねの軌跡を linear() で近似したもの） */
-  --motion-spatial: linear(0, 0.0494, 0.1609, 0.2954, 0.4303, 0.5532, 0.6588, 0.7457, 0.8148, 0.8683, 0.9086, 0.9383, 0.9597, 0.9747, 0.9849, 0.9918, 0.9962, 0.9988, 1.0004, 1.0012, 1.0015, 1.0015, 1.0014, 1.0012, 1);
-  --motion-effects: linear(0, 0.0574, 0.1799, 0.3201, 0.4544, 0.5721, 0.6703, 0.7494, 0.8115, 0.8596, 0.8961, 0.9236, 0.9442, 0.9594, 0.9706, 0.9787, 0.9847, 0.989, 0.9921, 0.9944, 0.996, 0.9972, 0.998, 0.9986, 1);
-  --motion-spatial-fast: 224ms;
-  --motion-spatial-default: 317ms;
-  --motion-spatial-slow: 484ms;
-  --motion-effects-fast: 150ms;
-  --motion-effects-default: 231ms;
-  --motion-effects-slow: 326ms;
 
   /* ---- 文字 */
   --font-brand: "Roboto Flex Variable", "Noto Sans JP Variable", system-ui, sans-serif;
@@ -177,7 +168,7 @@ code {
 .page {
   max-width: 1600px;
   margin: 0 auto;
-  animation: page-in var(--motion-spatial-slow) var(--motion-spatial) both;
+  animation: page-in var(--spring-spatial-slow) both;
 }
 
 @keyframes page-in {
@@ -199,7 +190,7 @@ code {
 }
 
 .grid > * {
-  animation: card-in var(--motion-spatial-slow) var(--motion-spatial) both;
+  animation: card-in var(--spring-spatial-slow) both;
 }
 .grid > *:nth-child(2) { animation-delay: 40ms; }
 .grid > *:nth-child(3) { animation-delay: 80ms; }
@@ -234,7 +225,7 @@ code {
   width: var(--rail-collapsed);
   padding: 20px 0 16px;
   overflow: hidden;
-  transition: width var(--motion-spatial-default) var(--motion-spatial);
+  transition: width var(--spring-spatial-default);
 }
 
 .m3-rail-top {
@@ -252,7 +243,7 @@ code {
   color: var(--md-sys-color-primary);
   white-space: nowrap;
   opacity: 0;
-  transition: opacity var(--motion-effects-default) var(--motion-effects);
+  transition: opacity var(--spring-effects-default);
 }
 .m3-rail-brand .title-medium {
   color: var(--md-sys-color-on-surface);
@@ -278,9 +269,9 @@ code {
   overflow: hidden;
   align-self: flex-start;
   transition:
-    width var(--motion-spatial-default) var(--motion-spatial),
-    border-radius var(--motion-spatial-fast) var(--motion-spatial),
-    box-shadow var(--motion-effects-default) var(--motion-effects);
+    width var(--spring-spatial-default),
+    border-radius var(--spring-spatial-fast),
+    box-shadow var(--spring-effects-default);
 }
 .m3-fab::before,
 .m3-btn::before,
@@ -300,7 +291,7 @@ code {
   background: currentColor;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--motion-effects-fast) var(--motion-effects);
+  transition: opacity var(--spring-effects-fast);
 }
 .m3-fab:hover:not(:disabled) {
   box-shadow: var(--md-elevation-3);
@@ -321,7 +312,7 @@ code {
 .m3-fab-label {
   white-space: nowrap;
   opacity: 0;
-  transition: opacity var(--motion-effects-default) var(--motion-effects);
+  transition: opacity var(--spring-effects-default);
 }
 
 .m3-rail-items {
@@ -354,9 +345,9 @@ code {
   height: 32px;
   border-radius: var(--md-sys-shape-full);
   transition:
-    width var(--motion-spatial-default) var(--motion-spatial),
-    height var(--motion-spatial-default) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects);
+    width var(--spring-spatial-default),
+    height var(--spring-spatial-default),
+    background var(--spring-effects-default);
 }
 /* 選ばれた項目の丸い背景（アクティブインジケーター）。中心から広がって現れる */
 .m3-rail-indicator::after {
@@ -369,8 +360,8 @@ code {
   opacity: 0;
   z-index: -1;
   transition:
-    transform var(--motion-spatial-default) var(--motion-spatial),
-    opacity var(--motion-effects-fast) var(--motion-effects);
+    transform var(--spring-spatial-default),
+    opacity var(--spring-effects-fast);
 }
 .m3-rail-indicator {
   z-index: 0;
@@ -400,12 +391,12 @@ code {
   white-space: nowrap;
   opacity: 0;
   transition:
-    max-width var(--motion-spatial-default) var(--motion-spatial),
-    opacity var(--motion-effects-fast) var(--motion-effects);
+    max-width var(--spring-spatial-default),
+    opacity var(--spring-effects-fast);
 }
 .m3-rail-label {
   white-space: nowrap;
-  transition: opacity var(--motion-effects-fast) var(--motion-effects);
+  transition: opacity var(--spring-effects-fast);
 }
 
 .m3-rail-foot {
@@ -470,52 +461,84 @@ code {
   display: none;
 }
 
-/* 展開したレール（1200px 以上でだけ広げる） */
-@media (min-width: 1200px) {
-  .rail-expanded .m3-rail {
-    width: var(--rail-expanded);
-    align-items: stretch;
-  }
-  .rail-expanded .m3-rail-brand,
-  .rail-expanded .m3-fab-label {
-    opacity: 1;
-  }
-  .rail-expanded .m3-fab {
-    width: calc(100% - 40px);
-  }
-  .rail-expanded .m3-rail-item {
-    padding: 0;
-  }
-  .rail-expanded .m3-rail-indicator {
-    justify-content: flex-start;
-    gap: 12px;
-    width: 100%;
-    height: 56px;
-    padding: 0 16px;
-  }
-  .rail-expanded .m3-rail-label-inline {
-    max-width: 180px;
-    opacity: 1;
-  }
-  .rail-expanded .m3-rail-label {
-    display: none;
-  }
-  .rail-expanded .m3-env {
-    justify-content: flex-start;
-  }
-  .rail-expanded .m3-env > div {
-    display: flex;
-  }
-  .rail-expanded .m3-rail-help {
-    justify-content: flex-start;
-  }
-  .rail-expanded .m3-rail-help .label-large,
-  .rail-expanded .m3-rail-help .m3-kbd {
-    display: inline-flex;
-  }
-  .rail-expanded .m3-rail-help .m3-kbd {
-    margin-left: auto;
-  }
+/* 展開したレール。常設は 1200px 以上でだけ（App が is-expanded を付ける）、モーダルは常に展開する */
+.m3-rail.is-expanded {
+  width: var(--rail-expanded);
+  align-items: stretch;
+}
+.m3-rail.is-expanded .m3-rail-brand,
+.m3-rail.is-expanded .m3-fab-label {
+  opacity: 1;
+}
+.m3-rail.is-expanded .m3-fab {
+  width: calc(100% - 40px);
+}
+.m3-rail.is-expanded .m3-rail-item {
+  padding: 0;
+}
+.m3-rail.is-expanded .m3-rail-indicator {
+  justify-content: flex-start;
+  gap: 12px;
+  width: 100%;
+  height: 56px;
+  padding: 0 16px;
+}
+.m3-rail.is-expanded .m3-rail-label-inline {
+  max-width: 180px;
+  opacity: 1;
+}
+.m3-rail.is-expanded .m3-rail-label {
+  display: none;
+}
+.m3-rail.is-expanded .m3-env {
+  justify-content: flex-start;
+}
+.m3-rail.is-expanded .m3-env > div {
+  display: flex;
+}
+.m3-rail.is-expanded .m3-rail-help {
+  justify-content: flex-start;
+}
+.m3-rail.is-expanded .m3-rail-help .label-large,
+.m3-rail.is-expanded .m3-rail-help .m3-kbd {
+  display: inline-flex;
+}
+.m3-rail.is-expanded .m3-rail-help .m3-kbd {
+  margin-left: auto;
+}
+
+/* 画面の上に重ねて開く、広げたレール（1200px 未満）。左から滑り込み、背景を暗くする */
+.m3-modal-rail-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: transparent;
+  visibility: hidden;
+  transition:
+    background var(--spring-effects-default),
+    visibility 0s linear var(--spring-spatial-default-duration);
+}
+.m3-modal-rail-scrim.is-open {
+  visibility: visible;
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
+  transition:
+    background var(--spring-effects-default),
+    visibility 0s;
+}
+.m3-rail.is-modal {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  max-width: calc(100vw - 56px);
+  border-radius: 0 var(--md-sys-shape-large) var(--md-sys-shape-large) 0;
+  background: var(--md-sys-color-surface-container);
+  box-shadow: var(--md-elevation-2);
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform var(--spring-spatial-default);
+}
+.m3-modal-rail-scrim.is-open .m3-rail.is-modal {
+  transform: none;
 }
 
 /* 狭い画面のナビゲーションバー */
@@ -577,7 +600,7 @@ code {
   height: 10px;
   border-radius: 50%;
   background: var(--md-sys-color-outline);
-  transition: background var(--motion-effects-default) var(--motion-effects);
+  transition: background var(--spring-effects-default);
 }
 .m3-conn-chip.is-connected .m3-conn-dot {
   --tone: var(--md-custom-success);
@@ -594,33 +617,61 @@ code {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.m3-select {
+/* 接続先の選択（押すと M3 のメニューが開く） */
+.m3-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.m3-select-button {
   position: relative;
   display: inline-flex;
   align-items: center;
-}
-.m3-select select {
-  appearance: none;
+  gap: 8px;
   height: 40px;
-  max-width: 240px;
-  padding: 0 40px 0 16px;
+  max-width: 280px;
+  padding: 0 8px 0 12px;
   border: 0;
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-highest);
   color: var(--md-sys-color-on-surface);
-  font-size: 14px;
-  font-weight: 500;
   cursor: pointer;
+  overflow: hidden;
+  transition: border-radius var(--spring-spatial-fast);
 }
-.m3-select select:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.m3-select .icon {
+.m3-select-button::before {
+  content: "";
   position: absolute;
-  right: 10px;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
   pointer-events: none;
+  transition: opacity var(--spring-effects-fast);
+}
+.m3-select-button:hover:not(:disabled)::before {
+  opacity: 0.08;
+}
+.m3-select-button.is-open {
+  border-radius: var(--md-sys-shape-medium);
+}
+.m3-select-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.m3-select-button .m3-tag {
+  margin-left: 0;
+}
+.m3-select-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m3-select-arrow {
   color: var(--md-sys-color-on-surface-variant);
+  transition: transform var(--spring-spatial-default);
+}
+.m3-select-button.is-open .m3-select-arrow {
+  transform: rotate(180deg);
 }
 
 .m3-banner {
@@ -662,10 +713,10 @@ code {
   cursor: pointer;
   overflow: hidden;
   transition:
-    border-radius var(--motion-spatial-fast) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects),
-    box-shadow var(--motion-effects-default) var(--motion-effects),
-    opacity var(--motion-effects-fast) var(--motion-effects);
+    border-radius var(--spring-spatial-fast),
+    background var(--spring-effects-default),
+    box-shadow var(--spring-effects-default),
+    opacity var(--spring-effects-fast);
 }
 .m3-btn:has(> .icon:first-child),
 .m3-btn:has(> .m3-btn-spinner:first-child) {
@@ -776,9 +827,9 @@ code {
   cursor: pointer;
   overflow: hidden;
   transition:
-    border-radius var(--motion-spatial-fast) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects),
-    color var(--motion-effects-default) var(--motion-effects);
+    border-radius var(--spring-spatial-fast),
+    background var(--spring-effects-default),
+    color var(--spring-effects-default);
 }
 .m3-icon-btn:hover:not(:disabled)::before {
   opacity: 0.08;
@@ -810,7 +861,8 @@ code {
 .m3-icon-btn-outlined {
   box-shadow: inset 0 0 0 1px var(--md-sys-color-outline-variant);
 }
-.m3-icon-btn.is-toggle.is-selected {
+.m3-icon-btn.is-toggle.is-selected,
+.m3-icon-btn.is-open {
   border-radius: var(--md-sys-shape-medium);
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
@@ -835,7 +887,7 @@ code {
   font-weight: 500;
   cursor: pointer;
   overflow: hidden;
-  transition: border-radius var(--motion-spatial-fast) var(--motion-spatial);
+  transition: border-radius var(--spring-spatial-fast);
 }
 .m3-split-leading {
   padding: 0 16px 0 16px;
@@ -847,7 +899,7 @@ code {
   border-radius: var(--md-sys-shape-extra-small) var(--md-sys-shape-full) var(--md-sys-shape-full) var(--md-sys-shape-extra-small);
 }
 .m3-split-trailing .icon {
-  transition: transform var(--motion-spatial-default) var(--motion-spatial);
+  transition: transform var(--spring-spatial-default);
 }
 /* メニューを開くと、右側のボタンが丸くなり矢印が裏返る（M3 Expressive） */
 .m3-split-trailing.is-open {
@@ -887,23 +939,56 @@ code {
   transform-origin: top right;
   visibility: hidden;
   transition:
-    opacity var(--motion-effects-fast) var(--motion-effects),
-    transform var(--motion-spatial-fast) var(--motion-spatial),
-    visibility 0s linear var(--motion-spatial-fast);
+    opacity var(--spring-effects-fast),
+    transform var(--spring-spatial-fast),
+    visibility 0s linear var(--spring-spatial-fast-duration);
 }
 .m3-menu.is-open {
   opacity: 1;
   transform: none;
   visibility: visible;
   transition:
-    opacity var(--motion-effects-fast) var(--motion-effects),
-    transform var(--motion-spatial-default) var(--motion-spatial),
+    opacity var(--spring-effects-fast),
+    transform var(--spring-spatial-default),
     visibility 0s;
 }
-.m3-split .m3-menu {
+.m3-menu.align-start {
   left: 0;
   right: auto;
   transform-origin: top left;
+}
+.m3-menu-divider {
+  width: 100%;
+  height: 1px;
+  margin: 8px 0;
+  border: 0;
+  background: var(--md-sys-color-outline-variant);
+}
+.m3-menu-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* メニューの中は矢印キーで移るので、フォーカスは外枠ではなく面の濃さで示す */
+.m3-menu-item:focus-visible {
+  outline: none;
+}
+.m3-menu-item:focus-visible::before {
+  opacity: 0.12;
+}
+.m3-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--md-sys-color-secondary);
+}
+.m3-menu-item .m3-tag {
+  margin-left: 0;
+}
+.m3-profile-menu {
+  min-width: 280px;
+}
+.m3-display-menu {
+  min-width: 260px;
 }
 .m3-menu-heading {
   padding: 8px 16px 4px;
@@ -941,9 +1026,6 @@ code {
   margin-left: auto;
   color: var(--md-sys-color-primary) !important;
 }
-.m3-seed {
-  position: relative;
-}
 .m3-seed-swatch {
   width: 20px;
   height: 20px;
@@ -973,9 +1055,9 @@ code {
   cursor: pointer;
   overflow: hidden;
   transition:
-    border-radius var(--motion-spatial-default) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects),
-    color var(--motion-effects-default) var(--motion-effects);
+    border-radius var(--spring-spatial-default),
+    background var(--spring-effects-default),
+    color var(--spring-effects-default);
 }
 .m3-connected-group button:first-child {
   border-top-left-radius: var(--md-sys-shape-full);
@@ -1029,7 +1111,7 @@ code {
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-highest);
   box-shadow: inset 0 0 0 2px var(--md-sys-color-outline);
-  transition: background var(--motion-effects-default) var(--motion-effects), box-shadow var(--motion-effects-default) var(--motion-effects);
+  transition: background var(--spring-effects-default), box-shadow var(--spring-effects-default);
 }
 .m3-switch-handle {
   position: absolute;
@@ -1044,10 +1126,10 @@ code {
   color: var(--md-sys-color-surface-container-highest);
   transform: translateY(-50%);
   transition:
-    transform var(--motion-spatial-default) var(--motion-spatial),
-    width var(--motion-spatial-fast) var(--motion-spatial),
-    height var(--motion-spatial-fast) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects);
+    transform var(--spring-spatial-default),
+    width var(--spring-spatial-fast),
+    height var(--spring-spatial-fast),
+    background var(--spring-effects-default);
 }
 .m3-switch-input:checked + .m3-switch {
   background: var(--md-sys-color-primary);
@@ -1181,7 +1263,7 @@ code {
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
-  transition: background var(--motion-effects-default) var(--motion-effects);
+  transition: background var(--spring-effects-default);
 }
 .m3-status-dot {
   width: 8px;
@@ -1234,7 +1316,9 @@ code {
 
 .m3-tag {
   display: inline-block;
+  flex: none;
   margin-left: 6px;
+  white-space: nowrap;
   padding: 2px 8px;
   border-radius: var(--md-sys-shape-full);
   font-size: 11px;
@@ -1516,7 +1600,7 @@ dl.kv dd {
 .hero {
   border-radius: var(--md-sys-shape-extra-large);
   background: color-mix(in srgb, var(--tone-container) 28%, var(--md-sys-color-surface-container-low));
-  transition: background var(--motion-effects-slow) var(--motion-effects);
+  transition: background var(--spring-effects-slow);
 }
 .hero-layout {
   display: grid;
@@ -1544,7 +1628,7 @@ dl.kv dd {
 }
 .hero-shape path {
   fill: var(--tone-container);
-  transition: fill var(--motion-effects-slow) var(--motion-effects);
+  transition: fill var(--spring-effects-slow);
 }
 /* 稼働中はクッキーの形がゆっくり回る（M3 Expressive の形のライブラリ） */
 .hero-shape.is-alive svg {
@@ -1694,7 +1778,7 @@ dl.kv dd {
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
-  transition: box-shadow var(--motion-effects-default) var(--motion-effects);
+  transition: box-shadow var(--spring-effects-default);
 }
 .m3-search-bar:focus-within {
   box-shadow: inset 0 0 0 2px var(--md-sys-color-primary);
@@ -1798,7 +1882,7 @@ dl.kv dd {
   background: var(--md-sys-color-surface-container);
   box-shadow: var(--md-elevation-3);
   transform: translateX(-50%);
-  animation: toolbar-in var(--motion-spatial-slow) var(--motion-spatial) both;
+  animation: toolbar-in var(--spring-spatial-slow) both;
 }
 @keyframes toolbar-in {
   from {
@@ -1936,7 +2020,7 @@ dl.kv dd {
   vertical-align: middle;
 }
 .m3-table tbody tr {
-  transition: background var(--motion-effects-fast) var(--motion-effects);
+  transition: background var(--spring-effects-fast);
 }
 .m3-table tbody tr:hover {
   background: var(--md-sys-color-surface-container);
@@ -1991,8 +2075,8 @@ dl.kv dd {
   cursor: pointer;
   overflow: hidden;
   transition:
-    border-radius var(--motion-spatial-default) var(--motion-spatial),
-    background var(--motion-effects-default) var(--motion-effects);
+    border-radius var(--spring-spatial-default),
+    background var(--spring-effects-default);
 }
 .m3-list-item:first-child {
   border-top-left-radius: var(--md-sys-shape-large-increased);
@@ -2084,7 +2168,7 @@ dl.kv dd {
   height: 100%;
   border-radius: 0 var(--md-sys-shape-extra-small) var(--md-sys-shape-extra-small) 0;
   background: var(--chart-series-1);
-  transition: width var(--motion-spatial-slow) var(--motion-spatial);
+  transition: width var(--spring-spatial-slow);
 }
 .bar-value {
   text-align: right;
@@ -2157,7 +2241,7 @@ dl.kv dd {
   flex-direction: column;
   gap: 2px;
   width: min(44px, 70%);
-  transition: height var(--motion-spatial-slow) var(--motion-spatial);
+  transition: height var(--spring-spatial-slow);
 }
 .trend-stack > :first-child {
   border-radius: var(--md-sys-shape-extra-small) var(--md-sys-shape-extra-small) 0 0;
@@ -2185,7 +2269,7 @@ dl.kv dd {
   flex-direction: column;
   opacity: 0;
   transform: translate(-50%, -90%);
-  transition: opacity var(--motion-effects-fast) var(--motion-effects), transform var(--motion-spatial-fast) var(--motion-spatial);
+  transition: opacity var(--spring-effects-fast), transform var(--spring-spatial-fast);
   z-index: 4;
 }
 .trend-col:hover .trend-tip,
@@ -2264,12 +2348,12 @@ dl.kv dd {
   padding: 24px;
   background: transparent;
   visibility: hidden;
-  transition: background var(--motion-effects-default) var(--motion-effects), visibility 0s linear var(--motion-spatial-default);
+  transition: background var(--spring-effects-default), visibility 0s linear var(--spring-spatial-default-duration);
 }
 .m3-scrim.is-open {
   visibility: visible;
   background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
-  transition: background var(--motion-effects-default) var(--motion-effects), visibility 0s;
+  transition: background var(--spring-effects-default), visibility 0s;
 }
 .m3-dialog {
   display: flex;
@@ -2287,12 +2371,12 @@ dl.kv dd {
   opacity: 0;
   transform: translateY(-12px) scale(0.92);
   transform-origin: top center;
-  transition: opacity var(--motion-effects-fast) var(--motion-effects), transform var(--motion-spatial-fast) var(--motion-spatial);
+  transition: opacity var(--spring-effects-fast), transform var(--spring-spatial-fast);
 }
 .m3-scrim.is-open .m3-dialog {
   opacity: 1;
   transform: none;
-  transition: opacity var(--motion-effects-default) var(--motion-effects), transform var(--motion-spatial-slow) var(--motion-spatial);
+  transition: opacity var(--spring-effects-default), transform var(--spring-spatial-slow);
 }
 .m3-dialog h2 {
   text-align: center;
@@ -2368,7 +2452,7 @@ dl.kv dd {
   font-family: var(--font-mono);
   font-size: 16px;
   outline: none;
-  transition: box-shadow var(--motion-effects-fast) var(--motion-effects);
+  transition: box-shadow var(--spring-effects-fast);
 }
 .m3-text-field input:focus {
   box-shadow: inset 0 0 0 2px var(--md-sys-color-primary);
@@ -2384,9 +2468,9 @@ dl.kv dd {
   transform: translateY(-50%);
   pointer-events: none;
   transition:
-    top var(--motion-spatial-fast) var(--motion-spatial),
-    font-size var(--motion-spatial-fast) var(--motion-spatial),
-    color var(--motion-effects-fast) var(--motion-effects);
+    top var(--spring-spatial-fast),
+    font-size var(--spring-spatial-fast),
+    color var(--spring-effects-fast);
 }
 .m3-text-field input:focus + .m3-text-field-label,
 .m3-text-field input:not(:placeholder-shown) + .m3-text-field-label {
@@ -2396,7 +2480,21 @@ dl.kv dd {
 .m3-text-field input:focus + .m3-text-field-label {
   color: var(--md-sys-color-primary);
 }
+.m3-text-field-support {
+  display: block;
+  padding: 4px 16px 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
 
+.shortcut-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.shortcut-group-title {
+  margin: 8px 0 0;
+  color: var(--md-sys-color-primary);
+}
 .shortcut-list {
   display: flex;
   flex-direction: column;
@@ -2446,7 +2544,7 @@ dl.kv dd {
   background: var(--md-sys-color-inverse-surface);
   color: var(--md-sys-color-inverse-on-surface);
   box-shadow: var(--md-elevation-3);
-  animation: snackbar-in var(--motion-spatial-default) var(--motion-spatial) both;
+  animation: snackbar-in var(--spring-spatial-default) both;
 }
 .m3-snackbar > .icon {
   margin-top: 0;
@@ -2464,6 +2562,21 @@ dl.kv dd {
   opacity: 0.85;
   word-break: break-word;
 }
+.m3-snackbar-action {
+  flex: none;
+  height: 36px;
+  margin-top: -8px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--md-sys-shape-full);
+  background: none;
+  color: var(--md-sys-color-inverse-primary);
+  cursor: pointer;
+  transition: background var(--spring-effects-fast);
+}
+.m3-snackbar-action:hover {
+  background: color-mix(in srgb, var(--md-sys-color-inverse-primary) 12%, transparent);
+}
 .m3-snackbar-close {
   display: grid;
   place-items: center;
@@ -2480,7 +2593,7 @@ dl.kv dd {
   background: rgb(255 255 255 / 0.1);
 }
 .m3-snackbar.is-leaving {
-  animation: snackbar-out var(--motion-effects-default) ease-in both;
+  animation: snackbar-out var(--spring-effects-default) both;
 }
 @keyframes snackbar-in {
   from {
@@ -2493,6 +2606,83 @@ dl.kv dd {
     opacity: 0;
     transform: translateY(12px);
   }
+}
+
+/* ------------------------------------------------------------ 伏せ字・キーの入力待ち・補助 */
+
+.privacy-chip {
+  height: 32px;
+}
+
+/* g を押して次のキーを待っている間の表示（Vim の showcmd に当たる）。画面の下に浮かぶ */
+.go-key-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border-radius: var(--md-sys-shape-full);
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-inverse-on-surface);
+  box-shadow: var(--md-elevation-3);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 16px);
+  transition:
+    opacity var(--spring-effects-fast),
+    transform var(--spring-spatial-fast);
+}
+.go-key-hint.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.go-key-hint .m3-kbd {
+  background: color-mix(in srgb, var(--md-sys-color-inverse-on-surface) 16%, transparent);
+  color: inherit;
+}
+.go-key-hint > .body-medium {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.go-key-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.trend-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 画面には出さず、スクリーンリーダーにだけ読ませる */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 狭い画面で、ナビゲーションバーの上に浮かぶ FAB */
+.m3-fab.m3-fab-compact {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 55;
+  width: 56px;
+  margin: 0;
+  box-shadow: var(--md-elevation-3);
 }
 
 /* ------------------------------------------------------------ 画面幅ごとの調整（M3 のウィンドウサイズクラス） */
@@ -2529,9 +2719,6 @@ dl.kv dd {
     grid-template-columns: minmax(0, 1fr);
     padding-bottom: 80px;
   }
-  .m3-rail {
-    display: none;
-  }
   .main {
     height: calc(100vh - 80px);
     margin: 0;
@@ -2540,8 +2727,26 @@ dl.kv dd {
   .m3-top-app-bar {
     padding: 16px;
   }
+  .m3-top-app-bar-title {
+    flex: 1;
+    min-width: 0;
+  }
+  .m3-top-app-bar-title p {
+    display: none;
+  }
   .m3-top-app-bar-actions {
     margin-left: 0;
+  }
+  .m3-select-button {
+    max-width: 180px;
+  }
+  /* 狭い画面では右下の FAB が「今すぐ更新」を担うので、トップの更新ボタンは出さない */
+  .top-refresh {
+    display: none;
+  }
+  .m3-snackbars,
+  .go-key-hint {
+    bottom: 160px;
   }
   .m3-divider-vertical {
     display: none;
@@ -2625,7 +2830,7 @@ dl.kv dd {
     width: 56px;
     height: 32px;
     border-radius: var(--md-sys-shape-full);
-    transition: background var(--motion-effects-default) var(--motion-effects);
+    transition: background var(--spring-effects-default);
   }
   .m3-nav-bar-item.is-active {
     color: var(--md-sys-color-on-surface);

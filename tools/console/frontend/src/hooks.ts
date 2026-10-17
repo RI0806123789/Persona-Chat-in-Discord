@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { logStreamUrl } from "./api";
 import type { LogEntry } from "./types";
 
@@ -69,6 +69,52 @@ export function useMediaQuery(query: string): boolean {
     return () => media.removeEventListener("change", onChange);
   }, [query]);
   return matches;
+}
+
+/** OS の「視差効果を減らす / アニメーションを減らす」設定。途中で切り替えても追従する。 */
+export function useReducedMotion(): boolean {
+  return useMediaQuery("(prefers-reduced-motion: reduce)");
+}
+
+const FOCUSABLE =
+  'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * モーダル（ダイアログ・モーダルのレール）のフォーカス管理。
+ * 開いたら中へフォーカスを移し、Tab / Shift+Tab を中で循環させ、閉じたら開く前の場所へ戻す。
+ */
+export function useModalFocus(open: boolean, containerRef: RefObject<HTMLElement | null>, initialFocusRef?: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const container = containerRef.current;
+    // 開く動きが始まってからフォーカスする（スクロール位置が飛ばないよう preventScroll）
+    const timer = window.setTimeout(() => {
+      const target = initialFocusRef?.current ?? container?.querySelector<HTMLElement>(FOCUSABLE);
+      target?.focus({ preventScroll: true });
+    }, 60);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !container) return;
+      const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((item) => item.offsetParent !== null);
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !container.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !container.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+      if (previous && document.contains(previous)) previous.focus({ preventScroll: true });
+    };
+  }, [open, containerRef, initialFocusRef]);
 }
 
 const MAX_LOG_ENTRIES = 3000;

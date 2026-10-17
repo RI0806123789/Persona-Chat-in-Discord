@@ -1,16 +1,10 @@
 // Material 3 Expressive の基本部品。見た目は styles.css の .m3-* クラスが担う。
-import {
-  useEffect,
-  useRef,
-  useState,
-  type ButtonHTMLAttributes,
-  type PointerEvent,
-  type ReactNode,
-  type Ref,
-} from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type PointerEvent, type ReactNode, type Ref } from "react";
 import { formatClock } from "../format";
+import { usePrivacy } from "../privacy";
 import type { Tone } from "../status";
 import { Icon, type IconName } from "./Icon";
+import { MenuSurface, useMenu } from "./menu";
 
 // ---------------------------------------------------------------- カード
 
@@ -99,8 +93,10 @@ export function IconButton({
   selected,
   size = "s",
   className = "",
+  ref,
   ...rest
 }: {
+  ref?: Ref<HTMLButtonElement>;
   icon: IconName;
   label: string;
   variant?: "standard" | "filled" | "tonal" | "outlined";
@@ -111,6 +107,7 @@ export function IconButton({
   const toggle = selected !== undefined;
   return (
     <button
+      ref={ref}
       type="button"
       className={`m3-icon-btn m3-icon-btn-${variant} m3-icon-btn-${size} ${toggle ? "is-toggle" : ""} ${selected ? "is-selected" : ""} ${className}`}
       aria-label={label}
@@ -148,49 +145,41 @@ export function SplitButton({
   disabled?: boolean;
   busy?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const wrapper = useRef<HTMLDivElement>(null);
+  const menu = useMenu();
+  const unavailable = disabled || busy;
+  // 操作中や状態が変わってボタンが使えなくなったら、開いていたメニューも閉じる
   useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
-    window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", escape);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [open]);
+    if (unavailable) menu.close();
+  }, [unavailable, menu.close]);
 
   return (
-    <div className="m3-split" ref={wrapper}>
-      <button type="button" className="m3-split-leading" onClick={onClick} disabled={disabled || busy}>
+    <div className="m3-split" ref={menu.anchorRef}>
+      <button type="button" className="m3-split-leading" onClick={onClick} disabled={unavailable}>
         {busy ? <span className="m3-btn-spinner" aria-hidden="true" /> : <Icon name={icon} size={20} />}
         <span>{label}</span>
       </button>
       <button
+        ref={menu.triggerRef}
         type="button"
-        className={`m3-split-trailing ${open ? "is-open" : ""}`}
-        onClick={() => setOpen((value) => !value)}
-        disabled={disabled || busy}
-        aria-haspopup="menu"
-        aria-expanded={open}
+        className={`m3-split-trailing ${menu.open ? "is-open" : ""}`}
+        onClick={menu.toggle}
+        disabled={unavailable}
         aria-label="ほかの操作"
+        {...menu.triggerProps}
       >
         <Icon name="expand" size={22} />
       </button>
-      <div className={`m3-menu ${open ? "is-open" : ""}`} role="menu" inert={!open}>
+      <MenuSurface controller={menu} label="ほかの操作" align="start">
         {items.map((item) => (
           <button
             key={item.label}
             type="button"
             role="menuitem"
+            tabIndex={-1}
             className={`m3-menu-item ${item.danger ? "is-danger" : ""}`}
             disabled={item.disabled}
             onClick={() => {
-              setOpen(false);
+              menu.close(true);
               item.onSelect();
             }}
           >
@@ -198,7 +187,7 @@ export function SplitButton({
             {item.label}
           </button>
         ))}
-      </div>
+      </MenuSurface>
     </div>
   );
 }
@@ -237,6 +226,8 @@ export function ConnectedButtonGroup<T extends string>({
         >
           {value === option.value ? (
             <Icon name="check" size={18} />
+          ) : option.icon ? (
+            <Icon name={option.icon} size={18} />
           ) : (
             option.dot && <span className={`m3-group-dot ${option.dot}`} aria-hidden="true" />
           )}
@@ -250,9 +241,19 @@ export function ConnectedButtonGroup<T extends string>({
 
 // ---------------------------------------------------------------- スイッチ
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+export function Switch({
+  checked,
+  onChange,
+  label,
+  title,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  title?: string;
+}) {
   return (
-    <label className="m3-switch-wrap">
+    <label className="m3-switch-wrap" title={title}>
       <input
         type="checkbox"
         role="switch"
@@ -301,20 +302,30 @@ export function Stat({ label, value, hint, mono = false }: { label: string; valu
   );
 }
 
+/** 文字列の部分だけを伏せ字モードで伏せる（エラー文の中のホスト名などを隠すため）。 */
+function redactNode(node: ReactNode, redact: (text: string) => string): ReactNode {
+  if (typeof node === "string") return redact(node);
+  if (Array.isArray(node)) return node.map((child) => redactNode(child, redact));
+  return node;
+}
+
+/** エラーの表示。サーバーから届いた文をそのまま出すので、伏せ字モードでは分かっている秘密の文字列を隠す。 */
 export function InlineError({ children }: { children: ReactNode }) {
+  const privacy = usePrivacy();
   return (
     <p className="m3-inline-error body-medium" role="alert">
       <Icon name="error" size={20} filled />
-      <span>{children}</span>
+      <span>{redactNode(children, privacy.redact)}</span>
     </p>
   );
 }
 
 export function Notice({ icon = "info", children }: { icon?: IconName; children: ReactNode }) {
+  const privacy = usePrivacy();
   return (
     <p className="m3-notice body-small">
       <Icon name={icon} size={18} />
-      <span>{children}</span>
+      <span>{redactNode(children, privacy.redact)}</span>
     </p>
   );
 }

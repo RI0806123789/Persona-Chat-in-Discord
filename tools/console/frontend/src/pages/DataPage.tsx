@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
 import { LoadingIndicator, WavyProgress } from "../components/expressive";
-import { Button, Card, Chip, InlineError, Notice, Stat, StatusChip } from "../components/ui";
+import { Button, Card, Chip, ConnectedButtonGroup, InlineError, Notice, Stat, StatusChip } from "../components/ui";
 import { formatBytes, formatNumber, formatPercent } from "../format";
+import { usePrivacy } from "../privacy";
 import type { DbSummary, Profile } from "../types";
 import { NotConnected } from "./shared";
-
-// 手元のボットの database.py の SCHEMA_VERSION（本番がこれより古ければ、新しい版がまだデプロイされていない）
-const LATEST_SCHEMA_VERSION = 10;
 
 const TABLE_LABELS: Record<string, string> = {
   affinity: "親密度・感情",
@@ -45,6 +43,7 @@ export function DataPage({
   const [summary, setSummary] = useState<DbSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const privacy = usePrivacy();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,14 +90,10 @@ export function DataPage({
             <div className="schema-row">
               <span className="label-large muted">スキーマ</span>
               <span className="title-medium mono">v{summary.schema_version ?? "?"}</span>
-              {summary.schema_version === LATEST_SCHEMA_VERSION ? (
-                <StatusChip tone="good" label="最新" />
-              ) : (
-                <StatusChip tone="warning" label={`最新は v${LATEST_SCHEMA_VERSION}`} />
-              )}
+              <SchemaChip deployed={summary.schema_version} latest={summary.latest_schema_version} />
             </div>
-            <span className="body-small muted mono truncate" title={summary.path}>
-              {summary.path}
+            <span className="body-small muted mono truncate" title={privacy.redact(summary.path)}>
+              {privacy.redact(summary.path)}
             </span>
           </>
         )}
@@ -142,6 +137,14 @@ export function DataPage({
       )}
     </div>
   );
+}
+
+/** 本番のスキーマの版を、手元のリポジトリ（src/persona_bot/core/database.py）の版と比べる。 */
+function SchemaChip({ deployed, latest }: { deployed: number | undefined; latest: number | null | undefined }) {
+  if (latest === null || latest === undefined) return <StatusChip tone="neutral" label="手元の版を読めません" />;
+  if (deployed === latest) return <StatusChip tone="good" icon="checkCircle" label="手元と同じ" />;
+  if (deployed !== undefined && deployed > latest) return <StatusChip tone="warning" icon="alert" label={`手元（v${latest}）より新しい`} />;
+  return <StatusChip tone="warning" icon="alert" label={`手元は v${latest}（未デプロイ）`} />;
 }
 
 function TableRows({ tables }: { tables: Record<string, number> }) {
@@ -223,24 +226,68 @@ function lastSevenDays(days: { day: string; good: number; bad: number }[]) {
   });
 }
 
+type TrendView = "chart" | "table";
+
 function FeedbackTrend({ days }: { days: { day: string; good: number; bad: number }[] }) {
+  const [view, setView] = useState<TrendView>("chart");
   const series = lastSevenDays(days);
   const max = Math.max(1, ...series.map((day) => day.good + day.bad));
   const total = series.reduce((sum, day) => sum + day.good + day.bad, 0);
   return (
     <div className="trend">
-      <div className="legend body-medium">
-        <span>
-          <i className="swatch swatch-good" /> 👍
-        </span>
-        <span>
-          <i className="swatch swatch-bad" /> 👎
-        </span>
-        <span className="muted">直近7日で {total} 件</span>
+      <div className="trend-head">
+        <div className="legend body-medium">
+          <span>
+            <i className="swatch swatch-good" /> 👍
+          </span>
+          <span>
+            <i className="swatch swatch-bad" /> 👎
+          </span>
+          <span className="muted">直近7日で {total} 件</span>
+        </div>
+        <ConnectedButtonGroup
+          label="表示のしかた"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: "chart", label: "グラフ", icon: "overview" },
+            { value: "table", label: "表", icon: "layers" },
+          ]}
+        />
       </div>
-      <div className="trend-bars" role="img" aria-label={`直近7日の評価の推移（合計 ${total} 件）`}>
+      {view === "table" ? (
+        <div className="table-wrap">
+          <table className="m3-table is-compact">
+            <caption className="visually-hidden">直近7日の評価（日本時間）</caption>
+            <thead>
+              <tr>
+                <th>日付</th>
+                <th className="num">👍</th>
+                <th className="num">👎</th>
+                <th className="num">計</th>
+                <th className="num">満足度</th>
+              </tr>
+            </thead>
+            <tbody>
+              {series.map((day) => {
+                const sum = day.good + day.bad;
+                return (
+                  <tr key={day.key}>
+                    <td className="mono">{day.label}</td>
+                    <td className="num mono">{day.good}</td>
+                    <td className="num mono">{day.bad}</td>
+                    <td className="num mono">{sum}</td>
+                    <td className="num mono">{sum ? formatPercent(day.good / sum) : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+      <div className="trend-bars" role="group" aria-label={`直近7日の評価の推移（合計 ${total} 件）`}>
         {series.map((day) => (
-          <div key={day.key} className="trend-col" tabIndex={0}>
+          <div key={day.key} className="trend-col" tabIndex={0} aria-label={`${day.label}: 👍 ${day.good} 件、👎 ${day.bad} 件`}>
             <div className="trend-stack" style={{ height: `${((day.good + day.bad) / max) * 100}%` }}>
               {day.bad > 0 && <span className="trend-bad" style={{ flexGrow: day.bad }} />}
               {day.good > 0 && <span className="trend-good" style={{ flexGrow: day.good }} />}
@@ -253,6 +300,7 @@ function FeedbackTrend({ days }: { days: { day: string; good: number; bad: numbe
           </div>
         ))}
       </div>
+      )}
       {total === 0 && <span className="body-small muted">直近7日の評価はありません。</span>}
     </div>
   );

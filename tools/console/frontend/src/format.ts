@@ -58,9 +58,3 @@ export function formatPercent(ratio: number | null | undefined): string {
   if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return "—";
   return `${Math.round(ratio * 100)}%`;
 }
-
-// スクリーンショット用にホスト名などを伏せる
-export function maskIf(hidden: boolean, text: string | null | undefined): string {
-  if (!text) return "—";
-  return hidden ? "••••••" : text;
-}

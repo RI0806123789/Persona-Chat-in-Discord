@@ -1,12 +1,12 @@
 // Material 3 Expressive の配色を、基準の1色（シード色）からその場で作る。
 // Google 公式の material-color-utilities の SchemeExpressive（2025 年版の仕様）を使う。
 import {
-  Blend,
   DynamicScheme,
   Hct,
   MaterialDynamicColors,
   SchemeExpressive,
   argbFromHex,
+  customColor,
   hexFromArgb,
 } from "@material/material-color-utilities";
 
@@ -18,7 +18,7 @@ export interface SeedOption {
 
 // 選べるシード色（Discord の青紫を既定にする）
 export const SEED_OPTIONS: SeedOption[] = [
-  { id: "blurple", label: "ブループル", hex: "#5865F2" },
+  { id: "blurple", label: "ブループル（Discord）", hex: "#5865F2" },
   { id: "teal", label: "ティール", hex: "#00897B" },
   { id: "rose", label: "ローズ", hex: "#D0436E" },
   { id: "amber", label: "アンバー", hex: "#C77700" },
@@ -59,15 +59,14 @@ function schemeVariables(seed: Hct, isDark: boolean): string {
     const dynamicColor = colors[role]();
     lines.push(`--md-sys-color-${kebab(role)}: ${hexFromArgb(dynamicColor.getArgb(scheme))};`);
   }
-  // カスタムカラー: 色相をシード色へ少し寄せ（harmonize）、トーンだけ M3 の規則で決める
+  // カスタムカラー: 公式の customColor で、色相をシード色へ寄せ（harmonize）、M3 の規則のトーンで4色を作る
   for (const custom of CUSTOM_COLORS) {
-    const harmonized = Hct.fromInt(Blend.harmonize(argbFromHex(custom.hex), seed.toInt()));
-    const tone = (light: number, dark: number) =>
-      hexFromArgb(Hct.from(harmonized.hue, Math.max(harmonized.chroma, 48), isDark ? dark : light).toInt());
-    lines.push(`--md-custom-${custom.name}: ${tone(40, 80)};`);
-    lines.push(`--md-custom-on-${custom.name}: ${tone(100, 20)};`);
-    lines.push(`--md-custom-${custom.name}-container: ${tone(90, 30)};`);
-    lines.push(`--md-custom-on-${custom.name}-container: ${tone(10, 90)};`);
+    const group = customColor(seed.toInt(), { name: custom.name, value: argbFromHex(custom.hex), blend: true });
+    const roles = isDark ? group.dark : group.light;
+    lines.push(`--md-custom-${custom.name}: ${hexFromArgb(roles.color)};`);
+    lines.push(`--md-custom-on-${custom.name}: ${hexFromArgb(roles.onColor)};`);
+    lines.push(`--md-custom-${custom.name}-container: ${hexFromArgb(roles.colorContainer)};`);
+    lines.push(`--md-custom-on-${custom.name}-container: ${hexFromArgb(roles.onColorContainer)};`);
   }
   // ログの端末はどちらのテーマでも暗い面にする（ライトでは inverse-surface、ダークでは最も暗い面）
   const surfaceLowest = hexFromArgb(colors.surfaceContainerLowest().getArgb(scheme));

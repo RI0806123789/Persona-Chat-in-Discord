@@ -3,6 +3,7 @@ import { LoadingIndicator } from "../components/expressive";
 import { Icon, type IconName } from "../components/Icon";
 import { Button, Card, EmptyState, StatusChip } from "../components/ui";
 import { formatDateTime } from "../format";
+import { usePrivacy } from "../privacy";
 import { serviceTone } from "../status";
 import type { Operation, Profile, ServiceAction, ServiceStatus } from "../types";
 import { NotConnected } from "./shared";
@@ -50,6 +51,7 @@ export function OperationsPage({
   onRequestAction: (action: ServiceAction) => void;
   operations: Operation[];
 }) {
+  const privacy = usePrivacy();
   const tone = serviceTone(service);
   const active = service?.active_state === "active";
 
@@ -109,7 +111,7 @@ export function OperationsPage({
                     </td>
                     <td>
                       <StatusChip tone={operation.ok ? "good" : "critical"} label={operation.ok ? "成功" : "失敗"} />
-                      {!operation.ok && <p className="body-small muted">{operation.message}</p>}
+                      {!operation.ok && <p className="body-small muted">{privacy.redact(operation.message)}</p>}
                     </td>
                     <td className="num mono">{(operation.duration_ms / 1000).toFixed(1)}s</td>
                   </tr>

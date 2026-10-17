@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, errorMessage } from "./api";
 import { Icon } from "./components/Icon";
 import { ConfirmDialog, ShortcutHelp, type ConfirmRequest } from "./components/overlays";
-import { NavigationBar, NavigationRail } from "./components/Sidebar";
-import { ToastProvider, useToast } from "./components/toast";
-import { TopAppBar } from "./components/TopBar";
+import { CompactFab, ModalNavigationRail, NavigationBar, NavigationRail, type FabAction } from "./components/Sidebar";
+import { ToastProvider, useToast, type ToastInput } from "./components/toast";
+import { TopAppBar, type ThemeChoice } from "./components/TopBar";
+import { Kbd } from "./components/ui";
 import { useLogStream, useMediaQuery, useNow, usePolling, useStoredState } from "./hooks";
 import { PAGES, isPageId, type PageId } from "./navigation";
 import { ConnectionPage } from "./pages/ConnectionPage";
@@ -13,6 +14,7 @@ import { GuildsPage } from "./pages/GuildsPage";
 import { LogsPage } from "./pages/LogsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
 import type { ConnectionState, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
 
@@ -20,6 +22,11 @@ const STATUS_INTERVAL_MS = 5000;
 const INSIGHTS_INTERVAL_MS = 60_000; // Discord API の利用制限に配慮して1分ごと（バックエンドも60秒キャッシュする）
 const CONNECTION_INTERVAL_MS = 10000;
 const MAX_SAMPLES = 60; // 5秒 × 60 = 直近5分ぶん
+const GO_KEY_TIMEOUT_MS = 1200; // g を押してから次のキーを待つ時間
+
+// M3 のウィンドウサイズの区分（600 未満 = compact、1200 以上 = large）
+const LARGE_QUERY = "(min-width: 1200px)";
+const COMPACT_QUERY = "(max-width: 599px)";
 
 const ACTION_LABELS: Record<ServiceAction, string> = { start: "起動", stop: "停止", restart: "再起動" };
 const ACTION_EFFECTS: Record<ServiceAction, string> = {
@@ -47,21 +54,29 @@ function toSample(status: StatusResponse): Sample {
   };
 }
 
+/** 入力中（テキスト欄など）かどうか。入力中は1文字のショートカットを効かせない。 */
+function isTyping(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  return !!element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT" || element.isContentEditable);
+}
+
 function Console() {
-  const notify = useToast();
+  const rawNotify = useToast();
   const now = useNow();
 
   // ---- 表示の設定（ブラウザに覚えておく）
   const [storedPage, setStoredPage] = useStoredState<string>("pbc.page", "overview");
   const page: PageId = isPageId(storedPage) ? storedPage : "overview";
-  const [themeChoice, setThemeChoice] = useStoredState<"light" | "dark" | null>("pbc.theme", null);
+  const [themeChoice, setThemeChoice] = useStoredState<ThemeChoice>("pbc.theme", null);
   const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
   const theme = themeChoice ?? (systemDark ? "dark" : "light");
   const [seedId, setSeedId] = useStoredState("pbc.seed", SEED_OPTIONS[0].id);
-  const [railExpanded, setRailExpanded] = useStoredState("pbc.railExpanded", window.innerWidth >= 1200);
-  const [privacy, setPrivacy] = useStoredState("pbc.privacy", false);
+  const [railExpanded, setRailExpanded] = useStoredState("pbc.railExpanded", true);
+  const [privacyOn, setPrivacyOn] = useStoredState("pbc.privacy", false);
   const [autoRefresh, setAutoRefresh] = useStoredState("pbc.autoRefresh", true);
   const [selectedProfileId, setSelectedProfileId] = useStoredState("pbc.profile", "");
+  const large = useMediaQuery(LARGE_QUERY);
+  const compact = useMediaQuery(COMPACT_QUERY);
 
   // ---- サーバーから取る状態
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -84,6 +99,8 @@ function Console() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [modalRailOpen, setModalRailOpen] = useState(false);
+  const [goPending, setGoPending] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLElement>(null);
@@ -95,6 +112,20 @@ function Console() {
   const pageDef = PAGES.find((p) => p.id === page) ?? PAGES[0];
   const production = connected && connection?.profile?.environment === "production";
 
+  // ---- 伏せ字モード。画面が知っているホスト名・ボット名・サーバー名などを集め、文の中からも隠す
+  const secrets = useMemo(
+    () => collectSecrets({ profile: connection?.profile ?? null, profiles, connection, insights }),
+    [connection, profiles, insights],
+  );
+  const privacy = useMemo(() => createPrivacy(privacyOn, secrets), [privacyOn, secrets]);
+  const privacyRef = useRef(privacy);
+  privacyRef.current = privacy;
+  // 通知の詳細（接続エラーの文など）にもホスト名が入りうるので、出す前に伏せる
+  const notify = useCallback(
+    (toast: ToastInput) => rawNotify({ ...toast, detail: toast.detail && privacyRef.current.redact(toast.detail) }),
+    [rawNotify],
+  );
+
   useEffect(() => {
     if (themeChoice) document.documentElement.dataset.theme = themeChoice;
     else delete document.documentElement.dataset.theme;
@@ -104,6 +135,11 @@ function Console() {
     applyTheme((SEED_OPTIONS.find((seed) => seed.id === seedId) ?? SEED_OPTIONS[0]).hex);
   }, [seedId]);
 
+  // 広い画面になったら、重ねて開いていたレールは常設のレールに置き換わるので閉じる
+  useEffect(() => {
+    if (large) setModalRailOpen(false);
+  }, [large]);
+
   const navigate = useCallback(
     (next: PageId) => {
       setStoredPage(next);
@@ -111,6 +147,11 @@ function Console() {
     },
     [setStoredPage],
   );
+
+  const toggleRail = useCallback(() => {
+    if (large) setRailExpanded((value) => !value);
+    else setModalRailOpen((value) => !value);
+  }, [large, setRailExpanded]);
 
   // ---- 接続状態
   const applyConnection = useCallback(
@@ -195,6 +236,7 @@ function Console() {
       void refreshStatus();
       void refreshInsights();
     }
+    // 接続が変わったときだけ動かす（自動更新の切り替えでは取り直さない）
   }, [connected]);
 
   const refreshOperations = useCallback(async () => {
@@ -217,12 +259,20 @@ function Console() {
       applyConnection(state);
       notify({ tone: "good", title: "SSH で接続しました", detail: state.profile?.label });
     } catch (error) {
-      notify({ tone: "critical", title: "接続できませんでした", detail: errorMessage(error) });
+      notify({
+        tone: "critical",
+        title: "接続できませんでした",
+        detail: errorMessage(error),
+        action: { label: "再試行", onClick: () => void handleConnectRef.current() },
+      });
       void refreshConnection();
     } finally {
       setConnecting(false);
     }
   }, [selectedProfileId, applyConnection, notify, refreshConnection]);
+  // 通知の「再試行」からは、その時点の最新の接続処理を呼ぶ
+  const handleConnectRef = useRef(handleConnect);
+  handleConnectRef.current = handleConnect;
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -299,28 +349,39 @@ function Console() {
 
   // ---- キーボード操作（Vim 風）。最新の処理を ref 経由で呼ぶので、登録は1回だけ
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
-  const goPending = useRef(false);
+  const goTimer = useRef<number | undefined>(undefined);
+  const cancelGo = () => {
+    window.clearTimeout(goTimer.current);
+    setGoPending(false);
+  };
   keyHandler.current = (event: KeyboardEvent) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
     const target = event.target as HTMLElement | null;
-    const typing =
-      !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
+    // メニューの中のキーはメニューが扱う（↓↑ j k など）
+    if (target?.closest?.('[role="menu"]')) return;
+    const typing = isTyping(target);
 
     if (event.key === "Escape") {
-      if (confirmOpen) setConfirmOpen(false);
+      if (goPending) cancelGo();
+      else if (confirmOpen) setConfirmOpen(false);
       else if (helpOpen) setHelpOpen(false);
+      else if (modalRailOpen) setModalRailOpen(false);
       else if (typing) target?.blur();
       return;
     }
     if (typing || confirmOpen) return;
-    if (helpOpen && event.key !== "?") return;
+    if (helpOpen) {
+      if (event.key === "?") setHelpOpen(false);
+      return;
+    }
 
-    if (goPending.current) {
-      goPending.current = false;
+    if (goPending) {
+      cancelGo();
       const destination = PAGES.find((p) => p.goKey === event.key);
       if (destination) {
         event.preventDefault();
         navigate(destination.id);
+        setModalRailOpen(false);
       }
       return;
     }
@@ -328,12 +389,14 @@ function Console() {
     const index = PAGES.findIndex((p) => p.id === page);
     if (/^[1-6]$/.test(event.key)) {
       navigate(PAGES[Number(event.key) - 1].id);
+      setModalRailOpen(false);
       return;
     }
     switch (event.key) {
       case "g":
-        goPending.current = true;
-        window.setTimeout(() => (goPending.current = false), 1000);
+        setGoPending(true);
+        window.clearTimeout(goTimer.current);
+        goTimer.current = window.setTimeout(() => setGoPending(false), GO_KEY_TIMEOUT_MS);
         break;
       case "j":
         navigate(PAGES[(index + 1) % PAGES.length].id);
@@ -349,23 +412,25 @@ function Console() {
         break;
       case "/":
         event.preventDefault();
+        setModalRailOpen(false);
         navigate("logs");
         window.setTimeout(() => filterInputRef.current?.focus(), 60);
         break;
       case "p":
-        stream.setPaused(!stream.paused);
+        if (connected) stream.setPaused(!stream.paused);
         break;
       case "[":
-        setRailExpanded((value) => !value);
+        toggleRail();
         break;
       case "h":
-        setPrivacy((value) => !value);
+        setPrivacyOn((value) => !value);
         break;
       case "t":
         toggleTheme();
         break;
       case "?":
-        setHelpOpen((value) => !value);
+        setModalRailOpen(false);
+        setHelpOpen(true);
         break;
     }
   };
@@ -375,149 +440,176 @@ function Console() {
     return () => window.removeEventListener("keydown", listener);
   }, []);
 
-  const fab = connected
-    ? { label: "今すぐ更新", icon: "refresh" as const, onClick: manualRefresh, disabled: refreshing }
-    : { label: "接続", icon: "plug" as const, onClick: () => void handleConnect(), disabled: connecting || !selectedProfileId };
+  // FAB には、その時の主な操作を置く（未接続なら接続、接続中なら更新）
+  const fab: FabAction = connected
+    ? { label: "今すぐ更新", icon: "refresh", onClick: manualRefresh, disabled: refreshing, busy: false }
+    : { label: "接続", icon: "plug", onClick: () => void handleConnect(), disabled: connecting || !selectedProfileId, busy: connecting };
+
+  const railProps = {
+    page,
+    onNavigate: navigate,
+    profile: connection?.profile ?? selectedProfile,
+    connected,
+    fab,
+    onHelp: () => setHelpOpen(true),
+  };
 
   return (
-    <div className={`app ${production ? "is-production" : ""} ${railExpanded ? "rail-expanded" : ""}`}>
-      <NavigationRail
-        page={page}
-        onNavigate={navigate}
-        expanded={railExpanded}
-        onToggleExpanded={() => setRailExpanded((value) => !value)}
-        profile={connection?.profile ?? selectedProfile}
-        connected={connected}
-        connecting={connecting}
-        fab={fab}
-        onHelp={() => setHelpOpen(true)}
-      />
-      <div className="main">
-        <TopAppBar
-          page={pageDef}
-          connection={connection}
-          profiles={profiles}
-          selectedProfileId={selectedProfileId}
-          onSelectProfile={setSelectedProfileId}
-          onConnect={() => void handleConnect()}
-          onDisconnect={() => void handleDisconnect()}
-          connecting={connecting}
-          rttMs={status?.rtt_ms ?? null}
-          lastUpdated={status ? status.fetched_at * 1000 : null}
-          refreshing={refreshing}
-          onRefresh={manualRefresh}
-          autoRefresh={autoRefresh}
-          onToggleAuto={() => setAutoRefresh((value) => !value)}
-          privacy={privacy}
-          onTogglePrivacy={() => setPrivacy((value) => !value)}
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          seedId={seedId}
-          onSelectSeed={setSeedId}
-          onOpenConnection={() => navigate("connection")}
-          now={now}
-        />
-        {backendError && (
-          <div className="m3-banner is-error" role="alert">
-            <Icon name="error" size={20} filled />
-            <span className="body-medium">{backendError}</span>
-          </div>
+    <PrivacyContext.Provider value={privacy}>
+      <div className={`app ${production ? "is-production" : ""} ${compact ? "is-compact" : ""}`}>
+        {!compact && <NavigationRail {...railProps} expanded={large && railExpanded} onMenu={toggleRail} />}
+        <div className="main">
+          <TopAppBar
+            page={pageDef}
+            connection={connection}
+            profiles={profiles}
+            selectedProfileId={selectedProfileId}
+            onSelectProfile={setSelectedProfileId}
+            onConnect={() => void handleConnect()}
+            onDisconnect={() => void handleDisconnect()}
+            connecting={connecting}
+            rttMs={status?.rtt_ms ?? null}
+            lastUpdated={status ? status.fetched_at * 1000 : null}
+            refreshing={refreshing}
+            onRefresh={manualRefresh}
+            autoRefresh={autoRefresh}
+            onToggleAuto={() => setAutoRefresh((value) => !value)}
+            onTogglePrivacy={() => setPrivacyOn((value) => !value)}
+            themeChoice={themeChoice}
+            onSelectTheme={setThemeChoice}
+            seedId={seedId}
+            onSelectSeed={setSeedId}
+            onOpenConnection={() => navigate("connection")}
+            showMenuButton={compact}
+            onMenu={() => setModalRailOpen(true)}
+            now={now}
+          />
+          {backendError && (
+            <div className="m3-banner is-error" role="alert">
+              <Icon name="error" size={20} filled />
+              <span className="body-medium">{privacy.redact(backendError)}</span>
+            </div>
+          )}
+          {production && (
+            <div className="m3-banner is-production">
+              <Icon name="shield" size={20} filled />
+              <span className="body-medium">本番サーバーに接続中です。操作は Discord の利用者に影響します。</span>
+            </div>
+          )}
+          <main className="content" ref={contentRef}>
+            <div key={page} className="page">
+              {page === "overview" && (
+                <OverviewPage
+                  connected={connected}
+                  connecting={connecting}
+                  status={status}
+                  statusError={statusError}
+                  samples={samples}
+                  connection={connection}
+                  logs={stream.entries}
+                  insights={insights}
+                  insightsFetchedAt={insightsFetchedAt}
+                  insightsError={insightsError}
+                  onNavigate={navigate}
+                  onRequestAction={requestAction}
+                  busyAction={busyAction}
+                  onConnect={() => void handleConnect()}
+                  selectedProfile={selectedProfile}
+                  now={now}
+                />
+              )}
+              {page === "logs" && (
+                <LogsPage
+                  stream={stream}
+                  connected={connected}
+                  connecting={connecting}
+                  onConnect={() => void handleConnect()}
+                  selectedProfile={selectedProfile}
+                  filterInputRef={filterInputRef}
+                />
+              )}
+              {page === "operations" && (
+                <OperationsPage
+                  connected={connected}
+                  connecting={connecting}
+                  onConnect={() => void handleConnect()}
+                  selectedProfile={selectedProfile}
+                  profile={connection?.profile ?? null}
+                  service={status?.service ?? null}
+                  busyAction={busyAction}
+                  onRequestAction={requestAction}
+                  operations={operations}
+                />
+              )}
+              {page === "data" && (
+                <DataPage
+                  connected={connected}
+                  connecting={connecting}
+                  onConnect={() => void handleConnect()}
+                  selectedProfile={selectedProfile}
+                  refreshToken={refreshToken}
+                />
+              )}
+              {page === "guilds" && (
+                <GuildsPage
+                  connected={connected}
+                  connecting={connecting}
+                  onConnect={() => void handleConnect()}
+                  selectedProfile={selectedProfile}
+                  insights={insights}
+                  insightsFetchedAt={insightsFetchedAt}
+                  insightsError={insightsError}
+                  now={now}
+                />
+              )}
+              {page === "connection" && (
+                <ConnectionPage
+                  profiles={profiles}
+                  profilesSource={profilesSource}
+                  profilesError={profilesError}
+                  selectedProfileId={selectedProfileId}
+                  onSelectProfile={setSelectedProfileId}
+                  connection={connection}
+                  connecting={connecting}
+                  onConnect={() => void handleConnect()}
+                  onDisconnect={() => void handleDisconnect()}
+                  now={now}
+                />
+              )}
+            </div>
+          </main>
+        </div>
+        {compact && (
+          <>
+            <CompactFab fab={fab} />
+            <NavigationBar page={page} onNavigate={navigate} />
+          </>
         )}
-        {production && (
-          <div className="m3-banner is-production">
-            <Icon name="shield" size={20} filled />
-            <span className="body-medium">本番サーバーに接続中です。操作は Discord の利用者に影響します。</span>
-          </div>
-        )}
-        <main className="content" ref={contentRef}>
-          <div key={page} className="page">
-            {page === "overview" && (
-              <OverviewPage
-                connected={connected}
-                connecting={connecting}
-                status={status}
-                statusError={statusError}
-                samples={samples}
-                connection={connection}
-                logs={stream.entries}
-                insights={insights}
-                insightsFetchedAt={insightsFetchedAt}
-                insightsError={insightsError}
-                onNavigate={navigate}
-                onRequestAction={requestAction}
-                busyAction={busyAction}
-                onConnect={() => void handleConnect()}
-                selectedProfile={selectedProfile}
-                privacy={privacy}
-                now={now}
-              />
-            )}
-            {page === "logs" && (
-              <LogsPage
-                stream={stream}
-                connected={connected}
-                connecting={connecting}
-                onConnect={() => void handleConnect()}
-                selectedProfile={selectedProfile}
-                filterInputRef={filterInputRef}
-              />
-            )}
-            {page === "operations" && (
-              <OperationsPage
-                connected={connected}
-                connecting={connecting}
-                onConnect={() => void handleConnect()}
-                selectedProfile={selectedProfile}
-                profile={connection?.profile ?? null}
-                service={status?.service ?? null}
-                busyAction={busyAction}
-                onRequestAction={requestAction}
-                operations={operations}
-              />
-            )}
-            {page === "data" && (
-              <DataPage
-                connected={connected}
-                connecting={connecting}
-                onConnect={() => void handleConnect()}
-                selectedProfile={selectedProfile}
-                refreshToken={refreshToken}
-              />
-            )}
-            {page === "guilds" && (
-              <GuildsPage
-                connected={connected}
-                connecting={connecting}
-                onConnect={() => void handleConnect()}
-                selectedProfile={selectedProfile}
-                insights={insights}
-                insightsFetchedAt={insightsFetchedAt}
-                insightsError={insightsError}
-                privacy={privacy}
-                now={now}
-              />
-            )}
-            {page === "connection" && (
-              <ConnectionPage
-                profiles={profiles}
-                profilesSource={profilesSource}
-                profilesError={profilesError}
-                selectedProfileId={selectedProfileId}
-                onSelectProfile={setSelectedProfileId}
-                connection={connection}
-                connecting={connecting}
-                onConnect={() => void handleConnect()}
-                onDisconnect={() => void handleDisconnect()}
-                privacy={privacy}
-                now={now}
-              />
-            )}
-          </div>
-        </main>
+        {!large && <ModalNavigationRail {...railProps} open={modalRailOpen} onClose={() => setModalRailOpen(false)} />}
+        <GoKeyHint visible={goPending} />
+        <ConfirmDialog request={confirm} open={confirmOpen} onClose={() => setConfirmOpen(false)} />
+        <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       </div>
-      <NavigationBar page={page} onNavigate={navigate} />
-      <ConfirmDialog request={confirm} open={confirmOpen} onClose={() => setConfirmOpen(false)} />
-      <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </PrivacyContext.Provider>
+  );
+}
+
+/** g を押して次のキーを待っている間の表示（Vim の showcmd に当たる）。 */
+function GoKeyHint({ visible }: { visible: boolean }) {
+  return (
+    <div className={`go-key-hint ${visible ? "is-visible" : ""}`} aria-live="polite" role="status">
+      {visible && (
+        <>
+          <Kbd>g</Kbd>
+          <span className="body-medium">
+            {PAGES.map((p) => (
+              <span key={p.id} className="go-key-option">
+                <Kbd>{p.goKey}</Kbd> {p.short}
+              </span>
+            ))}
+          </span>
+        </>
+      )}
     </div>
   );
 }

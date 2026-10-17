@@ -1,8 +1,9 @@
 import { WavyProgress, LoadingIndicator } from "../components/expressive";
 import { Icon } from "../components/Icon";
 import { Button, Card, Chip, InlineError, Notice, Sparkline, SplitButton, Stat, StatusChip } from "../components/ui";
-import { formatBytes, formatClock, formatDuration, formatNumber, formatPercent, formatRelative, maskIf } from "../format";
+import { formatBytes, formatClock, formatDuration, formatNumber, formatPercent, formatRelative } from "../format";
 import { LEVEL_LABELS, classifyEntries, displayMessage } from "../logs";
+import { conversationLines, redactLogLine, usePrivacy } from "../privacy";
 import type { PageId } from "../navigation";
 import { ratioOf, serviceTone, usageTone } from "../status";
 import type { ConnectionState, Insights, LogEntry, Profile, Sample, ServiceAction, StatusResponse } from "../types";
@@ -24,7 +25,6 @@ export function OverviewPage({
   busyAction,
   onConnect,
   selectedProfile,
-  privacy,
   now,
 }: {
   connected: boolean;
@@ -42,7 +42,6 @@ export function OverviewPage({
   busyAction: ServiceAction | null;
   onConnect: () => void;
   selectedProfile: Profile | null;
-  privacy: boolean;
   now: number;
 }) {
   if (!connected) {
@@ -51,9 +50,9 @@ export function OverviewPage({
   return (
     <div className="grid">
       <ServiceHero status={status} statusError={statusError} samples={samples} onRequestAction={onRequestAction} busyAction={busyAction} onNavigate={onNavigate} />
-      <SshCard connection={connection} samples={samples} privacy={privacy} now={now} />
+      <SshCard connection={connection} samples={samples} now={now} />
       <ResourceCards status={status} samples={samples} />
-      <BotInsightsCard insights={insights} fetchedAt={insightsFetchedAt} error={insightsError} privacy={privacy} now={now} onNavigate={onNavigate} />
+      <BotInsightsCard insights={insights} fetchedAt={insightsFetchedAt} error={insightsError} now={now} onNavigate={onNavigate} />
       <GitCard status={status} now={now} />
       <RecentLogs logs={logs} onNavigate={onNavigate} />
     </div>
@@ -149,7 +148,8 @@ const COOKIE_PATH = (() => {
   return `M${points.join("L")}Z`;
 })();
 
-function SshCard({ connection, samples, privacy, now }: { connection: ConnectionState | null; samples: Sample[]; privacy: boolean; now: number }) {
+function SshCard({ connection, samples, now }: { connection: ConnectionState | null; samples: Sample[]; now: number }) {
+  const privacy = usePrivacy();
   const latest = samples.length ? samples[samples.length - 1].rtt : null;
   return (
     <Card title="SSH 接続" icon="plug" source="ssh" className="span-4">
@@ -162,10 +162,10 @@ function SshCard({ connection, samples, privacy, now }: { connection: Connection
       <Sparkline label="SSH の往復時間" points={samples.map((s) => ({ t: s.t, v: s.rtt }))} format={(v) => `${Math.round(v)} ms`} min={0} />
       <dl className="kv">
         <dt>ホスト</dt>
-        <dd className="mono">{maskIf(privacy, connection?.server?.hostname || connection?.profile?.host)}</dd>
+        <dd className="mono">{privacy.mask(connection?.server?.hostname || connection?.profile?.host)}</dd>
         <dt>ホスト鍵</dt>
-        <dd className="mono truncate" title={privacy ? undefined : (connection?.fingerprint ?? undefined)}>
-          {maskIf(privacy, connection?.fingerprint)}
+        <dd className="mono truncate" title={privacy.enabled ? undefined : (connection?.fingerprint ?? undefined)}>
+          {privacy.mask(connection?.fingerprint)}
         </dd>
         <dt>接続</dt>
         <dd>{connection?.connected_at ? `${formatRelative(connection.connected_at * 1000, now)}から` : "—"}</dd>
@@ -238,17 +238,16 @@ function BotInsightsCard({
   insights,
   fetchedAt,
   error,
-  privacy,
   now,
   onNavigate,
 }: {
   insights: Insights | null;
   fetchedAt: number | null;
   error: string | null;
-  privacy: boolean;
   now: number;
   onNavigate: (page: PageId) => void;
 }) {
+  const privacy = usePrivacy();
   if (!insights) {
     return (
       <Card title="ボットの中の状態" icon="bot" source="ssh" className="span-12">
@@ -287,7 +286,7 @@ function BotInsightsCard({
       <div className="insight-grid">
         <Stat
           label="ボット"
-          value={maskIf(privacy, discord.bot_user ?? null)}
+          value={privacy.mask(discord.bot_user ?? null)}
           hint={`${insights.version ?? "版不明"}${insights.source_dir ? `（${insights.source_dir}/）` : ""}`}
         />
         <Stat label="Discord API の応答" value={discord.api_rtt_ms != null ? `${discord.api_rtt_ms} ms` : "—"} hint="サーバー → Discord の往復" />
@@ -295,7 +294,7 @@ function BotInsightsCard({
         <Stat
           label="ボイス接続"
           value={discord.ok ? `${voiceGuilds.length}` : "—"}
-          hint={voiceGuilds.length ? maskIf(privacy, voiceGuilds.map((guild) => guild.voice_channel).join("、")) : "接続していません"}
+          hint={voiceGuilds.length ? privacy.mask(voiceGuilds.map((guild) => guild.voice_channel).join("、")) : "接続していません"}
         />
         <Stat
           label={`Gemini（${activity.window_hours}時間）`}
@@ -319,8 +318,8 @@ function BotInsightsCard({
           {insights.autonomous_supported ? "自律行動に対応した版" : "この版には自律行動がありません"}
         </Chip>
         {activity.autonomous_events.slice(-1).map((event) => (
-          <Chip key={event.at} icon="history" title={event.text}>
-            {formatRelative(event.at * 1000, now)}: {privacy ? "配信のイベント" : event.text}
+          <Chip key={event.at} icon="history" title={privacy.enabled ? undefined : event.text}>
+            {formatRelative(event.at * 1000, now)}: {privacy.enabled ? "配信のイベント" : event.text}
           </Chip>
         ))}
         <span className="body-small muted insight-source">
@@ -359,10 +358,17 @@ function GitCard({ status, now }: { status: StatusResponse | null; now: number }
 }
 
 function RecentLogs({ logs, onNavigate }: { logs: LogEntry[]; onNavigate: (page: PageId) => void }) {
-  // Traceback の塊を正しく分類するため、少し前から分類してから末尾8件を見せる
+  const privacy = usePrivacy();
+  // Traceback や会話の塊を正しく判定するため、少し前から判定してから末尾8件を見せる
   const tail = logs.slice(-40);
   const tailLevels = classifyEntries(tail);
-  const recent = tail.slice(-8).map((entry, index) => ({ entry, level: tailLevels[tail.length - Math.min(8, tail.length) + index] }));
+  const tailConversation = conversationLines(tail);
+  const offset = tail.length - Math.min(8, tail.length);
+  const recent = tail.slice(-8).map((entry, index) => ({
+    entry,
+    level: tailLevels[offset + index],
+    text: redactLogLine(displayMessage(entry), tailConversation[offset + index], privacy),
+  }));
   return (
     <Card
       title="最近のログ"
@@ -377,11 +383,11 @@ function RecentLogs({ logs, onNavigate }: { logs: LogEntry[]; onNavigate: (page:
     >
       {recent.length ? (
         <ul className="mini-log">
-          {recent.map(({ entry, level }, index) => (
+          {recent.map(({ entry, level, text }, index) => (
             <li key={`${entry.ts}-${index}`} className={`log-${level}`}>
               <time className="mono body-small">{formatClock(entry.ts)}</time>
               <span className={`level level-${level}`}>{LEVEL_LABELS[level]}</span>
-              <span className="mini-log-text body-medium">{displayMessage(entry)}</span>
+              <span className="mini-log-text body-medium">{text}</span>
             </li>
           ))}
         </ul>
