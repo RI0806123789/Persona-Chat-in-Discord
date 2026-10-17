@@ -18,6 +18,26 @@ from persona_bot.audio import voice
 
 
 class SpeechTextTests(unittest.TestCase):
+    def test_emotion_and_affinity_tags_are_removed_anywhere(self):
+        tags = (
+            "[V:10, A:-5]", "[v: +5 , a: -10 ]",
+            "[happy]", "[SAD]", "[ angry ]", "[arousal:+5]",
+            "[ valence : -2 ]", "[affinity:1]",
+        )
+        for tag in tags:
+            for text in (tag + "架空の本文", "架空の" + tag + "本文", "架空の本文" + tag):
+                with self.subTest(tag=tag, text=text):
+                    self.assertEqual(voice.build_speech_text(text), "架空の本文")
+        self.assertEqual(voice.build_speech_text("[happy][V:0, A:0] [arousal:+5]"), "")
+
+    def test_bracketed_body_text_is_preserved(self):
+        text = "[Python] [API v2] [日本語の補足] [1, 2] [arousal] [happy birthday]"
+        self.assertEqual(voice.build_speech_text(text), text)
+
+    def test_tags_are_removed_before_applying_length_limit(self):
+        text = "あ" * voice.TTS_MAX_CHARS
+        self.assertEqual(voice.build_speech_text("[happy]" + text + "[V:0, A:0]"), text)
+
     def test_markup_urls_code_mentions_and_custom_emoji_are_removed(self):
         text = '**架空の説明** https://example.com/path `内部コード` ```py\nprint(1)\n``` <@11> <@!22> <@&33> <#44> <:smile:55> <a:wave:66>\n続き'
         self.assertEqual(voice.build_speech_text(text), "架空の説明 続き")
@@ -131,6 +151,23 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
         await voice.speak_text(self.guild, "架空")
         self.guild.voice_client = None
         await voice.speak_text(self.guild, "架空")
+        self.assertEqual(self.workers, [])
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_both_entrypoints_synthesize_only_body_text(self):
+        with patch.object(voice, "_synthesize_pcm", new=AsyncMock(return_value=b"pcm")) as synthesize, patch.object(
+            voice, "_play_pcm", new=AsyncMock(),
+        ) as play:
+            await voice.speak_text(self.guild, "[happy]架空の独り言[V:0, A:0]")
+            await voice.play_tts_response(SimpleNamespace(guild=self.guild), "架空の返信[sad][arousal:+5]")
+            await self.workers[0]
+        self.assertEqual([call.args[0] for call in synthesize.call_args_list], ["架空の独り言", "架空の返信"])
+        self.assertEqual(play.await_count, 2)
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_tag_only_requests_do_not_create_worker(self):
+        await voice.speak_text(self.guild, "[happy][V:0, A:0]")
+        await voice.play_tts_response(SimpleNamespace(guild=self.guild), "[sad][arousal:+5]")
         self.assertEqual(self.workers, [])
         self.assertEqual(voice._speech_queues, {})
 

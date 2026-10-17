@@ -207,7 +207,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 通常の保存は `AffinityService.save_background(user_id)` → `Database.affinity_upsert(user_id, entry)` で対象1行だけを更新する。`affinity_save_all` は明示的な全件置換用で、返信ごとの保存には使わない。ロック内で対象の現在値だけをコピーし、キャンセル時も `run_in_thread` の完了までロックを保持する。親密度・機嫌・テンション・`last_interaction` の4項目を保存・復元し、半減期・中立値・上下限・親密度の増減しきい値は `AFFINITY_*` から参照する。
 
-**感情タグを扱うコードはこのモジュールに集約すること。** タグの正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置き（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）、外からは次の2つの関数を使う — `extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
+**感情タグを扱うコードはこのモジュールに集約すること。** `[V:X, A:Y]` の正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置く（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）。`extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。読み上げ用の `strip_speech_tags(text)` はこれを再利用し、`_SPEECH_EMOTION_TAG_PATTERN` で感情名（happy / sad / angry / neutral / excited / calm / surprised / scared）と arousal / valence / affinity の数値タグも除去する。一般の角括弧付き本文は保持する。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
 
@@ -225,7 +225,7 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 - **読み上げキュー**: 再生中に届いた返信を捨てないよう、ギルドIDごとに `asyncio.Queue`（`maxsize=TTS_QUEUE_MAX`）を持つ。積むのは **`(テキスト, ボイスプロファイル, 任意の有効性判定)` の組**で、プロファイルは `play_tts_response` の時点で `resolve_profile` により確定させる（待っている間にペルソナを切り替えられても、積まれた分は依頼時のキャラクターの声で読み上げる。新規に合成する分から新プロファイルが反映されれば十分）。ワーカーは最初の依頼で起動し、キューが空になったら `_speech_queues` から自分を消して終了する（参加していないサーバー分のタスクを常駐させないため）。**キューが空だと判定してから登録を消すまでの間に `await` を挟まないこと** — 挟むとその隙に積まれた依頼が誰にも処理されず取り残される。キューが溢れた分は捨てる（古い返信を延々と喋り続けるより会話の現在地に追従する方が自然なため）。
 - **再生の完了待ち**: `voice_client.play()` の `after` コールバックは discord.py の**再生スレッド**から呼ばれる。イベントループ側のオブジェクト（`asyncio.Event`）へは必ず `loop.call_soon_threadsafe` 経由で触ること。
 - **接続は毎回見直す**: 読み上げ中に `/leave` されうるため、ワーカーはループのたびに `guild.voice_client` を取り直して接続状態を確認する。
-- **読み上げテキストの整形** (`build_speech_text`): URL・コードブロック・インラインコード・カスタム絵文字・メンション・Markdown 記号を除去し、`TTS_MAX_CHARS` を超える分は `TTS_TRUNCATION_NOTICE` を付けて打ち切る。特に **URL は音声エンジンが1文字ずつ読み上げて極端に長くなる**ため必ず除去する。感情タグ `[V:X, A:Y]` は `MessageHandler` 側で `extract_affinity_changes` により除去済みのため、ここでは扱わない。
+- **読み上げテキストの整形** (`build_speech_text`): `affinity_service.strip_speech_tags` で感情・親密度の内部タグを除去してから、URL・コードブロック・インラインコード・カスタム絵文字・メンション・Markdown 記号を除去し、`TTS_MAX_CHARS` を超える分は `TTS_TRUNCATION_NOTICE` を付けて打ち切る。特に **URL は音声エンジンが1文字ずつ読み上げて極端に長くなる**ため必ず除去する。通常チャット以外の入口にも備えて音声側でタグを除去し、タグだけならキューへ積まない。
 - 調整値は `constants.py` の `TTS_*` に集約する（インラインに書かない）。
 
 **キャラクター別ボイスプロファイル**: 「声の高さ（`pitch`）」と「話す速さ（`rate`）」は **edge-tts のサーバー側パラメータ**が、「音色（`eq`）」だけを `voice_dsp.py` の numpy 製バイクアッド EQ が担う。**`scipy` / `librosa` / `pydub` を持ち込まないこと** — 前2つは 1GB 環境に対して重すぎ、`pydub` は内部で FFmpeg プロセスを起動するため上記の方針と矛盾する。
@@ -243,6 +243,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 ### スラッシュコマンド (`commands.py`)
 
 `/functions`・`/join`・`/leave` は副作用の前に `reject_blocked_interaction` でブラックリストを確認する。拒否は本人だけに通知する。パネルも `PanelView.interaction_check` で毎回確認し、開いた後のブロックを反映する。`FunctionsView` が渡す `blocked_user_check` を `swap_panel` で引き継ぐこと。サブパネルへ渡し忘れると開いたままの画面から操作できてしまう。
+
+`/join` はボットのMemberを取得できた場合、接続先の `permissions_for` で「接続」と「発言」の両方を確認する。不足している権限だけを案内し、defer・自律配信の停止・既存接続の切断より前に終了する。
 
 すべてのコマンドは `register_commands` で登録され、`on_ready` で同期される。全一覧: `/functions`（機能ハブ。エフェメラル）、`/join` + `/leave`（ボイスチャンネル）。**`/join` と `/leave` はどちらも先に `autonomous.stop_session()` を呼ぶ** — 自律行動でボットが自分から通話に入っている可能性があり、素の `disconnect` だけで済ませるとボットが開いたステージ枠が「配信中」の看板を出したまま残る。`/leave` での強制退出は自律行動の緊急停止手段でもある（idea.md の要件）。`/join` は配信を止めた後も同じチャンネルへ接続中なら、切り直さずにその接続を使う（切り直すと読み上げ中の音声とキューが失われる）。接続の待ち時間は `VOICE_CONNECT_TIMEOUT_SECONDS`。`/functions` はハブパネルを開き、ボタンで各機能へ分岐する: **⚙️ キャラ設定**（`SettingsView` に変身）、**📋 会話要約**（`SummaryView` に変身）、**📈 会話統計**（`StatsView` に変身。ユーザー別ダッシュボード。管理者はここから 👍 フィードバック集計も見られる）、**💬 自発会話**（`AutoTopicView` に変身。自発的な話題提供と 🎙️ 自律行動の ON/OFF・しきい値設定。「ボットが自分から話し出す」系の入口はここに統一している）、**⏰ リマインダー**（`ReminderView` に変身。本人の予定の一覧・取り消し）、**📊 グラフ**（利用トークングラフをその場で表示）、**🔄 NGワード再読込**、**🔍 Google検索**（グラウンディングのその場トグル。確定なしで即そのサーバーの `GuildSettings` に反映）、**❓ 使い方**（`HelpView` に変身。会話のしかたと全機能の説明。権限制限なし）、**🔒 統計プライバシー**（`StatsPrivacyView` に変身。本人の会話統計の収集停止・蓄積データ削除）、**🚫 ブロック解除**（**管理者専用**。ブロック中ユーザーの選択メニューから解除。管理者以外にはボタン自体を非表示）。旧コマンド（`/status`、`/summarize`、`/graph`、`/ng_reload`、`/unblock`、および `/ai`、`/set`、`/gemini`、`/setting`、`/reset`）は削除済み — 設定・要約・利用グラフ・NG再読込・ブロック解除は `/functions` ハブに、テキストチャットは mention モードの `on_message` パイプラインに統合された。
 
@@ -368,6 +370,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 統計の `build_dashboard` / `build_ranking_graph` と利用量の `build_graph_buffer` は、データをイベントループでコピーしてから描画をワーカーへ渡す。matplotlibはスレッド間で共有状態を持つため、全描画関数を `graph_rendering.serialized_plot` の共通ロックで直列化する（Aggバックエンドを維持）。UIは描画前に応答をdeferし、完了後に本人だけのfollowupで返す。描画中の収集設定変更・削除は更新世代でも照合し、古い画像を破棄する。中断時の画像バッファ・Figureも回収する。
 
 `background.run_in_thread` は `asyncio.to_thread` の完了を待つ入口。キャンセルしてもスレッド自体は止まらないため、worker完了まで呼出元のロックを保持してからキャンセルを伝播する。記憶・違反記録・会話統計・サーバー設定・記念日の記録の保存はこの入口を使い、後着した保存が削除や新しい更新を上書きしないようにする（ロックと組み合わせて初めて順序が守られる。ロックの無い呼び出しを置き換えるだけでは並行した保存の順序は守れない）。起動時の記憶ディレクトリ準備も `MemoryService.io_lock` の下で実行する。
+
+キャンセル時に受取先の無くなった結果は、`close` が呼び出せる場合だけ回収する。属性取得・回収の例外は型名だけをログに出し、キャンセルを優先して伝播する。正常に返す結果の所有権は呼出元に渡し、この入口では閉じない。
 
 ### リアクションによるフィードバック収集 (`feedback_service.py`, `stats_view.py`)
 

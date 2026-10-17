@@ -80,8 +80,13 @@ async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any)
             canceled = True
     if canceled:
         # 生成済みの画像バッファは受け取る側が無いので、この場で回収する。
-        if hasattr(result, "close"):
-            result.close()
+        try:
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+        except Exception as cleanup_error:
+            # 回収の失敗で、本来のキャンセルを別の例外に置き換えない。
+            print(f"キャンセル時の同期処理結果の回収に失敗しました: {type(cleanup_error).__name__}")
         raise asyncio.CancelledError
     if error is not None:
         raise error
