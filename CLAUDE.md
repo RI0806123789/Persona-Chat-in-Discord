@@ -121,14 +121,16 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## 開発者用ダッシュボード (`tools/console/`)
 
-SSH 経由でボットを見守る開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` と CI には含めない。セットアップ・起動・設計は `tools/console/README.md` にある。
+SSH 経由でボットを見守り、サービス操作・デプロイを行う開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` と CI には含めない。セットアップ・起動・設計は `tools/console/README.md` にある。
 
 - **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
 - **実行できるコマンドは `backend/remote_commands.py` のホワイトリストだけ。** 画面から届いた文字列をコマンドに埋め込まない。ホスト鍵の検証を切らない（`known_hosts=None` にしない）。127.0.0.1 だけで待ち受け、専用ヘッダー・Host・Origin を確かめる。
-- **自動の確認で本番の接続先へつながないこと。** 画面の確認は `backend/dev_ssh_server.py`（模擬 SSH サーバー）で行う。実際の接続先の `backend/profiles.json` と模擬サーバーの鍵 `backend/.dev/` は Git 管理外。
+- **デプロイは `backend/deploy.py` が管理する。** 接続先の `deploy_branch`（既定 `main`）を `origin` から取得して早送りし、`requirements.txt` が変わったときだけ設定した `python` で `pip install`・`pip check` を実行して再起動する。ブランチの不一致・Git 管理対象の未コミット変更・サーバーにだけあるコミットは事前確認で拒否する。更新後に失敗したらコードと更新した依存関係を戻し、再起動に進んでいた場合は前の版で再起動・起動確認を行う。`bot.db` は戻さない。同時実行は1件だけとし、最後の記録はメモリ上に保持する。
+- **起動確認は「ログイン成功」の文言に依存する。** `src/bot.py` の `on_ready` が出す `ログイン成功: <ボット名>` を `backend/remote_commands.py` の `LOGIN_SUCCESS_TEXT` で探す（最大120秒）。再起動後の PID の変化・稼働状態・自動再起動の回数も確かめる。文言を変えたら判定側・`backend/tests/fake_ssh_server.py`・関連テストと説明をそろえる。ログイン後の各機能の実動作は別途確認する。
+- **自動の確認で本番の接続先へつながないこと。** 模擬 SSH サーバーは `backend/tests/fake_ssh_server.py` の自動テスト専用とし、起動スクリプトや画面の接続先には出さない。SSH・デプロイのテストはループバックの空きポートと一時フォルダの鍵・known_hosts を使う。実際の接続先は `backend/profiles.json`（Git 管理外）に書く。
 - **見本（`backend/profiles.example.json`・`examples/ssh_config.example`・`examples/sudoers.example`）の書き換える値は `YOUR_` で始める**（`.env.example` と同じ流儀）。`profiles.py` の `_PLACEHOLDER` がこの形の値が残った接続先を見分け、バックエンドは接続を断る（仮のホスト名を DNS が偶然引いて、知らないサーバーへつなぎに行かないように）。見本の値の書き方を変えたら、`_PLACEHOLDER`・3つの見本・`tests/test_profiles.py` をそろえて直すこと。実際の値は見本ではなく `backend/profiles.json`（Git 管理外）に書く。
 - **依存は公開から2週間以上たった版に固定する**（`frontend/package.json` は完全一致。`.npmrc` の `save-exact`）。依存の追加は、ボットと同じく事前に相談する。
-- **伏せ字モード（`frontend/src/privacy.ts`）:** 画面が知っているホスト名・ボット名・サーバー名などを集め、エラー文・ログ・コマンド履歴の中からも探して隠す。秘密になりうる値を新しく表示したら `collectSecrets` に足すこと。ログの会話は、ボットの `usage_graph.log_snapshot` の書式（`User (…)：` から `AI：` の応答と区切り線まで）で見分けているので、**この書式を変えたら `privacy.ts`・`backend/dev_ssh_server.py`・`backend/remote_scripts/insights.py`（`User (` と `Total token count` を数える）も合わせて直す**。
+- **伏せ字モード（`frontend/src/privacy.ts`）:** 画面が知っているホスト名・ボット名・サーバー名などを集め、エラー文・ログ・コマンド履歴の中からも探して隠す。秘密になりうる値を新しく表示したら `collectSecrets` に足すこと。ログの会話は、ボットの `usage_graph.log_snapshot` の書式（`User (…)：` から `AI：` の応答と区切り線まで）で見分けているので、**この書式を変えたら `privacy.ts`・`backend/tests/fake_ssh_server.py`・`backend/remote_scripts/insights.py`（`User (` と `Total token count` を数える）も合わせて直す**。
 - **動き:** CSS の `--spring-*` は `frontend/src/theme/motion.ts` がばねの物理計算から作り、最初の描画より前に書き込む（CSS に静的な値は無い）。跳ねない Standard が既定（利用者の好み）。
 - **確認:** `tools/console/backend` で `.venv\Scripts\python.exe -B -m unittest discover -s tests`、`tools/console/frontend` で `npm run build`（`tsc --noEmit && vite build`）。
 
