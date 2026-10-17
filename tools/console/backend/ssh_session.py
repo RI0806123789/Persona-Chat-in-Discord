@@ -287,7 +287,7 @@ def _describe_connect_error(error: Exception, profile: Profile) -> str:
     if isinstance(error, ConnectionRefusedError):
         return "接続を拒否されました。ポート番号が正しいか、サーバーで SSH が動いているか確認してください。"
     if isinstance(error, OSError):
-        return f"サーバーに接続できませんでした（{error}）。ホスト名とネットワークを確認してください。"
+        return "サーバーに接続できませんでした。ホスト名とネットワークを確認してください。"
     if isinstance(error, asyncssh.Error):
-        return f"SSH の接続処理に失敗しました（{type(error).__name__}: {error}）。"
-    return f"予期しないエラーで接続できませんでした（{type(error).__name__}: {error}）。"
+        return "SSH の接続処理に失敗しました。設定と接続先の状態を確認して再試行してください。"
+    return "予期しないエラーで接続できませんでした。時間をおいて再試行してください。"
