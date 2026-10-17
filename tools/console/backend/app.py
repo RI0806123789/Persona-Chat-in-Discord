@@ -141,6 +141,7 @@ def get_history() -> dict:
 @app.get("/api/status")
 async def get_status() -> dict:
     profile = session.require_profile()
+    generation = session.generation
     ping, service, resources, git = await asyncio.gather(
         session.run(rc.PING_COMMAND, label="疎通確認"),
         session.run(rc.service_show_command(profile.service), label="サービス状態"),
@@ -148,6 +149,8 @@ async def get_status() -> dict:
         session.run(rc.git_command(profile.bot_dir), label="Git"),
         return_exceptions=True,
     )
+    if generation != session.generation:
+        raise NotConnectedError("状態の取得中に SSH 接続が変わりました。接続先を確認して更新してください。")
     if isinstance(ping, BaseException):
         raise ping  # 疎通確認すら失敗 = 接続が使えない
     if ping.exit_status != 0:
@@ -271,13 +274,21 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
 # ---------------------------------------------------------------- 操作
 
 
+class ServiceTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile_id: str
+    connected_at: float
+
+
 @app.post("/api/service/{action}")
-async def control_service(action: str) -> dict:
+async def control_service(action: str, body: ServiceTarget | None = None) -> dict:
     if action not in rc.SERVICE_ACTIONS:
         raise HTTPException(status_code=400, detail="許可されていない操作です。")
     if deploys.running:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()
+    if body is None or body.profile_id != profile.id or body.connected_at != session.connected_at:
+        raise HTTPException(status_code=409, detail="確認後に接続状態が変わりました。接続先を確認して操作をやり直してください。")
     label = ACTION_LABELS[action]
     command = rc.service_control_command(profile.service, action)
     result = await session.run(command, label=f"サービス{label}", timeout=60)
@@ -379,15 +390,20 @@ async def get_insights(refresh: bool = False) -> dict:
 @app.get("/api/db")
 async def get_db_summary() -> dict:
     profile = session.require_profile()
+    generation = session.generation
     result = await session.run(
         rc.db_summary_command(profile.bot_dir),
         label="DB 集計（読み取り専用）",
         input=rc.DB_SUMMARY_SCRIPT,
     )
+    if generation != session.generation:
+        raise NotConnectedError("集計中に SSH 接続が変わりました。接続先を確認して更新してください。")
     if result.exit_status != 0:
-        raise SshError(f"DB の集計に失敗しました: {_last_line(result.stderr) or result.exit_status}")
+        raise SshError("DB の集計に失敗しました。サーバーの Python と読み取り権限を確認してください。")
     try:
         summary = json.loads(result.stdout.strip().splitlines()[-1])
+        if not isinstance(summary, dict):
+            raise ValueError("集計結果がオブジェクトではありません。")
     except (ValueError, IndexError) as error:
         raise SshError("DB の集計結果を読み取れませんでした。") from error
     # 手元のリポジトリの最新の版と比べ、新しい版がまだデプロイされていないかを画面に出す

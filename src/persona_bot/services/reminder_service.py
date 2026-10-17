@@ -15,7 +15,6 @@
 DB のクレームと同一トランザクションの中から呼ばれる。
 """
 
-import asyncio
 import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -33,6 +32,7 @@ from persona_bot.config.constants import (
     REMINDER_TIMEZONE,
 )
 from persona_bot.core.database import Database
+from persona_bot.core.background import run_in_thread
 from persona_bot.utils.discord_helpers import send_long_message
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.utils.timeutil import format_weekday, resolve_timezone
@@ -253,7 +253,7 @@ class ReminderService:
 
         guild_id = message.guild.id if message.guild is not None else 0
         try:
-            reminder_id = await asyncio.to_thread(
+            reminder_id = await run_in_thread(
                 self._db.reminder_add,
                 user_id=user_id,
                 user_name=message.author.display_name,
@@ -315,7 +315,7 @@ class ReminderService:
     async def list_pending(self, user_id: str) -> list[dict[str, Any]]:
         """指定ユーザーの未通知リマインダーを、通知が近い順で返す。"""
         try:
-            return await asyncio.to_thread(self._db.reminder_list_pending, str(user_id))
+            return await run_in_thread(self._db.reminder_list_pending, str(user_id))
         except Exception as error:
             print(f"リマインダー: 一覧の取得に失敗しました: {error}")
             return []
@@ -323,7 +323,7 @@ class ReminderService:
     async def cancel(self, reminder_id: int, user_id: str) -> dict[str, Any] | None:
         """リマインダーを取り消す。取り消せた場合はその内容を返す（他人のものは不可）。"""
         try:
-            return await asyncio.to_thread(self._db.reminder_cancel, int(reminder_id), str(user_id))
+            return await run_in_thread(self._db.reminder_cancel, int(reminder_id), str(user_id))
         except Exception as error:
             print(f"リマインダー: 取り消しに失敗しました: {error}")
             return None
@@ -365,7 +365,7 @@ class ReminderService:
         """期限が来たリマインダーを通知する。REMINDER_CHECK_SECONDS ごとに呼ばれる。"""
         now = _utc_now()
         try:
-            due = await asyncio.to_thread(
+            due = await run_in_thread(
                 self._db.reminder_claim_due, now.isoformat(), self._build_next_at(now)
             )
         except Exception as error:
@@ -396,7 +396,7 @@ class ReminderService:
 
         # 通知済みレコードが際限なく溜まらないよう、古いものから捨てる。
         try:
-            await asyncio.to_thread(self._db.reminder_prune_finished, REMINDER_MAX_FINISHED)
+            await run_in_thread(self._db.reminder_prune_finished, REMINDER_MAX_FINISHED)
         except Exception as error:
             print(f"リマインダー: 古い記録の掃除に失敗しました: {error}")
 

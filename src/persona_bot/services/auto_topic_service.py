@@ -1,4 +1,3 @@
-import asyncio
 import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -272,7 +271,7 @@ class AutoTopicService:
         _is_public_anniversary_label() を通ったラベルだけに絞る。
         """
         try:
-            all_anniversaries = await asyncio.to_thread(
+            all_anniversaries = await run_in_thread(
                 self._db.profile_load_all_for_key, ANNIVERSARY_PROFILE_KEY
             )
         except Exception as error:

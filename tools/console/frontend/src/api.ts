@@ -58,7 +58,8 @@ export const api = {
   disconnect: () => post<ConnectionState>("/api/disconnect"),
   status: () => request<StatusResponse>("/api/status"),
   logs: (lines: number) => request<{ entries: LogEntry[] }>(`/api/logs?lines=${lines}`),
-  service: (action: ServiceAction) => post<Operation>(`/api/service/${action}`),
+  service: (action: ServiceAction, target: { profile_id: string; connected_at: number }) =>
+    post<Operation>(`/api/service/${action}`, target),
   operations: () => request<{ operations: Operation[] }>("/api/operations"),
   history: () => request<{ commands: CommandRecord[] }>("/api/history"),
   db: () => request<DbSummary>("/api/db"),

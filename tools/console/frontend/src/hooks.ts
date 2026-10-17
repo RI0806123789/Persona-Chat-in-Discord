@@ -4,7 +4,7 @@ import { appendLogEntries } from "./logs";
 import type { LogEntry } from "./types";
 
 /** enabled の間、callback を intervalMs ごとに呼ぶ（前の呼び出しが終わってから次を予約する）。 */
-export function usePolling(callback: () => Promise<void> | void, intervalMs: number, enabled: boolean) {
+export function usePolling(callback: () => Promise<void> | void, intervalMs: number, enabled: boolean, resetKey = "") {
   const saved = useRef(callback);
   useEffect(() => {
     saved.current = callback;
@@ -26,7 +26,7 @@ export function usePolling(callback: () => Promise<void> | void, intervalMs: num
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [intervalMs, enabled]);
+  }, [intervalMs, enabled, resetKey]);
 }
 
 /** 「◯秒前」の表示を更新するための現在時刻。 */

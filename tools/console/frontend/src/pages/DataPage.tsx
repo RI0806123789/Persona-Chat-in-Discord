@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../api";
 import { LoadingIndicator, WavyProgress } from "../components/expressive";
 import { Button, Card, Chip, ConnectedButtonGroup, InlineError, Notice, Stat, StatusChip } from "../components/ui";
 import { formatBytes, formatNumber, formatPercent } from "../format";
+import { lastSevenDays } from "../data";
 import { usePrivacy } from "../privacy";
 import type { DbSummary, Profile } from "../types";
 import { NotConnected } from "./shared";
@@ -23,6 +24,7 @@ const STATUS_LABELS: Record<string, string> = {
   pending: "待機",
   processing: "処理中",
   done: "完了",
+  completed: "完了",
   failed: "失敗",
   canceled: "取り消し",
 };
@@ -33,33 +35,43 @@ export function DataPage({
   onConnect,
   selectedProfile,
   refreshToken,
+  connectionKey,
 }: {
   connected: boolean;
   connecting: boolean;
   onConnect: () => void;
   selectedProfile: Profile | null;
   refreshToken: number;
+  connectionKey: string;
 }) {
   const [summary, setSummary] = useState<DbSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const privacy = usePrivacy();
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
+    const current = ++requestId.current;
     setLoading(true);
     try {
-      setSummary(await api.db());
+      const data = await api.db();
+      if (current !== requestId.current) return;
+      setSummary(data);
       setError(null);
     } catch (caught) {
+      if (current !== requestId.current) return;
       setError(errorMessage(caught));
     } finally {
-      setLoading(false);
+      if (current === requestId.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    setSummary(null);
+    setError(null);
     if (connected) void load();
-  }, [connected, load, refreshToken]);
+    return () => { requestId.current += 1; };
+  }, [connected, load, refreshToken, connectionKey]);
 
   if (!connected) {
     return <NotConnected profile={selectedProfile} connecting={connecting} onConnect={onConnect} />;
@@ -79,7 +91,7 @@ export function DataPage({
         }
       >
         {error && <InlineError>{error}</InlineError>}
-        {summary && !summary.exists && <InlineError>{summary.path} が見つかりません。</InlineError>}
+        {summary && !summary.exists && <InlineError>{privacy.mask(summary.path)} が見つかりません。</InlineError>}
         {!summary && !error && <LoadingIndicator size={40} />}
         {summary?.exists && (
           <>
@@ -92,8 +104,8 @@ export function DataPage({
               <span className="title-medium mono">v{summary.schema_version ?? "?"}</span>
               <SchemaChip deployed={summary.schema_version} latest={summary.latest_schema_version} />
             </div>
-            <span className="body-small muted mono truncate" title={privacy.redact(summary.path)}>
-              {privacy.redact(summary.path)}
+            <span className="body-small muted mono truncate" title={privacy.mask(summary.path)}>
+              {privacy.mask(summary.path)}
             </span>
           </>
         )}
@@ -101,16 +113,22 @@ export function DataPage({
       </Card>
 
       <Card title="テーブルごとの行数" icon="layers" source="ssh" className="span-8">
-        {summary?.tables ? <TableRows tables={summary.tables} /> : <WavyProgress label="集計しています" />}
+        {summary?.tables ? (
+          <TableRows tables={summary.tables} />
+        ) : summary ? (
+          <span className="body-medium muted">取得できません</span>
+        ) : (
+          <WavyProgress label="集計しています" />
+        )}
       </Card>
 
       <Card title="リマインダー / 文書キュー" icon="alarm" source="ssh" className="span-4">
-        <StatusCounts title="リマインダー" counts={summary?.reminders_by_status} />
-        <StatusCounts title="文書処理キュー" counts={summary?.queue_by_status} />
+        <StatusCounts title="リマインダー" counts={summary ? summary.reminders_by_status ?? null : undefined} />
+        <StatusCounts title="文書処理キュー" counts={summary ? summary.queue_by_status ?? null : undefined} />
       </Card>
 
       <Card title="返信への評価" icon="thumbUp" source="ssh" className="span-4">
-        <FeedbackSummary feedback={summary?.feedback} />
+        <FeedbackSummary feedback={summary ? summary.feedback ?? null : undefined} />
       </Card>
 
       <Card title="ブラックリスト" icon="block" source="ssh" className="span-4">
@@ -120,12 +138,18 @@ export function DataPage({
             <Stat label="違反記録あり" value={`${summary.blacklist.users} 人`} />
           </div>
         ) : (
-          <span className="body-medium muted">ng/blacklist.json はまだありません。</span>
+          <span className="body-medium muted">違反記録は未作成、または取得できません。</span>
         )}
       </Card>
 
       <Card title="評価の推移（直近7日・日本時間）" icon="overview" source="ssh" className="span-12">
-        {summary ? <FeedbackTrend days={summary.feedback_by_day ?? []} /> : <WavyProgress label="集計しています" />}
+        {!summary ? (
+          <WavyProgress label="集計しています" />
+        ) : summary.feedback_by_day ? (
+          <FeedbackTrend days={summary.feedback_by_day} />
+        ) : (
+          <span className="body-medium muted">日別の評価を取得できません</span>
+        )}
       </Card>
 
       {summary && summary.errors.length > 0 && (
@@ -168,7 +192,7 @@ function TableRows({ tables }: { tables: Record<string, number> }) {
   );
 }
 
-function StatusCounts({ title, counts }: { title: string; counts: Record<string, number> | undefined }) {
+function StatusCounts({ title, counts }: { title: string; counts: Record<string, number> | null | undefined }) {
   const entries = Object.entries(counts ?? {});
   return (
     <div className="status-counts">
@@ -182,13 +206,14 @@ function StatusCounts({ title, counts }: { title: string; counts: Record<string,
           ))}
         </div>
       ) : (
-        <span className="body-medium muted">なし</span>
+        <span className="body-medium muted">{counts === null ? "取得できません" : counts === undefined ? "集計しています" : "なし"}</span>
       )}
     </div>
   );
 }
 
-function FeedbackSummary({ feedback }: { feedback: { good: number; bad: number } | undefined }) {
+function FeedbackSummary({ feedback }: { feedback: { good: number; bad: number } | null | undefined }) {
+  if (feedback === null) return <span className="body-medium muted">取得できません</span>;
   if (!feedback) return <WavyProgress label="集計しています" />;
   const total = feedback.good + feedback.bad;
   const ratio = total ? feedback.good / total : null;
@@ -212,18 +237,6 @@ function FeedbackSummary({ feedback }: { feedback: { good: number; bad: number }
       </div>
     </>
   );
-}
-
-/** 直近7日（今日を含む）の日付を、評価の無い日も 0 件として並べる。 */
-function lastSevenDays(days: { day: string; good: number; bad: number }[]) {
-  const byDay = new Map(days.map((item) => [item.day, item]));
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-    const found = byDay.get(key);
-    return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, good: found?.good ?? 0, bad: found?.bad ?? 0 };
-  });
 }
 
 type TrendView = "chart" | "table";

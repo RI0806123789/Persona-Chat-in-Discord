@@ -129,9 +129,9 @@ export interface DbSummary {
   /** 手元のリポジトリの database.py にある SCHEMA_VERSION（読めなければ null） */
   latest_schema_version?: number | null;
   tables?: Record<string, number>;
-  reminders_by_status?: Record<string, number>;
-  queue_by_status?: Record<string, number>;
-  feedback?: { good: number; bad: number };
+  reminders_by_status?: Record<string, number> | null;
+  queue_by_status?: Record<string, number> | null;
+  feedback?: { good: number; bad: number } | null;
   feedback_by_day?: { day: string; good: number; bad: number }[];
   blacklist?: { users: number; blocked: number } | null;
 }

@@ -84,6 +84,76 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         status, _ = await request("/api/service/reboot", method="POST")
         self.assertEqual(status, 400)
 
+    async def test_service_actions_record_results_and_change_service_state(self):
+        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+        old_pid = self.bot.pid
+        for action in ("restart", "stop", "start"):
+            status, body = await request(f"/api/service/{action}", method="POST", body=target)
+            self.assertEqual(status, 200)
+            operation = json.loads(body)
+            self.assertTrue(operation["ok"])
+            self.assertEqual(operation["profile_id"], self.profile.id)
+            self.assertEqual(operation["action"], action)
+            self.assertEqual(self.bot.active, action != "stop")
+            if action == "restart":
+                self.assertNotEqual(old_pid, self.bot.pid)
+        status, history = await request("/api/operations")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["action"] for item in json.loads(history)["operations"][:3]], ["start", "stop", "restart"])
+
+    async def test_service_rejects_stale_missing_and_different_targets(self):
+        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+        await self.session.connect(self.profile)
+        with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+            for body in (None, target, {**target, "profile_id": "other"}):
+                status, _ = await request("/api/service/stop", method="POST", body=body)
+                self.assertEqual(status, 409)
+            run.assert_not_awaited()
+        self.assertTrue(self.bot.active)
+
+    async def test_sudo_failure_is_recorded_with_japanese_instructions(self):
+        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+        with mock.patch.object(self.session, "run", return_value=CommandResult("", "sudo: a password is required", 1, 2)):
+            status, body = await request("/api/service/restart", method="POST", body=target)
+        self.assertEqual(status, 200)
+        operation = json.loads(body)
+        self.assertFalse(operation["ok"])
+        self.assertIn("パスワード", operation["message"])
+        self.assertIn("NOPASSWD", operation["message"])
+
+    async def test_db_summary_is_available_through_api(self):
+        status, body = await request("/api/db")
+        self.assertEqual(status, 200)
+        summary = json.loads(body)
+        self.assertEqual(summary["schema_version"], 10)
+        self.assertEqual(summary["latest_schema_version"], 10)
+
+    async def test_connection_change_during_status_or_db_read_rejects_old_results(self):
+        for operation in (app.get_status, app.get_db_summary):
+            with self.subTest(operation=operation.__name__):
+                await self.session.connect(self.profile)
+                started, release = asyncio.Event(), asyncio.Event()
+
+                async def collect(*_args, **_kwargs):
+                    started.set()
+                    await release.wait()
+                    return CommandResult("{}", "", 0, 1)
+
+                with mock.patch.object(self.session, "run", side_effect=collect):
+                    task = asyncio.create_task(operation())
+                    await started.wait()
+                    await self.session.disconnect()
+                    release.set()
+                    with self.assertRaises(NotConnectedError):
+                        await task
+
+    async def test_invalid_db_output_does_not_expose_remote_error(self):
+        for stdout, stderr, code in (("[]", "", 0), ("", "private detail", 1)):
+            with mock.patch.object(self.session, "run", return_value=CommandResult(stdout, stderr, code, 1)):
+                status, body = await request("/api/db")
+                self.assertEqual(status, 502)
+                self.assertNotIn(b"private detail", body)
+
     async def test_insights_cache_coalesces_requests_and_refresh_bypasses_it(self):
         with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
             results = await asyncio.gather(*(app.get_insights() for _ in range(4)))
