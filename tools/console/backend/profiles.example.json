@@ -1,0 +1,34 @@
+{
+  "profiles": [
+    {
+      "id": "dev",
+      "label": "開発用の模擬サーバー",
+      "environment": "development",
+      "host": "127.0.0.1",
+      "port": 2222,
+      "username": "ubuntu",
+      "key_path": ".dev/client_key",
+      "known_hosts": ".dev/known_hosts",
+      "use_ssh_config": false,
+      "service": "bot",
+      "bot_dir": "/home/ubuntu/Persona-Chat-in-Discord",
+      "journal_sudo": false,
+      "note": "先に python dev_ssh_server.py を起動してください。本番サーバーには一切触れません。"
+    },
+    {
+      "id": "prod",
+      "label": "本番サーバー（Oracle Cloud）",
+      "environment": "production",
+      "host": "persona-bot",
+      "port": null,
+      "username": null,
+      "key_path": null,
+      "known_hosts": null,
+      "use_ssh_config": true,
+      "service": "bot",
+      "bot_dir": "/home/ubuntu/Persona-Chat-in-Discord",
+      "journal_sudo": false,
+      "note": "host には ~/.ssh/config の Host 名（または IP）を書く。初回は PowerShell で ssh を1回実行し、known_hosts に登録しておく。"
+    }
+  ]
+}

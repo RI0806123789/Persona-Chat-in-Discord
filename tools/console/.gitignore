@@ -1,0 +1,14 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# 開発用の模擬 SSH サーバーが作る鍵（秘密鍵を含む）
+backend/.dev/
+
+# 実際の接続先（ホスト名・鍵の場所が入る）
+backend/profiles.json
+
+# Node
+frontend/node_modules/
+frontend/dist/
