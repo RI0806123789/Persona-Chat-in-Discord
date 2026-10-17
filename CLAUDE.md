@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（ボイス接続中・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ソースはすべて `src/` にある。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
+Google Gemini をバックエンドに持つ Discord ボット。ペルソナベースのテキストチャット、ボイスチャンネルでの TTS 読み上げ（ボイス接続中・FFmpeg 不要・edge-tts でペルソナごとに声が変わる）、画像/文書のマルチモーダル入力、長期記憶、ユーザーごとの親密度/感情トラッキング、コンテンツモデレーション、三審制ブラックリスト、チャンネル会話の議事録要約、ユーザー別会話統計ダッシュボード、無会話チャンネルへの自発的な話題提供、自律行動（ボットが自分からボイス/ステージチャンネルへ出て独り言を続け、コメントに配信者のように応答する）、記念日の自動お祝い、リマインダー、返信への 👍👎 リアクションによるフィードバック収集、オンボーディング導線（サーバー参加時の案内と使い方パネル）を備える。ボットのソースはすべて `src/` にある（開発者用ダッシュボードは別に `tools/console/`。後述）。ユーザー向け文字列・ログ出力（`print`）・コードコメントはすべて日本語。新規に追加するものも日本語で統一すること。
 
 ## 作業の進め方
 
@@ -118,6 +118,18 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 - **`WatchdogSec` は未導入**（依頼どおり、ハング型のフリーズが実際に観測されてから検討する）。`Restart=always` が拾えるのはプロセスが落ちるケースだけで、「生きているのに応答しない」状態は拾えない。導入にはアプリ側の `sd_notify(WATCHDOG=1)` 定期送信が必須で、送信が滞ると健全なプロセスまで殺す。
 - **ユニットファイルは LF 改行必須**（`.gitattributes` で固定済み）。CRLF だと `ExecStart=` のパス末尾に `\r` が混入して起動に失敗し、原因が非常に分かりにくい。
 - ログは journald（`journalctl -u bot -f`）。`print` の出力を即時反映させるため `PYTHONUNBUFFERED=1` を、日本語・絵文字で `UnicodeEncodeError` を起こさないため `PYTHONIOENCODING=utf-8` をユニット側で指定している。
+
+## 開発者用ダッシュボード (`tools/console/`)
+
+SSH 経由でボットを見守る開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` と CI には含めない。セットアップ・起動・設計は `tools/console/README.md` にある。
+
+- **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
+- **実行できるコマンドは `backend/remote_commands.py` のホワイトリストだけ。** 画面から届いた文字列をコマンドに埋め込まない。ホスト鍵の検証を切らない（`known_hosts=None` にしない）。127.0.0.1 だけで待ち受け、専用ヘッダー・Host・Origin を確かめる。
+- **自動の確認で本番の接続先へつながないこと。** 画面の確認は `backend/dev_ssh_server.py`（模擬 SSH サーバー）で行う。実際の接続先の `backend/profiles.json` と模擬サーバーの鍵 `backend/.dev/` は Git 管理外。
+- **依存は公開から2週間以上たった版に固定する**（`frontend/package.json` は完全一致。`.npmrc` の `save-exact`）。依存の追加は、ボットと同じく事前に相談する。
+- **伏せ字モード（`frontend/src/privacy.ts`）:** 画面が知っているホスト名・ボット名・サーバー名などを集め、エラー文・ログ・コマンド履歴の中からも探して隠す。秘密になりうる値を新しく表示したら `collectSecrets` に足すこと。ログの会話は、ボットの `usage_graph.log_snapshot` の書式（`User (…)：` から `AI：` の応答と区切り線まで）で見分けているので、**この書式を変えたら `privacy.ts`・`backend/dev_ssh_server.py`・`backend/remote_scripts/insights.py`（`User (` と `Total token count` を数える）も合わせて直す**。
+- **動き:** CSS の `--spring-*` は `frontend/src/theme/motion.ts` がばねの物理計算から作り、最初の描画より前に書き込む（CSS に静的な値は無い）。跳ねない Standard が既定（利用者の好み）。
+- **確認:** `tools/console/backend` で `.venv\Scripts\python.exe -B -m unittest discover -s tests`、`tools/console/frontend` で `npm run build`（`tsc --noEmit && vite build`）。
 
 ## アーキテクチャ
 

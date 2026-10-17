@@ -1,15 +1,16 @@
 # Persona Bot Console
 
-Persona Chat in Discord のボットを、**SSH 経由で**見守り・操作するための開発者用ダッシュボードです（デザインを固めるための試作）。
+Persona Chat in Discord のボットを、**SSH 経由で**見守り・操作するための開発者用ダッシュボードです（BETA）。
 デザイン言語は **Material 3 Expressive** を採用しています。
 
 - フロントエンド: React 19 + TypeScript + Vite
 - バックエンド: Python（FastAPI + asyncssh）
 - すべて手元の PC（127.0.0.1）で動きます。フォント・アイコンも同梱で、CDN やクラウドのサービスは使いません。
-- **ボットのコード（GitHub 上のファイル）には一切手を入れません。** 表示する値は、SSH で読める既存の情報源から集めます。
+- **ボットのコード（`src/`）には一切手を入れません。** 表示する値は、SSH で読める既存の情報源から集めます。
+- ボットとは依存関係も起動も分けています（ボットの `requirements.txt` と CI には影響しません）。
 
 ```
- ブラウザ（React）                手元の PC                                ボットのサーバー（Oracle Cloud）
+ ブラウザ（React）                手元の PC                                ボットのサーバー
 ┌──────────────┐  HTTP / WebSocket  ┌───────────────────┐  SSH（1本の接続を使い回す） ┌──────────────────────────┐
 │ 127.0.0.1:5173 │ ───────────────▶ │ backend/app.py       │ ────────────────────────▶ │ systemctl / journalctl / free / df │
 │ （画面）       │ ◀─────────────── │ 127.0.0.1:8765       │ ◀──────────────────────── │ git / bot.db（読み取り専用）       │
@@ -20,7 +21,7 @@ Persona Chat in Discord のボットを、**SSH 経由で**見守り・操作す
                                     backend/dev_ssh_server.py（127.0.0.1:2222 の模擬 SSH サーバー）
 ```
 
-![開発用の模擬サーバーにつないだ概要ページ](docs/overview-dev.jpg)
+![開発用の模擬サーバーにつないだ概要ページ（伏せ字モード）](docs/overview-dev.jpg)
 
 ## 表示している値と取り方
 
@@ -34,7 +35,7 @@ Persona Chat in Discord のボットを、**SSH 経由で**見守り・操作す
 | 概要: デプロイ中のコード | ブランチ・コミット・タグ・未コミットのファイル数 | `git`（`bot_dir` で実行） |
 | ログ | ライブのログ（絞り込み・一時停止つき） | `journalctl -u bot -f -o json` を WebSocket で中継 |
 | サービス操作 | 起動・停止・再起動 | `sudo -n systemctl start/stop/restart bot` |
-| データ | テーブルの行数・スキーマの版・リマインダー / キュー / 評価 / ブロック数・評価の日別推移 | サーバーの `python3` で `bot.db` を **読み取り専用** で集計 |
+| データ | テーブルの行数・スキーマの版（手元の `database.py` と比較）・リマインダー / キュー / 評価 / ブロック数・評価の日別推移（グラフ / 表） | サーバーの `python3` で `bot.db` を **読み取り専用** で集計 |
 | サーバー | サーバーごとの名前・人数・オンライン数・ボイス接続・ペルソナ / モデル / 応答 / 検索 / 自発会話 / 自律行動の設定、DM の設定 | `remote_scripts/insights.py`（下記） |
 | SSH 接続 | ホスト鍵のフィンガープリント・送ったコマンドの履歴 | asyncssh |
 
@@ -59,7 +60,7 @@ SSH の標準入力でサーバーへ送り、サーバーの `python3`（標準
 
 ## 初回セットアップ
 
-リポジトリのルートで、PowerShell から次を実行します。
+Python 3.10 以上と Node.js 20.19 以上（22 系なら 22.12 以上）が要ります。リポジトリのルートで、PowerShell から次を実行します。
 
 ```powershell
 cd tools\console\backend
@@ -67,8 +68,11 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 
 cd ..\frontend
-npm install
+npm ci
 ```
+
+依存ライブラリの版は、公開から2週間以上たったものに固定しています（`package.json` は完全一致、`frontend/.npmrc` の `save-exact`）。
+版を上げるときは、その版の公開日を `npm view <パッケージ> time` や PyPI で確かめてください。
 
 ## 起動する
 
@@ -86,10 +90,10 @@ cd tools\console
 
 ## 本番サーバーにつなぐ
 
-`backend\profiles.json` の `prod` は `~/.ssh/config` の Host 名（見本では `persona-bot`）を指しています（HostName・User・IdentityFile はそこから読みます）。
+`backend\profiles.example.json` を `backend\profiles.json`（Git 管理外）へコピーし、`prod` の `host` に `~/.ssh/config` の Host 名を書きます（HostName・User・IdentityFile はそこから読みます）。
 
-- ダッシュボードは `~/.ssh/known_hosts` とホスト鍵を照合し、未登録・不一致なら接続しません（なりすまし対策）。
-- 起動・停止・再起動にはパスワードなしの sudo が要ります。本番の `ubuntu` ユーザーは設定済みです。
+- ダッシュボードは `~/.ssh/known_hosts` とホスト鍵を照合し、未登録・不一致なら接続しません（なりすまし対策）。初めての接続先は、先に PowerShell で `ssh <Host 名>` を実行してフィンガープリントを確かめ、登録してください。
+- 起動・停止・再起動にはパスワードなしの sudo が要ります。許可していない環境で操作すると、起動・停止・再起動の3つだけを許可する sudoers の1行を画面に案内します。
 - 本番に接続している間は、画面上端の帯と警告のバナーが出続けます。
 
 ## 安全のための設計
@@ -103,20 +107,39 @@ cd tools\console
   - Host ヘッダーが 127.0.0.1 / localhost 以外なら拒否する（DNS リバインディング対策）
   - WebSocket は Origin を確認する
 - DB は `mode=ro` で開き、**件数だけ**を持ち帰ります。Discord のトークンはサーバーの外に出しません。
-- 停止はサービス名の入力で確認し、本番ではダイアログに警告を出します。
-- 右上の 👁（または `h` キー）で、ホスト名・ホスト鍵・ボット名・サーバー名を伏せられます。issue にスクリーンショットを貼る前に使ってください
-  （ボットのリポジトリは Public です）。
+- 操作はすべて確認ダイアログを通します。停止はサービス名の入力で確認し、本番では警告を出します。
+  Enter の押し間違いで実行されないよう、最初のフォーカスは停止なら入力欄、本番の再起動なら「キャンセル」に置きます。
+
+### 伏せ字モード
+
+右上の 👁（または `h` キー）で、スクリーンショットを Public の issue に貼れる状態にします（ボットのリポジトリは Public です）。
+
+- **隠すもの:** ホスト名・ユーザー名・ホスト鍵・ボット名・サーバー名・チャンネル名と、ログに出る会話の本文
+- 欄ごとに隠すだけでなく、エラー文・ログ・コマンド履歴・通知の中に出てくる同じ文字列も探して隠します（`frontend/src/privacy.ts`）
+- ログの会話は、ボットの出力の形（`User (…)：` から、`AI：` の応答の最後の行まで）で見分けて本文を隠します。`#チャンネル名` の形も隠します
+- 伏せ字中は、トップアプリバーに「伏せ字中」のチップが出ます
+
+![伏せ字モードのサーバーページ（サーバー名・ボイスのチャンネル名・ホスト名が隠れる）](docs/guilds-dev.jpg)
 
 ## デザイン（Material 3 Expressive）
 
 | 要素 | 内容 |
 | --- | --- |
-| 色 | `@material/material-color-utilities` の **SchemeExpressive（2025 年版の仕様）** で、シード色からライト / ダーク両方の配色を生成します（右上の 🎨 で5色から選べます）。状態の色（正常・注意・停止）は M3 の「カスタムカラー」として、テーマの色になじませます。グラフの色だけは、色覚の違いに配慮して検証済みのパレットを使います |
+| 色 | `@material/material-color-utilities` の **SchemeExpressive（2025 年版の仕様）** で、シード色からライト / ダーク両方の配色を生成します（右上の 🎨 で5色とテーマ「システム / ライト / ダーク」を選べます）。状態の色（正常・注意・停止）は公式の `customColor` で M3 の「カスタムカラー」にし、テーマの色になじませます。危険はエラーの色です。グラフの色だけは、色覚の違いに配慮して検証済みのパレットを使います |
 | 形 | 角丸の段階は 4 / 8 / 12 / 16 / 20 / 28 / 32 / 48px と完全な丸です。主役のカードは 28px で、稼働中は M3 の形のライブラリに近い「クッキー」がゆっくり回ります。ボタンは押すと丸から角丸の四角へ変わり、切り替え式のアイコンボタンは選ぶと四角くなります |
-| 動き | M3 Expressive のばね（spring）を、物理計算で CSS の `linear()` に変換して使います。利用者の好み（バウンドしない「ぬるっと」した動き）に合わせ、**Standard 方式（減衰比 0.9、行き過ぎ 0.15%）**にしています。`prefers-reduced-motion` では止めます |
+| 動き | M3 Expressive のばね（spring）を物理計算で解き、CSS の `linear()` に変換して使います（`frontend/src/theme/motion.ts`）。利用者の好み（バウンドしない「ぬるっと」した動き）に合わせ、**Standard 方式（減衰比 0.9、行き過ぎ 0.15%）**にしています。`MOTION_SCHEME` を `"expressive"` に変えるだけで、跳ねる動きに切り替わります。`prefers-reduced-motion` では止めます |
 | 文字 | Roboto Flex（可変フォント）＋ Noto Sans JP。M3 の文字サイズの段階で組み、主役の数字は Expressive の「強調」（太め・少し詰める）にしています |
-| 部品 | ナビゲーションレール（1200px 以上は展開・`[` で切り替え）と FAB、狭い画面ではナビゲーションバー。トップアプリバー、分割ボタン、つながったボタングループ、スイッチ、浮かぶツールバー、検索バー、基本ダイアログ、スナックバー、形が変わるローディング表示、波打つプログレスインジケーター |
+| 部品 | ナビゲーションレールと FAB、トップアプリバー、分割ボタン、つながったボタングループ、スイッチ、メニュー、浮かぶツールバー、検索バー、基本ダイアログ、スナックバー（操作ボタンつき）、形が変わるローディング表示、波打つプログレスインジケーター |
 | アイコン | Material Symbols Rounded（可変フォント）。選択中は塗りつぶしの形にします |
+| 面の重なり | 背景とレール → 角丸のメイン領域 → カード、の順に色の段階で奥行きを出します |
+
+画面幅（M3 のウィンドウサイズの区分）で、ナビゲーションの形が変わります。
+
+| 画面幅 | ナビゲーション |
+| --- | --- |
+| 1200px 以上 | 常設のレール。`[` で広げる / 折りたたむ（ブラウザに覚えておく） |
+| 600〜1199px | 折りたたんだレール。`[` で、広げたレールを画面の上に重ねて開く |
+| 600px 未満 | 下部のナビゲーションバーと、右下の FAB。左上のメニューボタン（または `[`）で、重ねるレールも開ける |
 
 公式の Web 向け M3 Expressive コンポーネントは無いため、部品は仕様をもとに自前で組んでいます（`frontend/src/components/`、`frontend/src/styles.css`）。
 
@@ -125,20 +148,22 @@ cd tools\console
 | キー | 動作 |
 | --- | --- |
 | `1`〜`6` / `j` `k` | ページ切り替え / 次・前のページ |
-| `g` → `o` `l` `s` `d` `g` `c` | 概要 / ログ / 操作 / データ / サーバー / 接続 へ |
+| `g` → `o` `l` `s` `d` `g` `c` | 概要 / ログ / 操作 / データ / サーバー / 接続 へ（`g` を押すと、次のキーの候補が画面の下に出る） |
 | `r` / `a` | 今すぐ更新（ボットの中の状態もキャッシュを使わず取り直す） / 自動更新の ON・OFF |
 | `/` / `p` | ログの絞り込み / ライブ表示の一時停止 |
 | `[` / `h` / `t` / `?` | レールの展開 / 伏せ字 / テーマ切り替え / ショートカット一覧 |
+| `Esc` | ダイアログ・メニュー・重ねたレールを閉じる / 入力欄から抜ける |
+| メニューの中: `↓` `↑`（`j` `k`）/ `Home` `End` / `Enter` | 項目の移動 / 先頭・末尾へ / 選ぶ |
 
 ## テスト
 
 ```powershell
-cd backend
+cd tools\console\backend
 $env:PYTHONIOENCODING = "utf-8"
-.venv\Scripts\python.exe -B -m unittest discover -s tests -v   # 28 件
+.venv\Scripts\python.exe -B -m unittest discover -s tests -v   # 33 件
 
 cd ..\frontend
-npm run build   # 型チェック（tsc）+ ビルド
+npm run build   # 型チェック（tsc --noEmit）+ ビルド
 ```
 
 外部には一切つながりません（Discord API の接続先は、使われていないポートへ差し替えて検証します）。
@@ -148,6 +173,8 @@ npm run build   # 型チェック（tsc）+ ビルド
 | `test_remote_commands.py` | コマンドの組み立て（ホワイトリスト・記号を含む名前の拒否・引用符）と、systemctl / free / df / git / journald の出力の読み取り |
 | `test_ssh_integration.py` | 模擬 SSH サーバーを空きポートで起動し、本物の SSH プロトコルで次を確かめる |
 | `test_remote_scripts.py` | 一時フォルダに作った架空のボットで `insights.py` と DB 集計を実行し、次を確かめる |
+| `test_local_repo.py` | 手元の `database.py` からスキーマの版を（import せずに）読めること・読めないときの扱い |
+| `test_app_messages.py` | sudo にパスワードが要るときの案内が、起動・停止・再起動の3つだけを許可する書き方になっていること |
 
 `test_ssh_integration.py` で確かめること:
 
@@ -166,26 +193,29 @@ npm run build   # 型チェック（tsc）+ ビルド
 ## ファイル構成
 
 ```
-persona-bot-console/
+tools/console/
 ├─ start-dev.ps1                 まとめて起動
 ├─ backend/
 │  ├─ app.py                     API（FastAPI）。画面の配信も兼ねる
 │  ├─ ssh_session.py             SSH 接続の管理（asyncssh）・コマンド履歴
 │  ├─ remote_commands.py         実行してよいコマンドと、出力の読み取り
 │  ├─ remote_scripts/insights.py サーバー側で動かす集計（Discord API・DB・ログ）
+│  ├─ local_repo.py              手元のリポジトリから読む情報（スキーマの版。import せず ast で読む）
 │  ├─ profiles.py                接続先（profiles.json）の読み込みと検証
 │  ├─ profiles.example.json      接続先の見本（dev = 模擬サーバー / prod = 本番）
 │  ├─ dev_ssh_server.py          開発用の模擬 SSH サーバー（初回起動で .dev/ に鍵を作る）
 │  └─ tests/
 └─ frontend/src/
-   ├─ App.tsx                    全体の状態・定期更新・キーボード操作
+   ├─ App.tsx                    全体の状態・定期更新・キーボード操作・画面幅の切り替え
+   ├─ privacy.ts                 伏せ字モード（隠す文字列の収集・ログの会話の判定）
    ├─ theme/theme.ts             シード色から M3 の配色を生成
-   ├─ components/                レール・トップアプリバー・M3 の部品（ui.tsx / expressive.tsx）・ダイアログ・スナックバー
+   ├─ theme/motion.ts            ばねの物理計算から動きのトークン（linear()）を生成
+   ├─ components/                レール・トップアプリバー・メニュー・M3 の部品（ui.tsx / expressive.tsx）・ダイアログ・スナックバー
    ├─ pages/                     概要 / ログ / サービス操作 / データ / サーバー / SSH 接続
-   └─ styles.css                 形・文字・動きのトークンとスタイル
+   └─ styles.css                 形・文字のトークンとスタイル
 ```
 
-## issue 候補（このモックアップから本実装へ）
+## 今後の候補
 
 1. **デプロイ機能**: `git pull` → `pip install` → 再起動 → 「ログイン成功」の確認、と進めます。
    途中で失敗したときの巻き戻し方を先に決めておく必要があります。
