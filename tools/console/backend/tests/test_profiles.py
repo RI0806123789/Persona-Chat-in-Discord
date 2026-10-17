@@ -75,6 +75,24 @@ class DeploySettingsTests(unittest.TestCase):
         self.assertEqual(profile.public_dict()["deploy_branch"], "release/1.0")
 
 
+class ProfileValidationTests(unittest.TestCase):
+    def test_rejects_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            path.write_text(json.dumps({"profiles": [_raw_profile(), _raw_profile()]}), encoding="utf-8")
+            with mock.patch.object(profiles, "PROFILES_PATH", path):
+                with self.assertRaisesRegex(profiles.ProfileError, "重複"):
+                    profiles.load_profiles()
+
+    def test_rejects_invalid_names_paths_and_types(self):
+        for override in ({"service": "bot\n"}, {"service": "--help"}, {"service": "bot; id"},
+                         {"bot_dir": "relative/bot"}, {"bot_dir": "/srv/bot\x00"},
+                         {"port": True}, {"journal_sudo": "false"}, {"use_ssh_config": "false"}):
+            with self.subTest(override=override):
+                with self.assertRaises(profiles.ProfileError):
+                    profiles._parse_profile(_raw_profile(**override))
+
+
 class UnsetFieldsTests(unittest.TestCase):
     def test_real_values_are_configured(self) -> None:
         self.assertEqual(profiles._parse_profile(_raw_profile()).unset_fields, [])

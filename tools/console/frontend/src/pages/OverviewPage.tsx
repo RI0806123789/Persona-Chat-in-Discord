@@ -284,6 +284,7 @@ function BotInsightsCard({
   const activity = insights.activity;
   const guilds = discord.guilds ?? [];
   const voiceGuilds = guilds.filter((guild) => guild.voice_channel);
+  const voiceUnavailable = !discord.ok || guilds.some((guild) => guild.voice_error);
   const members = guilds.reduce((sum, guild) => sum + (guild.members ?? 0), 0);
   const online = guilds.reduce((sum, guild) => sum + (guild.online ?? 0), 0);
   const gatewayTrouble = activity.gateway_invalidated + activity.heartbeat_blocked;
@@ -312,7 +313,7 @@ function BotInsightsCard({
         <Stat
           label="ボイス接続"
           value={discord.ok ? `${voiceGuilds.length}` : "—"}
-          hint={voiceGuilds.length ? privacy.mask(voiceGuilds.map((guild) => guild.voice_channel).join("、")) : "接続していません"}
+          hint={voiceUnavailable ? "取得できていないボイス状態があります" : voiceGuilds.length ? privacy.mask(voiceGuilds.map((guild) => guild.voice_channel).join("、")) : "接続していません"}
         />
         <Stat
           label={`Gemini（${activity.window_hours}時間）`}

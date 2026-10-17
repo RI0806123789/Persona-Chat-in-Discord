@@ -17,6 +17,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from pathlib import Path
 
 BOT_DIR = Path(sys.argv[2])
 SERVICE = sys.argv[3]
+JOURNAL_SUDO = "--journal-sudo" in sys.argv[4:]
 # 回帰テストではネットワークに出ないよう、接続先を環境変数で差し替える
 API_BASE = os.environ.get("PBC_DISCORD_API_BASE", "https://discord.com/api/v10")
 USER_AGENT = "DiscordBot (persona-bot-console, 0.1)"
@@ -72,8 +74,8 @@ def find_source(*relative_paths):
 def parse_file(path):
     try:
         return ast.parse(path.read_text(encoding="utf-8-sig"))
-    except (OSError, SyntaxError, ValueError) as error:
-        note(f"{path.name} を読めませんでした: {error}")
+    except (OSError, SyntaxError, ValueError):
+        note(f"{path.name} を読めませんでした。ファイルの文字コードと構文を確認してください。")
         return None
 
 
@@ -85,6 +87,8 @@ def read_constants(path):
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)):
             values[node.targets[0].id] = node.value.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and isinstance(node.value, ast.Constant):
+            values[node.target.id] = node.value.value
     return values
 
 
@@ -99,9 +103,10 @@ def choice_names(list_name):
     """choices.py の `XXX_CHOICES = [Choice(name=..., value=...), ...]` から {値: 表示名} を作る。"""
     names = {}
     for node in CHOICES_TREE.body if CHOICES_TREE else []:
-        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.List)):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.List):
             continue
-        if not any(isinstance(target, ast.Name) and target.id == list_name for target in node.targets):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == list_name for target in targets):
             continue
         for call in node.value.elts:
             if not isinstance(call, ast.Call):
@@ -139,6 +144,9 @@ def deployed_version():
 # ---------------------------------------------------------------- サーバーごとの設定（DB）
 
 
+SETTINGS_COLUMNS = set()
+
+
 def load_guild_settings():
     rows = {}
     db_path = BOT_DIR / "memory" / "bot.db"
@@ -149,12 +157,16 @@ def load_guild_settings():
         con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
         con.row_factory = sqlite3.Row
         try:
+            SETTINGS_COLUMNS.update(row[1] for row in con.execute("PRAGMA table_info(guild_settings)"))
             for row in con.execute("SELECT * FROM guild_settings"):
-                rows[int(row["guild_id"])] = dict(row)
+                try:
+                    rows[int(row["guild_id"])] = dict(row)
+                except (TypeError, ValueError):
+                    note("保存された設定の一部を読み取れませんでした。")
         finally:
             con.close()
-    except sqlite3.Error as error:
-        note(f"guild_settings を読めませんでした: {error}")
+    except sqlite3.Error:
+        note("guild_settings を読めませんでした。DB の状態と読み取り権限を確認してください。")
     return rows
 
 
@@ -168,7 +180,7 @@ def describe_settings(row):
         value = row.get(key)
         return default if value is None else bool(value)
 
-    if "autonomous_enabled" in row:
+    if "autonomous_enabled" in SETTINGS_COLUMNS:
         autonomous = flag("autonomous_enabled", False)
     else:
         autonomous = None  # この版の DB には列が無い（自律行動に未対応の版）
@@ -191,11 +203,19 @@ def describe_settings(row):
 def read_token():
     token = os.environ.get("TOKEN_DISCORD")
     env_path = BOT_DIR / ".env"
-    if not token and env_path.is_file():
-        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+    if not token:
+        try:
+            lines = env_path.read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, ValueError):
+            return None
+        for line in lines:
             key, separator, value = line.strip().removeprefix("export ").partition("=")
             if separator and key.strip() == "TOKEN_DISCORD":
-                token = value.strip().strip('"').strip("'")
+                try:
+                    words = shlex.split(value, comments=True)
+                    token = words[0] if len(words) == 1 else None
+                except ValueError:
+                    note(".env の TOKEN_DISCORD の引用符を確認してください。")
     return token or None
 
 
@@ -220,35 +240,59 @@ def discord_get(path, token):
         if error.code == 429:
             raise DiscordError("Discord API の利用制限中です（429）。少し待ってから更新してください。") from None
         raise DiscordError(f"Discord API がエラーを返しました（{error.code}）。") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise DiscordError(f"Discord API に接続できませんでした（{type(error).__name__}）。") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise DiscordError("Discord API に接続できませんでした。接続先の状態を確認してください。") from None
+    except (ValueError, UnicodeError):
+        raise DiscordError("Discord API の応答を読み取れませんでした。時間をおいて更新してください。") from None
     return body, round((time.perf_counter() - started) * 1000)
 
 
 def collect_discord(settings_rows):
-    token = read_token()
+    token = TOKEN
+
+    def unavailable(message):
+        # API が使えなくても、DB に保存済みの設定は ID を伏せた名前で表示する
+        guilds = [
+            {"name": f"保存済みサーバー {index}", "members": None, "online": None,
+             "voice_channel": None, "voice_error": "Discord API からボイス状態を取得できませんでした。",
+             "settings": describe_settings(row)}
+            for index, row in enumerate((row for key, row in settings_rows.items() if key != 0), 1)
+        ]
+        return {"ok": False, "error": message, "guilds": guilds}
+
     if not token:
-        return {"ok": False, "error": ".env に TOKEN_DISCORD がありません。"}
+        return unavailable(".env に TOKEN_DISCORD がありません。")
     try:
         me, rtt_ms = discord_get("/users/@me", token)
         guilds, _ = discord_get("/users/@me/guilds?with_counts=true", token)
+        if not isinstance(me, dict) or not isinstance(guilds, list):
+            raise DiscordError("Discord API の応答を読み取れませんでした。")
         summaries = []
-        for guild in guilds or []:
+        voice_error = None
+        for guild in guilds:
             guild_id = int(guild["id"])
-            voice, _ = discord_get(f"/guilds/{guild_id}/voice-states/@me", token)
             voice_channel = None
-            if voice and voice.get("channel_id"):
-                channel, _ = discord_get(f"/channels/{voice['channel_id']}", token)
-                voice_channel = (channel or {}).get("name") or "（名前を取得できないチャンネル）"
+            if voice_error is None:
+                try:
+                    voice, _ = discord_get(f"/guilds/{guild_id}/voice-states/@me", token)
+                    if voice and voice.get("channel_id"):
+                        channel, _ = discord_get(f"/channels/{voice['channel_id']}", token)
+                        voice_channel = (channel or {}).get("name") or "（名前を取得できないチャンネル）"
+                except DiscordError as error:
+                    voice_error = str(error)
+                    note(f"ボイス状態を取得できませんでした。{voice_error}")
             summaries.append({
                 "name": guild.get("name"),
                 "members": guild.get("approximate_member_count"),
                 "online": guild.get("approximate_presence_count"),
                 "voice_channel": voice_channel,
+                "voice_error": voice_error,
                 "settings": describe_settings(settings_rows.get(guild_id, {})),
             })
     except DiscordError as error:
-        return {"ok": False, "error": str(error)}
+        return unavailable(str(error))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return unavailable("Discord API の応答を読み取れませんでした。")
     username = me.get("username") if me else None
     discriminator = me.get("discriminator") if me else None
     if username and discriminator and discriminator != "0":
@@ -264,23 +308,32 @@ AUTONOMOUS_LINE = re.compile(r"^自律行動: .*(配信を開始しました|配
 
 def journal(arguments):
     command = ["journalctl", "-u", SERVICE, "--no-pager", "-o", "json"] + arguments
+    if JOURNAL_SUDO:
+        command = ["sudo", "-n"] + command
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=30, errors="replace")
-    except (OSError, subprocess.SubprocessError) as error:
-        note(f"journalctl を実行できませんでした: {error}")
+    except (OSError, subprocess.SubprocessError):
+        note("journalctl を実行できませんでした。ログの読み取り権限を確認してください。")
         return []
+    if completed.returncode != 0:
+        note("ログを取得できませんでした。adm / systemd-journal グループ、または journal_sudo の設定を確認してください。")
     entries = []
     for line in completed.stdout.splitlines():
         try:
             data = json.loads(line)
-        except json.JSONDecodeError:
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
             continue
         message = data.get("MESSAGE", "")
         if isinstance(message, list):
-            message = bytes(message).decode("utf-8", errors="replace")
+            try:
+                message = bytes(message).decode("utf-8", errors="replace")
+            except (TypeError, ValueError):
+                continue
         try:
             timestamp = int(data.get("__REALTIME_TIMESTAMP", "0")) / 1_000_000
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             timestamp = 0
         entries.append((timestamp, str(message or "")))
     return entries
@@ -302,8 +355,12 @@ def collect_activity():
     }
     for timestamp, message in journal(["--since", "-24h"]):
         if match := TOKEN_LINE.match(message):
+            try:
+                count = int(match.group(1))
+            except ValueError:
+                continue
             activity["gemini_calls"] += 1
-            activity["gemini_tokens"] += int(match.group(1))
+            activity["gemini_tokens"] += count
         elif message.startswith("User ("):
             # 会話の中身は持ち帰らない（件数と時刻だけ）
             activity["conversations"] += 1
@@ -318,8 +375,9 @@ def collect_activity():
             activity["heartbeat_blocked"] += 1
         elif message.startswith("Traceback (most recent call last)"):
             activity["exceptions"] += 1
-        elif AUTONOMOUS_LINE.match(message):
-            activity["autonomous_events"].append({"at": timestamp, "text": message.removeprefix("自律行動: ")[:120]})
+        elif match := AUTONOMOUS_LINE.match(message):
+            # 元の行にはサーバー ID・チャンネル名・終了理由があるため、イベントの種類だけ返す
+            activity["autonomous_events"].append({"at": timestamp, "text": match.group(1)})
 
     if activity["last_conversation_at"] is None:
         # 24時間より前の最後の会話（-g は本文の検索。時刻だけを使う）
@@ -333,11 +391,10 @@ def collect_activity():
 # ---------------------------------------------------------------- まとめて出力
 
 settings_rows = load_guild_settings()
+TOKEN = read_token()
 result["source_dir"] = WORK_DIR.name if WORK_DIR else None
 result["version"] = deployed_version()
-result["autonomous_supported"] = bool(
-    find_source("autonomous_service.py", "persona_bot/services/autonomous_service.py")
-)
+result["autonomous_supported"] = "autonomous_enabled" in SETTINGS_COLUMNS
 result["discord"] = collect_discord(settings_rows)
 result["dm_settings"] = describe_settings(settings_rows.get(0, {}))
 result["activity"] = collect_activity()

@@ -66,7 +66,9 @@ export function GuildsPage({
               <div className="chips">
                 <Chip icon="group">{guild.members ?? "—"} 人</Chip>
                 <Chip icon="person">オンライン {guild.online ?? "—"}</Chip>
-                {guild.voice_channel ? (
+                {guild.voice_error ? (
+                  <StatusChip tone="warning" label="ボイス状態は未取得" />
+                ) : guild.voice_channel ? (
                   <StatusChip tone="good" icon="voice" label={`ボイス: ${privacy.mask(guild.voice_channel)}`} />
                 ) : (
                   <StatusChip tone="neutral" label="ボイス未接続" />
@@ -74,6 +76,7 @@ export function GuildsPage({
               </div>
             </div>
           </header>
+          {guild.voice_error && <InlineError>{guild.voice_error}</InlineError>}
           <SettingsList settings={guild.settings} />
         </section>
       ))}

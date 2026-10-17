@@ -23,7 +23,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import remote_commands as rc
@@ -90,6 +90,7 @@ async def handle_profile_error(_request: Request, error: ProfileError) -> JSONRe
 
 
 class ConnectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     profile_id: str
 
 
@@ -149,6 +150,8 @@ async def get_status() -> dict:
     )
     if isinstance(ping, BaseException):
         raise ping  # 疎通確認すら失敗 = 接続が使えない
+    if ping.exit_status != 0:
+        raise SshError("SSH の疎通確認に失敗しました。接続先の状態を確認してください。")
 
     response: dict = {
         "rtt_ms": ping.duration_ms,
@@ -164,6 +167,8 @@ async def get_status() -> dict:
     host_uptime = None
     if isinstance(resources, BaseException):
         response["resources_error"] = str(resources)
+    elif resources.exit_status != 0:
+        response["resources_error"] = "リソースを取得できませんでした。サーバーのコマンドと権限を確認してください。"
     else:
         response["resources"] = rc.parse_resources(resources.stdout)
         host_uptime = response["resources"]["uptime_seconds"]
@@ -174,6 +179,8 @@ async def get_status() -> dict:
         parsed = rc.parse_service_show(service.stdout, profile.service, host_uptime)
         if parsed["load_state"] == "not-found":
             response["service_error"] = f"サービス {profile.service} がサーバーに見つかりません（systemd に未登録）。"
+        elif service.exit_status != 0:
+            response["service_error"] = "サービス状態を取得できませんでした。systemd と読み取り権限を確認してください。"
         response["service"] = parsed
 
     if isinstance(git, BaseException):
@@ -204,7 +211,7 @@ async def get_logs(lines: int = 200) -> dict:
 async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
     """journalctl -f の出力を、1件ずつ WebSocket で画面へ流す。"""
     origin = websocket.headers.get("origin")
-    if origin is not None and origin not in ALLOWED_ORIGINS:
+    if origin not in ALLOWED_ORIGINS:
         await websocket.close(code=1008)  # ほかのサイトからの接続は断る
         return
     await websocket.accept()
@@ -244,14 +251,17 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
     pump_task = asyncio.create_task(pump())
     client_task = asyncio.create_task(wait_for_client_close())
     try:
-        done, pending = await asyncio.wait({pump_task, client_task}, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            task.exception()  # 例外を回収しておく（放置すると警告が出る）
+        await asyncio.wait({pump_task, client_task}, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        # API の処理自体がキャンセルされた場合も、両方向の転送を回収する
+        for task in (pump_task, client_task):
+            task.cancel()
+        await asyncio.gather(pump_task, client_task, return_exceptions=True)
         process.close()  # チャンネルを閉じると、サーバー側の journalctl も終わる
+        try:
+            await asyncio.wait_for(process.wait_closed(), timeout=5)
+        except (asyncio.TimeoutError, asyncssh.Error, OSError):
+            pass
         try:
             await websocket.close()
         except RuntimeError:
@@ -329,32 +339,41 @@ async def start_deploy() -> dict:
 
 # Discord API の利用制限に配慮し、ボットの中の状態は接続先ごとに一定時間使い回す
 INSIGHTS_CACHE_SECONDS = 60
-_insights_cache: dict[str, tuple[float, dict]] = {}
+_insights_cache: dict[tuple[int, Profile], tuple[float, float, dict]] = {}
+_insights_lock = asyncio.Lock()
 
 
 @app.get("/api/insights")
 async def get_insights(refresh: bool = False) -> dict:
     """Discord API・サーバーごとの設定・直近24時間のログから集めた「ボットの中の状態」。"""
-    profile = session.require_profile()
-    cached = _insights_cache.get(profile.id)
-    if cached and not refresh and time.time() - cached[0] < INSIGHTS_CACHE_SECONDS:
-        return {"data": cached[1], "fetched_at": cached[0], "cached": True}
+    async with _insights_lock:
+        profile = session.require_profile()
+        generation = session.generation
+        key = (generation, profile)
+        cached = _insights_cache.get(key)
+        if cached and not refresh and time.monotonic() - cached[0] < INSIGHTS_CACHE_SECONDS:
+            return {"data": cached[2], "fetched_at": cached[1], "cached": True}
 
-    result = await session.run(
-        rc.insights_command(profile.bot_dir, profile.service),
-        label="ボットの中の状態（Discord API・DB・ログ）",
-        input=rc.INSIGHTS_SCRIPT,
-        timeout=60,
-    )
-    if result.exit_status != 0:
-        raise SshError(f"ボットの状態を集められませんでした: {_last_line(result.stderr) or result.exit_status}")
-    try:
-        data = json.loads(result.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError) as error:
-        raise SshError("ボットの状態の集計結果を読み取れませんでした。") from error
-    fetched_at = time.time()
-    _insights_cache[profile.id] = (fetched_at, data)
-    return {"data": data, "fetched_at": fetched_at, "cached": False}
+        result = await session.run(
+            rc.insights_command(profile.bot_dir, profile.service, use_sudo=profile.journal_sudo),
+            label="ボットの中の状態（Discord API・DB・ログ）",
+            input=rc.INSIGHTS_SCRIPT,
+            timeout=60,
+        )
+        if generation != session.generation or not session.connected:
+            raise NotConnectedError("集計中に SSH 接続が変わりました。接続先を確認して更新してください。")
+        if result.exit_status != 0:
+            raise SshError("ボットの状態を集められませんでした。サーバーの Python とログの読み取り権限を確認してください。")
+        try:
+            data = json.loads(result.stdout.strip().splitlines()[-1])
+            if not isinstance(data, dict):
+                raise ValueError("集計結果がオブジェクトではありません。")
+        except (ValueError, IndexError) as error:
+            raise SshError("ボットの状態の集計結果を読み取れませんでした。") from error
+        fetched_at = time.time()
+        _insights_cache.clear()
+        _insights_cache[key] = (time.monotonic(), fetched_at, data)
+        return {"data": data, "fetched_at": fetched_at, "cached": False}
 
 
 @app.get("/api/db")

@@ -78,6 +78,7 @@ class SshSession:
         self.server_info: dict | None = None
         self.last_error: str | None = None
         self.history: deque[CommandRecord] = deque(maxlen=HISTORY_MAX)
+        self.generation = 0  # 接続し直す前の集計結果を使い回さないための世代
 
     # ------------------------------------------------------------ 状態
 
@@ -138,6 +139,7 @@ class SshSession:
             await self._close_current()
 
     async def _close_current(self) -> None:
+        self.generation += 1
         conn, self._conn = self._conn, None
         if conn is None:
             return
@@ -154,6 +156,7 @@ class SshSession:
             "connect_timeout": CONNECT_TIMEOUT_SECONDS,
             "keepalive_interval": KEEPALIVE_SECONDS,
             "client_factory": lambda: _ConnectionWatcher(self),
+            "config": [],  # use_ssh_config=False の場合は既定の設定ファイルも読まない
         }
         if profile.port:
             options["port"] = profile.port
@@ -195,6 +198,7 @@ class SshSession:
         if conn is None or conn is not self._conn:
             return  # 自分で閉じた接続、または古い接続
         self._conn = None
+        self.generation += 1
         reason = f"（{exc}）" if exc else ""
         self.last_error = f"SSH 接続が切れました{reason}。もう一度接続してください。"
         self.history.append(
@@ -273,7 +277,10 @@ class SshSession:
 def _describe_connect_error(error: Exception, profile: Profile) -> str:
     """接続エラーを「何が起きて、どうすればよいか」の日本語にする。"""
     if isinstance(error, SshError):
-        return "SSH 接続に失敗しました。設定と接続先の状態を確認してから再試行してください。"
+        return (
+            "SSH 接続の設定を確認してください。秘密鍵と known_hosts が存在するか確認し、"
+            "初回は PowerShell の ssh でフィンガープリントを確かめてホスト鍵を登録してください。"
+        )
     if isinstance(error, asyncssh.HostKeyNotVerifiable):
         return (
             "サーバーのホスト鍵を確認できませんでした（known_hosts に未登録、または鍵が変わっています）。"
