@@ -1,0 +1,19 @@
+# =============================================================================
+# Persona Bot Console — サーバーの sudoers の見本
+#
+# このファイルは Git に含まれる見本です。ダッシュボードから起動・停止・再起動するには、
+# サーバー側で次の3つの操作だけを、パスワードなしの sudo で許可しておく必要があります
+# （ダッシュボードは sudo -n で実行するため、パスワードを求められると待たずに失敗する）。
+#
+# 書き方（サーバーで実行）:
+#   sudo visudo -f /etc/sudoers.d/persona-bot-console
+# で開き、下の1行を YOUR_SSH_USER をログインするユーザー名に書き換えて保存する。
+# visudo を使うと、書き間違いがあれば保存の前に教えてくれる（sudo 自体が使えなくなる事故を防ぐ）。
+#
+# - systemctl の場所は which systemctl で確かめる（多くの Ubuntu では /usr/bin/systemctl）。
+# - サービス名（bot）を変えている場合は、backend/profiles.json の "service" と同じ名前にする。
+# - ALL を許可する書き方（NOPASSWD: ALL）にはしないこと。許可するのはこの3つだけにする。
+# - このファイルは改行を LF にしておく（CRLF のまま貼ると visudo が構文エラーにする）。
+# =============================================================================
+
+YOUR_SSH_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start bot, /usr/bin/systemctl stop bot, /usr/bin/systemctl restart bot

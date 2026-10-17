@@ -1,0 +1,425 @@
+"""Persona Bot Console のバックエンド（FastAPI）。
+
+起動:  .venv\\Scripts\\python.exe app.py   →   http://127.0.0.1:8765
+
+役割:
+- 画面（React）からの要求を受けて、SSH でボットのサーバーにコマンドを送る
+- 送るコマンドは remote_commands.py に書いたものだけ（ホワイトリスト方式）
+- frontend/dist（npm run build の成果物）があれば、それも同じポートで配信する
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import json
+import time
+from collections import deque
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import asyncssh
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+import remote_commands as rc
+from deploy import DeployManager
+from local_repo import local_schema_version
+from profiles import Profile, ProfileError, load_profiles
+from ssh_session import NotConnectedError, SshError, SshSession
+
+HOST = "127.0.0.1"
+PORT = 8765
+
+# 画面からの要求であることを示すヘッダー。ほかのサイトがブラウザ経由で
+# このAPIを勝手に叩く（CSRF）のを防ぐため、全APIでこのヘッダーを必須にする
+CLIENT_HEADER = "x-requested-by"
+CLIENT_HEADER_VALUE = "persona-bot-console"
+
+# ログのライブ配信（WebSocket）を受け付ける画面のアドレス
+ALLOWED_ORIGINS = {f"http://{host}:{port}" for host in ("127.0.0.1", "localhost") for port in (5173, PORT)}
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+ACTION_LABELS = {"start": "起動", "stop": "停止", "restart": "再起動"}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await session.disconnect()  # 終了時に SSH 接続を閉じる
+
+
+app = FastAPI(title="Persona Bot Console API", lifespan=lifespan)
+# 127.0.0.1 / localhost 以外の Host ヘッダーを拒否する（DNS リバインディング対策）
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+
+session = SshSession()
+deploys = DeployManager()
+operations: deque[dict] = deque(maxlen=100)
+_operation_ids = itertools.count(1)
+
+
+@app.middleware("http")
+async def require_client_header(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.headers.get(CLIENT_HEADER) != CLIENT_HEADER_VALUE:
+        return JSONResponse({"detail": "このAPIはダッシュボードの画面からのみ利用できます。"}, status_code=403)
+    return await call_next(request)
+
+
+@app.exception_handler(NotConnectedError)
+async def handle_not_connected(_request: Request, error: NotConnectedError) -> JSONResponse:
+    return JSONResponse({"detail": str(error)}, status_code=409)
+
+
+@app.exception_handler(SshError)
+async def handle_ssh_error(_request: Request, error: SshError) -> JSONResponse:
+    return JSONResponse({"detail": str(error)}, status_code=502)
+
+
+@app.exception_handler(ProfileError)
+async def handle_profile_error(_request: Request, error: ProfileError) -> JSONResponse:
+    return JSONResponse({"detail": f"接続先の設定エラー: {error}"}, status_code=500)
+
+
+# ---------------------------------------------------------------- 接続
+
+
+class ConnectRequest(BaseModel):
+    profile_id: str
+
+
+@app.get("/api/profiles")
+def get_profiles() -> dict:
+    profiles, source = load_profiles()
+    return {"profiles": [profile.public_dict() for profile in profiles.values()], "source": source}
+
+
+@app.get("/api/connection")
+def get_connection() -> dict:
+    return session.snapshot()
+
+
+@app.post("/api/connect")
+async def connect(body: ConnectRequest) -> dict:
+    profiles, source = load_profiles()
+    profile = profiles.get(body.profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="指定された接続先が見つかりません。")
+    if profile.unset_fields:
+        # 見本の仮の値のままでは、名前解決が偶然通った知らないサーバーへつなぎに行きかねないので断る
+        raise HTTPException(status_code=400, detail=_unset_profile_message(profile, source))
+
+    await session.connect(profile)
+    try:
+        result = await session.run(rc.SERVER_INFO_COMMAND, label="サーバー情報")
+        session.server_info = rc.parse_server_info(result.stdout)
+    except SshError:
+        pass  # サーバー情報が取れなくても接続自体は成功扱いにする
+    return session.snapshot()
+
+
+@app.post("/api/disconnect")
+async def disconnect() -> dict:
+    await session.disconnect()
+    return session.snapshot()
+
+
+@app.get("/api/history")
+def get_history() -> dict:
+    return {"commands": session.history_list()}
+
+
+# ---------------------------------------------------------------- 状態
+
+
+@app.get("/api/status")
+async def get_status() -> dict:
+    profile = session.require_profile()
+    ping, service, resources, git = await asyncio.gather(
+        session.run(rc.PING_COMMAND, label="疎通確認"),
+        session.run(rc.service_show_command(profile.service), label="サービス状態"),
+        session.run(rc.RESOURCES_COMMAND, label="リソース"),
+        session.run(rc.git_command(profile.bot_dir), label="Git"),
+        return_exceptions=True,
+    )
+    if isinstance(ping, BaseException):
+        raise ping  # 疎通確認すら失敗 = 接続が使えない
+
+    response: dict = {
+        "rtt_ms": ping.duration_ms,
+        "fetched_at": time.time(),
+        "service": None,
+        "service_error": None,
+        "resources": None,
+        "resources_error": None,
+        "git": None,
+        "git_error": None,
+    }
+
+    host_uptime = None
+    if isinstance(resources, BaseException):
+        response["resources_error"] = str(resources)
+    else:
+        response["resources"] = rc.parse_resources(resources.stdout)
+        host_uptime = response["resources"]["uptime_seconds"]
+
+    if isinstance(service, BaseException):
+        response["service_error"] = str(service)
+    else:
+        parsed = rc.parse_service_show(service.stdout, profile.service, host_uptime)
+        if parsed["load_state"] == "not-found":
+            response["service_error"] = f"サービス {profile.service} がサーバーに見つかりません（systemd に未登録）。"
+        response["service"] = parsed
+
+    if isinstance(git, BaseException):
+        response["git_error"] = str(git)
+    elif git.exit_status != 0:
+        response["git_error"] = _last_line(git.stderr) or "Git の情報を取得できませんでした。"
+    else:
+        try:
+            response["git"] = rc.parse_git(git.stdout)
+        except ValueError:
+            response["git_error"] = "Git の情報を解析できませんでした。"
+
+    return response
+
+
+@app.get("/api/logs")
+async def get_logs(lines: int = 200) -> dict:
+    profile = session.require_profile()
+    command = rc.journal_command(profile.service, lines=lines, follow=False, use_sudo=profile.journal_sudo)
+    result = await session.run(command, label="ログ取得")
+    entries = [entry for line in result.stdout.splitlines() if (entry := rc.parse_journal_line(line))]
+    if result.exit_status != 0 and not entries:
+        raise SshError(_journal_error_message(result.stderr))
+    return {"entries": entries}
+
+
+@app.websocket("/api/logs/stream")
+async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
+    """journalctl -f の出力を、1件ずつ WebSocket で画面へ流す。"""
+    origin = websocket.headers.get("origin")
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        await websocket.close(code=1008)  # ほかのサイトからの接続は断る
+        return
+    await websocket.accept()
+
+    try:
+        profile = session.require_profile()
+        command = rc.journal_command(profile.service, lines=lines, follow=True, use_sudo=profile.journal_sudo)
+        process = await session.open_process(command, label="ログ追跡（ライブ）")
+    except SshError as error:
+        await websocket.send_json({"type": "error", "message": str(error)})
+        await websocket.close()
+        return
+
+    async def pump() -> None:
+        """SSH → 画面 へ流し続ける。"""
+        try:
+            async for line in process.stdout:
+                entry = rc.parse_journal_line(line)
+                if entry:
+                    await websocket.send_json({"type": "entry", "entry": entry})
+        except (asyncssh.Error, OSError):
+            pass
+        stderr = ""
+        try:
+            stderr = await asyncio.wait_for(process.stderr.read(), timeout=1)
+        except (asyncio.TimeoutError, asyncssh.Error, OSError):
+            pass
+        message = _journal_error_message(stderr) if stderr.strip() else "ログの追跡が終了しました。"
+        await websocket.send_json({"type": "end", "message": message})
+
+    async def wait_for_client_close() -> None:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+
+    pump_task = asyncio.create_task(pump())
+    client_task = asyncio.create_task(wait_for_client_close())
+    try:
+        done, pending = await asyncio.wait({pump_task, client_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.exception()  # 例外を回収しておく（放置すると警告が出る）
+    finally:
+        process.close()  # チャンネルを閉じると、サーバー側の journalctl も終わる
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # 既に閉じている
+
+
+# ---------------------------------------------------------------- 操作
+
+
+@app.post("/api/service/{action}")
+async def control_service(action: str) -> dict:
+    if action not in rc.SERVICE_ACTIONS:
+        raise HTTPException(status_code=400, detail="許可されていない操作です。")
+    if deploys.running:
+        raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
+    profile = session.require_profile()
+    label = ACTION_LABELS[action]
+    command = rc.service_control_command(profile.service, action)
+    result = await session.run(command, label=f"サービス{label}", timeout=60)
+
+    ok = result.exit_status == 0
+    if ok:
+        message = f"{profile.service} を{label}しました。"
+    elif "password is required" in result.stderr or "a terminal is required" in result.stderr:
+        message = _sudo_password_message(profile.username, profile.service)
+    else:
+        message = f"{label}に失敗しました: {_last_line(result.stderr) or f'終了コード {result.exit_status}'}"
+
+    operation = {
+        "id": next(_operation_ids),
+        "at": time.time(),
+        "profile_id": profile.id,
+        "environment": profile.environment,
+        "action": action,
+        "ok": ok,
+        "message": message,
+        "duration_ms": result.duration_ms,
+    }
+    operations.appendleft(operation)
+    return operation
+
+
+@app.get("/api/operations")
+def get_operations() -> dict:
+    return {"operations": list(operations)}
+
+
+# ---------------------------------------------------------------- デプロイ
+
+
+def _deploy_snapshot() -> dict:
+    return {"deploy": deploys.current.to_dict() if deploys.current else None, "running": deploys.running}
+
+
+@app.get("/api/deploy")
+def get_deploy() -> dict:
+    """最後のデプロイの記録（実行中なら途中の状態）。画面はこれを取り直してステップごとの進み具合を出す。"""
+    return _deploy_snapshot()
+
+
+@app.post("/api/deploy")
+async def start_deploy() -> dict:
+    """接続中のサーバーへデプロイを始める（git pull → 依存の更新 → 再起動 → ヘルスチェック）。
+
+    画面から受け取るものは何も無い。ブランチ・フォルダ・Python の場所は接続先の設定（profiles.json）から決める。
+    """
+    profile = session.require_profile()
+    if profile.unset_fields:
+        raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
+    if deploys.running:
+        raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
+    deploys.start(session, profile)
+    return _deploy_snapshot()
+
+
+# Discord API の利用制限に配慮し、ボットの中の状態は接続先ごとに一定時間使い回す
+INSIGHTS_CACHE_SECONDS = 60
+_insights_cache: dict[str, tuple[float, dict]] = {}
+
+
+@app.get("/api/insights")
+async def get_insights(refresh: bool = False) -> dict:
+    """Discord API・サーバーごとの設定・直近24時間のログから集めた「ボットの中の状態」。"""
+    profile = session.require_profile()
+    cached = _insights_cache.get(profile.id)
+    if cached and not refresh and time.time() - cached[0] < INSIGHTS_CACHE_SECONDS:
+        return {"data": cached[1], "fetched_at": cached[0], "cached": True}
+
+    result = await session.run(
+        rc.insights_command(profile.bot_dir, profile.service),
+        label="ボットの中の状態（Discord API・DB・ログ）",
+        input=rc.INSIGHTS_SCRIPT,
+        timeout=60,
+    )
+    if result.exit_status != 0:
+        raise SshError(f"ボットの状態を集められませんでした: {_last_line(result.stderr) or result.exit_status}")
+    try:
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as error:
+        raise SshError("ボットの状態の集計結果を読み取れませんでした。") from error
+    fetched_at = time.time()
+    _insights_cache[profile.id] = (fetched_at, data)
+    return {"data": data, "fetched_at": fetched_at, "cached": False}
+
+
+@app.get("/api/db")
+async def get_db_summary() -> dict:
+    profile = session.require_profile()
+    result = await session.run(
+        rc.db_summary_command(profile.bot_dir),
+        label="DB 集計（読み取り専用）",
+        input=rc.DB_SUMMARY_SCRIPT,
+    )
+    if result.exit_status != 0:
+        raise SshError(f"DB の集計に失敗しました: {_last_line(result.stderr) or result.exit_status}")
+    try:
+        summary = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as error:
+        raise SshError("DB の集計結果を読み取れませんでした。") from error
+    # 手元のリポジトリの最新の版と比べ、新しい版がまだデプロイされていないかを画面に出す
+    summary["latest_schema_version"] = local_schema_version()
+    return summary
+
+
+# ---------------------------------------------------------------- 補助
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _unset_profile_message(profile: Profile, source: str) -> str:
+    """見本の値のままの接続先へ接続しようとしたときの案内。"""
+    fields = "・".join(profile.unset_fields)
+    if source == "profiles.example.json":
+        how = "backend/profiles.example.json を backend/profiles.json にコピーし、YOUR_ で始まる値を書き換えてください"
+    else:
+        how = f"backend/{source} の YOUR_ で始まる値を書き換えてください"
+    return f"接続先「{profile.label}」は見本の値のままです（{fields}）。{how}（書き換えたら接続し直すだけで反映されます）。"
+
+
+def _sudo_password_message(username: str | None, service: str) -> str:
+    """sudo にパスワードが要る環境向けの案内。許可するのは起動・停止・再起動の3つだけにする例を示す。"""
+    user = username or "<ユーザー名>"
+    commands = ", ".join(f"/usr/bin/systemctl {action} {service}" for action in rc.SERVICE_ACTIONS)
+    return (
+        "sudo にパスワードが必要なため実行できませんでした。サーバーで sudo visudo -f /etc/sudoers.d/persona-bot-console を開き、"
+        f"「{user} ALL=(root) NOPASSWD: {commands}」の1行を書くと、この3つの操作だけをパスワードなしで許可できます"
+        "（systemctl の場所は which systemctl で確かめてください。見本: tools/console/examples/sudoers.example）。"
+    )
+
+
+def _journal_error_message(stderr: str) -> str:
+    detail = _last_line(stderr)
+    if "permission" in stderr.lower() or "insufficient" in stderr.lower():
+        return (
+            "ログを読む権限がありません。サーバーのユーザーを adm / systemd-journal グループに入れるか、"
+            "profiles.json の journal_sudo を true にしてください。"
+        )
+    return f"ログを取得できませんでした: {detail or '原因不明'}"
+
+
+# npm run build 済みなら画面も同じポートで配信する（API のルートより後に登録すること）
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+
+
+if __name__ == "__main__":
+    print(f"Persona Bot Console のバックエンドを起動します: http://{HOST}:{PORT}")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
