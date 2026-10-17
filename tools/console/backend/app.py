@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import remote_commands as rc
+from deploy import DeployManager
 from local_repo import local_schema_version
 from profiles import Profile, ProfileError, load_profiles
 from ssh_session import NotConnectedError, SshError, SshSession
@@ -58,6 +59,7 @@ app = FastAPI(title="Persona Bot Console API", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 session = SshSession()
+deploys = DeployManager()
 operations: deque[dict] = deque(maxlen=100)
 _operation_ids = itertools.count(1)
 
@@ -263,6 +265,8 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
 async def control_service(action: str) -> dict:
     if action not in rc.SERVICE_ACTIONS:
         raise HTTPException(status_code=400, detail="許可されていない操作です。")
+    if deploys.running:
+        raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()
     label = ACTION_LABELS[action]
     command = rc.service_control_command(profile.service, action)
@@ -293,6 +297,34 @@ async def control_service(action: str) -> dict:
 @app.get("/api/operations")
 def get_operations() -> dict:
     return {"operations": list(operations)}
+
+
+# ---------------------------------------------------------------- デプロイ
+
+
+def _deploy_snapshot() -> dict:
+    return {"deploy": deploys.current.to_dict() if deploys.current else None, "running": deploys.running}
+
+
+@app.get("/api/deploy")
+def get_deploy() -> dict:
+    """最後のデプロイの記録（実行中なら途中の状態）。画面はこれを取り直してステップごとの進み具合を出す。"""
+    return _deploy_snapshot()
+
+
+@app.post("/api/deploy")
+async def start_deploy() -> dict:
+    """接続中のサーバーへデプロイを始める（git pull → 依存の更新 → 再起動 → ヘルスチェック）。
+
+    画面から受け取るものは何も無い。ブランチ・フォルダ・Python の場所は接続先の設定（profiles.json）から決める。
+    """
+    profile = session.require_profile()
+    if profile.unset_fields:
+        raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
+    if deploys.running:
+        raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
+    deploys.start(session, profile)
+    return _deploy_snapshot()
 
 
 # Discord API の利用制限に配慮し、ボットの中の状態は接続先ごとに一定時間使い回す

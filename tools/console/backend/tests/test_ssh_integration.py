@@ -14,11 +14,12 @@ from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asyncssh  # noqa: E402
 
 import remote_commands as rc  # noqa: E402
-from dev_ssh_server import start_dev_server  # noqa: E402
+from fake_ssh_server import start_fake_server  # noqa: E402
 from profiles import Profile  # noqa: E402
 from ssh_session import SshError, SshSession  # noqa: E402
 
@@ -26,7 +27,7 @@ from ssh_session import SshError, SshSession  # noqa: E402
 class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.key_dir = Path(tempfile.mkdtemp(prefix="pbc-test-"))
-        self.acceptor, self.bot, port, self.live_task = await start_dev_server(
+        self.acceptor, self.bot, port, self.live_task = await start_fake_server(
             "127.0.0.1", 0, self.key_dir, live_interval=(0.2, 0.4)
         )
         self.profile = Profile(

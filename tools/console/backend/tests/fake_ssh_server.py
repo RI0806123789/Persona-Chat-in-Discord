@@ -1,19 +1,22 @@
-"""開発用の模擬 SSH サーバー（本番サーバーに触らずに画面を試すためのもの）。
+"""テスト専用の模擬 SSH サーバー（本番サーバーに触らずにバックエンドを確かめるためのもの）。
 
 本物の SSH プロトコル（鍵認証・ホスト鍵の検証・コマンド実行・ストリーム）で通信し、
-systemctl / journalctl / free などの「出力だけ」を作り物で返す。
+systemctl / journalctl / free / git / pip などの「出力だけ」を作り物で返す。
+画面の接続先には出さない（利用者の指定で、開発用の接続先としては使わない）。自動テストだけが使う。
 
-起動:  .venv\\Scripts\\python.exe dev_ssh_server.py     （127.0.0.1:2222 で待ち受ける）
-
-初回起動時に .dev/ フォルダへ次のファイルを作る（Git には入れないこと）:
+start_fake_server(...) に渡した一時フォルダへ、次のファイルを作る:
 - host_key          … このサーバーのホスト鍵
 - client_key(.pub)  … ダッシュボードがログインに使う鍵
 - known_hosts       … ダッシュボードがホスト鍵を検証するためのファイル
+
+デプロイの確かめ方: bot.repo（FakeRepo）で、新しいコミット・requirements.txt の変更・pip の失敗・
+起動に失敗する版などを作ってから、デプロイを実行する。
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -24,9 +27,6 @@ from pathlib import Path
 
 import asyncssh
 
-DEV_DIR = Path(__file__).resolve().parent / ".dev"
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 2222
 SERVICE_NAME = "bot"
 
 # 実際のボットが出すログに似せた文言（重み, 本文）
@@ -69,10 +69,102 @@ SEPARATOR_LINE = "-" * 124
 MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
 
 
+def fake_commit(number: int) -> str:
+    """作り物のコミット ID（40 桁の16進数）。"""
+    return hashlib.sha1(f"fake-commit-{number}".encode()).hexdigest()
+
+
+@dataclass
+class FakeRepo:
+    """模擬サーバーの中の「ボットのフォルダ（git）」の状態。history は origin/main のコミットを古い順に並べたもの。"""
+
+    branch: str = "main"
+    history: list[tuple[str, str]] = field(
+        default_factory=lambda: [
+            (fake_commit(1), "fix: 会話要約の失敗表示を修正"),
+            (fake_commit(2), "feat: 開発者用ダッシュボードを追加"),
+            (fake_commit(3), "fix: 読み上げの音色を修正"),
+            (fake_commit(4), "feat: リマインダーの繰り返しを追加"),
+        ]
+    )
+    head_index: int = 1
+    dirty: int = 0
+    # この番号のコミットで requirements.txt が変わる（取り込むと、依存関係を入れ直す）
+    requirements_changed_at: set[int] = field(default_factory=set)
+    # この版で起動すると、ログインの前に例外で止まる
+    broken: set[str] = field(default_factory=set)
+    # この版の requirements.txt は入れられない（pip install が失敗する）
+    pip_fails_at: set[str] = field(default_factory=set)
+    fetch_fails: bool = False
+    reset_fails: bool = False
+    commands: list[str] = field(default_factory=list)
+
+    @property
+    def head(self) -> str:
+        return self.history[self.head_index][0]
+
+    @property
+    def origin(self) -> str:
+        return self.history[-1][0]
+
+    def index_of(self, commit: str) -> int:
+        return next(index for index, (sha, _) in enumerate(self.history) if sha == commit)
+
+    def status_output(self) -> str:
+        """概要ページの「デプロイ中のコード」（remote_commands.git_command）の出力。"""
+        sha, subject = self.history[self.head_index]
+        return f"{self.branch}\n{sha[:7]}\x1f{subject}\x1f2026-10-16T21:14:05+09:00\nver0.1.7-12-g{sha[:7]}\n{self.dirty}\n"
+
+    def respond(self, command: str) -> tuple[str, str, int] | None:
+        """「cd <ボットのフォルダ> && ...」の後ろの git / pip のコマンドに答える。知らないコマンドなら None。"""
+        self.commands.append(command)
+        if command == "git rev-parse --abbrev-ref HEAD && git rev-parse HEAD && git status --porcelain --untracked-files=no | wc -l":
+            return f"{self.branch}\n{self.head}\n{self.dirty}\n", "", 0
+        fetch = re.fullmatch(
+            r"git fetch --quiet origin (\S+) && git rev-parse origin/\1"
+            r" && git rev-list --count HEAD\.\.origin/\1 && git rev-list --count origin/\1\.\.HEAD",
+            command,
+        )
+        if fetch:
+            if self.fetch_fails or fetch.group(1) != self.branch:
+                return "", f"fatal: couldn't find remote ref {fetch.group(1)}\n", 128
+            return f"{self.origin}\n{len(self.history) - 1 - self.head_index}\n0\n", "", 0
+        if re.fullmatch(r"git merge --ff-only origin/\S+ && git rev-parse HEAD", command):
+            before = self.head
+            self.head_index = len(self.history) - 1
+            return f"Updating {before[:7]}..{self.head[:7]}\nFast-forward\n{self.head}\n", "", 0
+        if match := re.fullmatch(r"git log --format=%h%x1f%s ([0-9a-f]{40})\.\.([0-9a-f]{40})", command):
+            start, end = self.index_of(match.group(1)), self.index_of(match.group(2))
+            lines = [f"{sha[:7]}\x1f{subject}" for sha, subject in reversed(self.history[start + 1 : end + 1])]
+            return "".join(f"{line}\n" for line in lines), "", 0
+        if match := re.fullmatch(r"git diff --name-only ([0-9a-f]{40}) ([0-9a-f]{40}) -- requirements.txt", command):
+            start, end = sorted((self.index_of(match.group(1)), self.index_of(match.group(2))))
+            changed = any(index in self.requirements_changed_at for index in range(start + 1, end + 1))
+            return ("requirements.txt\n" if changed else ""), "", 0
+        if re.fullmatch(r"\S+ -m pip install --disable-pip-version-check --no-input -r requirements.txt", command):
+            if self.head in self.pip_fails_at:
+                return "", "ERROR: Could not find a version that satisfies the requirement example-package==9.9.9\n", 1
+            return "Successfully installed example-package-1.2.3\n", "", 0
+        if re.fullmatch(r"\S+ -m pip check", command):
+            return "No broken requirements found.\n", "", 0
+        if match := re.fullmatch(r"git reset --hard ([0-9a-f]{40}) && git rev-parse HEAD", command):
+            if self.reset_fails:
+                return "", "fatal: Unable to create '.git/index.lock': File exists.\n", 128
+            self.head_index = self.index_of(match.group(1))
+            return f"HEAD is now at {self.head[:7]} {self.history[self.head_index][1]}\n{self.head}\n", "", 0
+        if command.startswith("git rev-parse --abbrev-ref HEAD && git log -1"):
+            return self.status_output(), "", 0
+        return None
+
+
 @dataclass
 class FakeBot:
     """模擬サーバーの中の「ボット」の状態。"""
 
+    repo: FakeRepo = field(default_factory=FakeRepo)
+    # 再起動などの待ち時間の倍率（テストを速くするため小さくする）
+    delay_scale: float = 1.0
+    failed: bool = False
     active: bool = True
     pid: int = 41237
     restarts: int = 2
@@ -165,6 +257,15 @@ class FakeBot:
                 "ExecMainStartTimestampMonotonic": str(int((self.started_mono - self.boot_mono) * 1_000_000)),
                 "CPUUsageNSec": str(int((self.cpu_seconds_base + (now - self.started_mono) * 0.031) * 1e9)),
             }
+        elif self.failed:
+            values = {
+                "ActiveState": "failed",
+                "SubState": "failed",
+                "MainPID": "0",
+                "MemoryCurrent": "[not set]",
+                "ExecMainStartTimestampMonotonic": "0",
+                "CPUUsageNSec": "[not set]",
+            }
         else:
             values = {
                 "ActiveState": "inactive",
@@ -189,14 +290,15 @@ class FakeBot:
         async with self._busy:
             if action in ("stop", "restart") and self.active:
                 self.log(f"Stopping {SERVICE_NAME}.service - Persona Chat in Discord bot...", source="systemd")
-                await asyncio.sleep(0.8)
+                await asyncio.sleep(0.8 * self.delay_scale)
                 self.active = False
                 self.stopped_at = time.time()
                 self.log(f"{SERVICE_NAME}.service: Deactivated successfully.", source="systemd")
                 self.log(f"Stopped {SERVICE_NAME}.service - Persona Chat in Discord bot.", source="systemd")
             if action in ("start", "restart") and not self.active:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5 * self.delay_scale)
                 self.active = True
+                self.failed = False
                 self.pid += random.randint(30, 400)
                 self.started_mono = time.monotonic()
                 self.cpu_seconds_base = 0.0
@@ -208,10 +310,20 @@ class FakeBot:
                 asyncio.get_running_loop().create_task(self._startup_logs())
 
     async def _startup_logs(self) -> None:
+        broken = self.repo.head in self.repo.broken
         for message in STARTUP_LOGS:
-            await asyncio.sleep(random.uniform(0.3, 0.9))
-            if self.active:
-                self.log(message)
+            await asyncio.sleep(random.uniform(0.3, 0.9) * self.delay_scale)
+            if not self.active:
+                return
+            if broken and message.startswith("ログイン成功"):
+                # 起動に失敗する版: ログインの前に例外で落ち、systemd 上は failed になる
+                for line in TRACEBACK_LOGS:
+                    self.log(line, priority=3)
+                self.active = False
+                self.failed = True
+                self.log(f"{SERVICE_NAME}.service: Main process exited, code=exited, status=1/FAILURE", source="systemd")
+                return
+            self.log(message)
 
     # ---------------------------------------------------------- その他のコマンド
 
@@ -247,13 +359,7 @@ def random_log_message() -> str:
     )
 
 
-GIT_OUTPUT = (
-    "main\n"
-    "3840429\x1ffix: 最新mainを取り込み、会話要約の投稿失敗の案内を統合\x1f2026-10-16T21:14:05+09:00\n"
-    "ver0.1.7-12-g3840429\n"
-    "0\n"
-)
-SERVER_INFO_OUTPUT = "dev-mock-server\nLinux 6.8.0-1015-oracle\nUbuntu 24.04.1 LTS（模擬）\n"
+SERVER_INFO_OUTPUT = "fake-ssh-server\nLinux 6.8.0-1015-oracle\nUbuntu 24.04.1 LTS（模擬）\n"
 
 
 def insights_output(bot: FakeBot) -> str:
@@ -352,10 +458,20 @@ async def handle_process(process: asyncssh.SSHServerProcess, bot: FakeBot) -> No
 
 async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBot) -> int:
     if not command:
-        process.stderr.write("dev-ssh-server: 対話シェルには対応していません。\n")
+        process.stderr.write("fake-ssh-server: 対話シェルには対応していません。\n")
         return 1
     if command == "true":
         return 0
+    if command == "date +%s":
+        process.stdout.write(f"{int(time.time())}\n")
+        return 0
+    if match := re.fullmatch(r"cd ('[^']*'|\S+) && (.*)", command):
+        answer = bot.repo.respond(match.group(2))
+        if answer is not None:
+            stdout, stderr, code = answer
+            process.stdout.write(stdout)
+            process.stderr.write(stderr)
+            return code
     if command.startswith(f"systemctl show {SERVICE_NAME} "):
         process.stdout.write(bot.service_show())
         return 0
@@ -364,6 +480,12 @@ async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBo
             process.stderr.write(f"Failed to {match.group(1)} {match.group(2)}.service: Unit not found.\n")
             return 5
         await bot.control(match.group(1))
+        return 0
+    if match := re.search(r"journalctl -u \S+ --since @(\d+) ", command):
+        since_us = int(match.group(1)) * 1_000_000
+        for entry in bot.entries:
+            if int(entry["__REALTIME_TIMESTAMP"]) >= since_us:
+                process.stdout.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return 0
     if "journalctl" in command and f"-u {SERVICE_NAME} " in command:
         count_match = re.search(r"-n (\d+)", command)
@@ -376,9 +498,6 @@ async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBo
     if "/proc/loadavg" in command:
         process.stdout.write(bot.resources())
         return 0
-    if "git rev-parse" in command:
-        process.stdout.write(GIT_OUTPUT)
-        return 0
     if command.startswith("hostname"):
         process.stdout.write(SERVER_INFO_OUTPUT)
         return 0
@@ -390,7 +509,7 @@ async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBo
         await process.stdin.read()  # 集計スクリプトを最後まで受け取る（中身は実行しない）
         process.stdout.write(db_summary_output() + "\n")
         return 0
-    process.stderr.write(f"dev-ssh-server: 未対応のコマンドです: {command}\n")
+    process.stderr.write(f"fake-ssh-server: 未対応のコマンドです: {command}\n")
     return 127
 
 
@@ -414,7 +533,7 @@ async def follow_logs(process: asyncssh.SSHServerProcess, bot: FakeBot) -> None:
         closed.cancel()
 
 
-class _DevServer(asyncssh.SSHServer):
+class _FakeServer(asyncssh.SSHServer):
     def __init__(self, bot: FakeBot) -> None:
         self._bot = bot
         self._conn: asyncssh.SSHServerConnection | None = None
@@ -422,12 +541,9 @@ class _DevServer(asyncssh.SSHServer):
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
         self._bot.connections.add(conn)  # サーバー側から切るときのために覚えておく
-        peer = conn.get_extra_info("peername")
-        print(f"[dev-ssh] 接続: {peer[0]}:{peer[1]}" if peer else "[dev-ssh] 接続")
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._bot.connections.discard(self._conn)
-        print(f"[dev-ssh] 切断{f'（{exc}）' if exc else ''}")
 
     def begin_auth(self, username: str) -> bool:
         return True  # 認証を必須にする（鍵認証のみ）
@@ -441,7 +557,7 @@ def ensure_keys(key_dir: Path) -> None:
     host_key = key_dir / "host_key"
     client_key = key_dir / "client_key"
     if not host_key.exists():
-        asyncssh.generate_private_key("ssh-ed25519", comment="dev-mock-server").write_private_key(host_key)
+        asyncssh.generate_private_key("ssh-ed25519", comment="fake-ssh-server").write_private_key(host_key)
     if not client_key.exists():
         key = asyncssh.generate_private_key("ssh-ed25519", comment="persona-bot-console")
         key.write_private_key(client_key)
@@ -457,19 +573,20 @@ def write_known_hosts(key_dir: Path, host: str, port: int) -> None:
     (key_dir / "known_hosts").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-async def start_dev_server(
-    host: str = DEFAULT_HOST,
-    port: int = DEFAULT_PORT,
-    key_dir: Path = DEV_DIR,
+async def start_fake_server(
+    host: str,
+    port: int,
+    key_dir: Path,
     *,
     live_interval: tuple[float, float] = (2.0, 6.0),
+    delay_scale: float = 1.0,
 ) -> tuple[asyncssh.SSHAcceptor, FakeBot, int, asyncio.Task]:
-    """模擬サーバーを起動して (受け口, 模擬ボット, 実際のポート, ログ生成タスク) を返す。"""
+    """模擬サーバーを起動して (受け口, 模擬ボット, 実際のポート, ログ生成タスク) を返す。port=0 なら空きポートを使う。"""
     ensure_keys(key_dir)
-    bot = FakeBot()
+    bot = FakeBot(delay_scale=delay_scale)
     bot.seed_history()
     acceptor = await asyncssh.create_server(
-        lambda: _DevServer(bot),
+        lambda: _FakeServer(bot),
         host,
         port,
         server_host_keys=[str(key_dir / "host_key")],
@@ -481,17 +598,3 @@ async def start_dev_server(
     live_task = asyncio.get_running_loop().create_task(bot.live_loop(live_interval))
     return acceptor, bot, actual_port, live_task
 
-
-async def main() -> None:
-    acceptor, _bot, port, _live_task = await start_dev_server()
-    print(f"開発用の模擬 SSH サーバーを起動しました: {DEFAULT_HOST}:{port}")
-    print(f"鍵と known_hosts: {DEV_DIR}")
-    print("ダッシュボードで「開発用の模擬サーバー」を選んで接続してください。終了は Ctrl+C。")
-    await acceptor.wait_closed()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("模擬 SSH サーバーを停止しました。")

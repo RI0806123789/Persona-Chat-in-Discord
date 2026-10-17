@@ -5,25 +5,10 @@
     "2. YOUR_ で始まる値を、自分の環境の値に書き換える。YOUR_ が残っている接続先には接続しません。",
     "3. host に ~/.ssh/config の Host 名を書くと、HostName・User・IdentityFile はそこから読みます（見本: ../examples/ssh_config.example）。",
     "4. 初めての接続先は、先に PowerShell で ssh <Host 名> を実行し、フィンガープリントを確かめて known_hosts に登録しておく。",
-    "profiles.json が無いあいだは、このファイルを読みます（開発用の模擬サーバーの dev だけは、そのまま使えます）。",
+    "profiles.json が無いあいだは、このファイルを読みます（YOUR_ が残っているので、どこにも接続しません）。",
     "項目の説明は tools/console/README.md の「接続先の設定（profiles.json）」にあります。"
   ],
   "profiles": [
-    {
-      "id": "dev",
-      "label": "開発用の模擬サーバー",
-      "environment": "development",
-      "host": "127.0.0.1",
-      "port": 2222,
-      "username": "ubuntu",
-      "key_path": ".dev/client_key",
-      "known_hosts": ".dev/known_hosts",
-      "use_ssh_config": false,
-      "service": "bot",
-      "bot_dir": "/home/ubuntu/Persona-Chat-in-Discord",
-      "journal_sudo": false,
-      "note": "先に python dev_ssh_server.py を起動してください。本番サーバーには一切触れません。"
-    },
     {
       "id": "prod",
       "label": "本番サーバー",
@@ -36,8 +21,10 @@
       "use_ssh_config": true,
       "service": "bot",
       "bot_dir": "/home/YOUR_SSH_USER/Persona-Chat-in-Discord",
+      "deploy_branch": "main",
+      "python": ".venv/bin/python",
       "journal_sudo": false,
-      "note": "host は ~/.ssh/config の Host 名、bot_dir はサーバー上のボットのフォルダ（絶対パス）。"
+      "note": "host は ~/.ssh/config の Host 名、bot_dir はサーバー上のボットのフォルダ（絶対パス）。デプロイは origin/<deploy_branch> を取り込み、依存関係は bot_dir から見た python で入れる。"
     }
   ]
 }

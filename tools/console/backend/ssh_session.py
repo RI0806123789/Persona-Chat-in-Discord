@@ -171,7 +171,7 @@ class SshSession:
             if not known_hosts.is_file():
                 raise SshError(
                     f"known_hosts が見つかりません: {known_hosts}"
-                    "（開発用の模擬サーバーなら、先に dev_ssh_server.py を起動すると作られます）"
+                    "（profiles.json の known_hosts の場所を確かめてください。null なら ~/.ssh/known_hosts を使います）"
                 )
             options["known_hosts"] = str(known_hosts)
         else:
@@ -285,7 +285,7 @@ def _describe_connect_error(error: Exception, profile: Profile) -> str:
     if isinstance(error, asyncio.TimeoutError):
         return f"{CONNECT_TIMEOUT_SECONDS} 秒以内にサーバーへ接続できませんでした。ホスト名・ポート・ファイアウォールを確認してください。"
     if isinstance(error, ConnectionRefusedError):
-        return "接続を拒否されました。ポート番号が正しいか、SSH サーバー（または dev_ssh_server.py）が起動しているか確認してください。"
+        return "接続を拒否されました。ポート番号が正しいか、サーバーで SSH が動いているか確認してください。"
     if isinstance(error, OSError):
         return f"サーバーに接続できませんでした（{error}）。ホスト名とネットワークを確認してください。"
     if isinstance(error, asyncssh.Error):

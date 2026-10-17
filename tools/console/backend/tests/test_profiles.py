@@ -42,11 +42,13 @@ class ExampleProfilesTests(unittest.TestCase):
             with mock.patch.object(profiles, "PROFILES_PATH", Path(directory) / "profiles.json"):
                 loaded, source = profiles.load_profiles()
         self.assertEqual(source, "profiles.example.json")
-        # 開発用の模擬サーバーは、見本のままでも使える
-        self.assertEqual(loaded["dev"].unset_fields, [])
+        # 見本には、そのままつながる接続先を置かない（開発用の模擬サーバーは画面から外した）
+        self.assertEqual(list(loaded), ["prod"])
         # 本番は見本の値のままなので、書き換えるまで接続させない
         self.assertIn("host", loaded["prod"].unset_fields)
         self.assertIn("bot_dir", loaded["prod"].unset_fields)
+        # デプロイの既定（main を取り込み、ボットの .venv で依存関係を入れる）
+        self.assertEqual((loaded["prod"].deploy_branch, loaded["prod"].python), ("main", ".venv/bin/python"))
 
     def test_unset_fields_are_sent_to_the_screen(self) -> None:
         profile = profiles._parse_profile(_raw_profile(host="YOUR_SSH_HOST"))
@@ -59,6 +61,18 @@ class ExampleProfilesTests(unittest.TestCase):
         self.assertIn("host", message)
         message = app._unset_profile_message(profile, "profiles.json")
         self.assertIn("backend/profiles.json の YOUR_", message)
+
+
+class DeploySettingsTests(unittest.TestCase):
+    def test_rejects_unsafe_deploy_settings(self) -> None:
+        with self.assertRaises(profiles.ProfileError):
+            profiles._parse_profile(_raw_profile(deploy_branch="main; reboot"))
+        with self.assertRaises(profiles.ProfileError):
+            profiles._parse_profile(_raw_profile(python="../../usr/bin/python"))
+
+    def test_deploy_branch_is_sent_to_the_screen(self) -> None:
+        profile = profiles._parse_profile(_raw_profile(deploy_branch="release/1.0"))
+        self.assertEqual(profile.public_dict()["deploy_branch"], "release/1.0")
 
 
 class UnsetFieldsTests(unittest.TestCase):

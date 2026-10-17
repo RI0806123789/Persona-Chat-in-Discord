@@ -23,6 +23,7 @@ export function OverviewPage({
   onNavigate,
   onRequestAction,
   busyAction,
+  deployRunning,
   onConnect,
   selectedProfile,
   now,
@@ -40,6 +41,7 @@ export function OverviewPage({
   onNavigate: (page: PageId) => void;
   onRequestAction: (action: ServiceAction) => void;
   busyAction: ServiceAction | null;
+  deployRunning: boolean;
   onConnect: () => void;
   selectedProfile: Profile | null;
   now: number;
@@ -49,7 +51,15 @@ export function OverviewPage({
   }
   return (
     <div className="grid">
-      <ServiceHero status={status} statusError={statusError} samples={samples} onRequestAction={onRequestAction} busyAction={busyAction} onNavigate={onNavigate} />
+      <ServiceHero
+        status={status}
+        statusError={statusError}
+        samples={samples}
+        onRequestAction={onRequestAction}
+        busyAction={busyAction}
+        deployRunning={deployRunning}
+        onNavigate={onNavigate}
+      />
       <SshCard connection={connection} samples={samples} now={now} />
       <ResourceCards status={status} samples={samples} />
       <BotInsightsCard insights={insights} fetchedAt={insightsFetchedAt} error={insightsError} now={now} onNavigate={onNavigate} />
@@ -65,6 +75,7 @@ function ServiceHero({
   samples,
   onRequestAction,
   busyAction,
+  deployRunning,
   onNavigate,
 }: {
   status: StatusResponse | null;
@@ -72,6 +83,7 @@ function ServiceHero({
   samples: Sample[];
   onRequestAction: (action: ServiceAction) => void;
   busyAction: ServiceAction | null;
+  deployRunning: boolean;
   onNavigate: (page: PageId) => void;
 }) {
   const service = status?.service ?? null;
@@ -91,6 +103,7 @@ function ServiceHero({
         <div className="hero-text">
           <div className="hero-top">
             <StatusChip tone={tone.tone} label={tone.label} pulse={active} />
+            {deployRunning && <StatusChip tone="info" icon="rocket" label="デプロイ中" />}
             <span className="label-large mono hero-unit">{service ? `${service.name}.service` : "—"}</span>
           </div>
           <span className="label-large hero-figure-label">{active ? "起動してから" : "状態"}</span>
@@ -121,7 +134,7 @@ function ServiceHero({
           label={active ? "再起動" : "起動"}
           icon={active ? "restart" : "play"}
           onClick={() => onRequestAction(active ? "restart" : "start")}
-          disabled={!service}
+          disabled={!service || deployRunning}
           busy={busyAction !== null}
           items={[
             { label: "停止", icon: "stop", onSelect: () => onRequestAction("stop"), disabled: !active, danger: true },
@@ -132,6 +145,11 @@ function ServiceHero({
         <Button variant="outlined" icon="logs" onClick={() => onNavigate("logs")}>
           ログを見る
         </Button>
+        {deployRunning && (
+          <Button variant="text" icon="rocket" onClick={() => onNavigate("operations")}>
+            デプロイの進み具合を見る
+          </Button>
+        )}
       </div>
     </section>
   );

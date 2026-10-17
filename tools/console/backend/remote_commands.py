@@ -96,6 +96,105 @@ def git_command(bot_dir: str) -> str:
     )
 
 
+# ---------------------------------------------------------------- デプロイ（git pull → 依存の更新 → 再起動 → ヘルスチェック）
+#
+# デプロイは deploy.py が、ここで組み立てたコマンドを1つずつ実行して結果を確かめながら進める。
+# ブランチ名・コミット・Python の場所は画面からは受け取らず、接続先の設定（profiles.json）と
+# サーバーから読んだ値だけを使う。それでも埋め込む前に、使ってよい文字かを必ず確かめる。
+
+# 取り込む元のリモート（GitHub の既定の名前）
+DEPLOY_REMOTE = "origin"
+# 起動できたと判断するログ（ボットの on_ready が出す「ログイン成功: <ボット名>」）
+LOGIN_SUCCESS_TEXT = "ログイン成功"
+
+_SAFE_BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SAFE_PYTHON = re.compile(r"^[A-Za-z0-9._/@+-]+$")
+
+# サーバーの現在時刻（UNIX 秒）。再起動より後のログだけを読むための基準にする
+SERVER_TIME_COMMAND = "date +%s"
+
+
+def check_branch(branch: str) -> str:
+    if not _SAFE_BRANCH.match(branch) or ".." in branch or branch.startswith(("-", "/")):
+        raise ValueError(f"使えない文字を含むブランチ名です: {branch!r}")
+    return branch
+
+
+def check_commit(commit: str) -> str:
+    """コミットは 40 桁の16進数（git rev-parse の出力）だけを受け付ける。"""
+    if not _COMMIT.match(commit):
+        raise ValueError(f"コミットの形ではありません: {commit!r}")
+    return commit
+
+
+def check_python(python: str) -> str:
+    if not _SAFE_PYTHON.match(python) or ".." in python.split("/"):
+        raise ValueError(f"使えない文字を含む Python の場所です: {python!r}")
+    return python
+
+
+def _in_bot_dir(bot_dir: str, command: str) -> str:
+    return f"cd {shlex.quote(bot_dir)} && {command}"
+
+
+def deploy_state_command(bot_dir: str) -> str:
+    """今のブランチ / コミット / 未コミットの変更の数（追跡していないファイルは数えない）を1行ずつ出す。"""
+    return _in_bot_dir(
+        bot_dir,
+        "git rev-parse --abbrev-ref HEAD && git rev-parse HEAD && git status --porcelain --untracked-files=no | wc -l",
+    )
+
+
+def deploy_fetch_command(bot_dir: str, branch: str) -> str:
+    """リモートの最新を取り寄せ、取り込む先のコミット / 新しいコミットの数 / サーバーにだけあるコミットの数を出す。"""
+    target = f"{DEPLOY_REMOTE}/{check_branch(branch)}"
+    return _in_bot_dir(
+        bot_dir,
+        f"git fetch --quiet {DEPLOY_REMOTE} {branch}"
+        f" && git rev-parse {target}"
+        f" && git rev-list --count HEAD..{target}"
+        f" && git rev-list --count {target}..HEAD",
+    )
+
+
+def deploy_merge_command(bot_dir: str, branch: str) -> str:
+    """早送りだけで取り込む（git pull --ff-only と同じ）。最後の行に取り込んだ後のコミットを出す。"""
+    return _in_bot_dir(bot_dir, f"git merge --ff-only {DEPLOY_REMOTE}/{check_branch(branch)} && git rev-parse HEAD")
+
+
+def deploy_log_command(bot_dir: str, before: str, after: str) -> str:
+    """取り込んだコミットの一覧（短い ID と件名）。"""
+    return _in_bot_dir(bot_dir, f"git log --format=%h%x1f%s {check_commit(before)}..{check_commit(after)}")
+
+
+def deploy_requirements_diff_command(bot_dir: str, before: str, after: str) -> str:
+    """requirements.txt が変わっていれば、そのファイル名を出す（変わっていなければ何も出ない）。"""
+    return _in_bot_dir(bot_dir, f"git diff --name-only {check_commit(before)} {check_commit(after)} -- requirements.txt")
+
+
+def deploy_pip_install_command(bot_dir: str, python: str) -> str:
+    """ボットの仮想環境に、requirements.txt の依存関係を入れる。"""
+    py = shlex.quote(check_python(python))
+    return _in_bot_dir(bot_dir, f"{py} -m pip install --disable-pip-version-check --no-input -r requirements.txt")
+
+
+def deploy_pip_check_command(bot_dir: str, python: str) -> str:
+    """入れた依存関係どうしが食い違っていないか確かめる。"""
+    return _in_bot_dir(bot_dir, f"{shlex.quote(check_python(python))} -m pip check")
+
+
+def deploy_reset_command(bot_dir: str, commit: str) -> str:
+    """巻き戻し: コードをデプロイ前のコミットへ戻す。取り込んだコミットは GitHub に残るので失われない。"""
+    return _in_bot_dir(bot_dir, f"git reset --hard {check_commit(commit)} && git rev-parse HEAD")
+
+
+def journal_since_command(service: str, since: int, *, use_sudo: bool) -> str:
+    """指定した時刻（UNIX 秒）より後のログを JSON で出す（再起動後のログだけを見るため）。"""
+    prefix = "sudo -n " if use_sudo else ""
+    return f"{prefix}journalctl -u {_check_safe_name(service)} --since @{int(since)} -o json --no-pager"
+
+
 def insights_command(bot_dir: str, service: str) -> str:
     """remote_scripts/insights.py（INSIGHTS_SCRIPT）を標準入力から python3 に渡して実行する。"""
     return f"python3 - --insights {shlex.quote(bot_dir)} {_check_safe_name(service)}"
@@ -314,6 +413,25 @@ def parse_journal_line(line: str) -> dict | None:
         "pid": _to_int(data.get("_PID")),
         "source": str(data.get("SYSLOG_IDENTIFIER") or data.get("_COMM") or ""),
     }
+
+
+def parse_lines(text: str, count: int) -> list[str]:
+    """先頭から count 行を取り出す（足りなければ ValueError）。git の出力の読み取りに使う。"""
+    lines = [line.strip() for line in text.strip().splitlines()]
+    if len(lines) < count:
+        raise ValueError(f"出力が想定より短いです（{len(lines)} 行。{count} 行を想定）。")
+    return lines[:count]
+
+
+def parse_commit_list(text: str) -> list[dict]:
+    """deploy_log_command の出力を [{"hash": 短い ID, "subject": 件名}] にする。"""
+    commits = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        short, _, subject = line.partition("")
+        commits.append({"hash": short.strip(), "subject": subject.strip()})
+    return commits
 
 
 def parse_server_info(text: str) -> dict:

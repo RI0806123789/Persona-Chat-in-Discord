@@ -2,6 +2,7 @@ import type {
   CommandRecord,
   ConnectionState,
   DbSummary,
+  DeployResponse,
   InsightsResponse,
   LogEntry,
   Operation,
@@ -61,6 +62,8 @@ export const api = {
   operations: () => request<{ operations: Operation[] }>("/api/operations"),
   history: () => request<{ commands: CommandRecord[] }>("/api/history"),
   db: () => request<DbSummary>("/api/db"),
+  deploy: () => request<DeployResponse>("/api/deploy"),
+  startDeploy: () => post<DeployResponse>("/api/deploy"),
   insights: (refresh = false) => request<InsightsResponse>(`/api/insights${refresh ? "?refresh=true" : ""}`),
 };
 

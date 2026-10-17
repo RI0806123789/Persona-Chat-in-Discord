@@ -121,3 +121,14 @@ export function redactLogLine(text: string, isConversation: boolean, privacy: Pr
   }
   return privacy.redact(text).replace(CHANNEL_MENTION, `#${MASK}`);
 }
+
+/**
+ * 複数行の文章（デプロイの出力など）を伏せ字にする。ログと同じく、会話の本文は行の塊ごと隠す。
+ * 再起動直後のログを出力に含めるため、そこに利用者の発言が混ざりうる。
+ */
+export function redactText(text: string, privacy: Privacy): string {
+  if (!privacy.enabled || !text) return text;
+  const lines = text.split("\n");
+  const conversation = conversationLines(lines.map((message) => ({ ts: 0, message, priority: null, pid: null, source: "" })));
+  return lines.map((line, index) => redactLogLine(line, conversation[index], privacy)).join("\n");
+}

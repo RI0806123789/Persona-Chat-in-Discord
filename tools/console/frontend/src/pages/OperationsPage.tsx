@@ -5,7 +5,8 @@ import { Button, Card, EmptyState, StatusChip } from "../components/ui";
 import { formatDateTime } from "../format";
 import { usePrivacy } from "../privacy";
 import { serviceTone } from "../status";
-import type { Operation, Profile, ServiceAction, ServiceStatus } from "../types";
+import type { DeployRecord, GitInfo, Operation, Profile, ServiceAction, ServiceStatus } from "../types";
+import { DeployCard } from "./DeployCard";
 import { NotConnected } from "./shared";
 
 const ACTIONS: { action: ServiceAction; title: string; description: string; icon: IconName; variant: "filled" | "danger" | "tonal" }[] = [
@@ -16,18 +17,15 @@ const ACTIONS: { action: ServiceAction; title: string; description: string; icon
 
 const ACTION_LABELS: Record<ServiceAction, string> = { start: "起動", stop: "停止", restart: "再起動" };
 
-const DEPLOY_STEPS = [
-  { title: "git pull", detail: "main の最新を取得" },
-  { title: "pip install -r requirements.txt", detail: "依存関係を更新（増えたときだけ）" },
-  { title: "sudo systemctl restart bot", detail: "新しいコードで起動" },
-  { title: "ヘルスチェック", detail: "ログイン成功のログが出るまで待つ" },
-];
-
 const SAFETY: { icon: IconName; text: ReactNode }[] = [
-  { icon: "shield", text: <>実行できるのは <code>start / stop / restart</code> だけ。画面から任意のコマンドは送れません（バックエンドのホワイトリスト）。</> },
+  { icon: "shield", text: <>実行できるのは <code>start / stop / restart</code> とデプロイの決まった手順だけ。画面から任意のコマンドは送れません（バックエンドのホワイトリスト）。</> },
   { icon: "bolt", text: <><code>sudo -n</code> で実行するため、パスワードを求められたら待たずに失敗します（入力待ちで固まらない）。</> },
   { icon: "check", text: <>停止はサービス名の入力で確認し、本番環境では確認ダイアログに警告を出します。</> },
   { icon: "plug", text: <>バックエンドは 127.0.0.1 だけで待ち受け、専用ヘッダーの無い要求（ほかのサイトからの呼び出し）を断ります。</> },
+  {
+    icon: "rocket",
+    text: <>デプロイは、サーバーに未コミットの変更が無く、決めたブランチにいるときだけ始めます。途中で失敗したら、自動で前の版へ戻します（bot.db は戻しません）。</>,
+  },
 ];
 
 export function OperationsPage({
@@ -40,6 +38,11 @@ export function OperationsPage({
   busyAction,
   onRequestAction,
   operations,
+  git,
+  deploy,
+  deployRunning,
+  onDeploy,
+  now,
 }: {
   connected: boolean;
   connecting: boolean;
@@ -50,6 +53,11 @@ export function OperationsPage({
   busyAction: ServiceAction | null;
   onRequestAction: (action: ServiceAction) => void;
   operations: Operation[];
+  git: GitInfo | null;
+  deploy: DeployRecord | null;
+  deployRunning: boolean;
+  onDeploy: () => void;
+  now: number;
 }) {
   const privacy = usePrivacy();
   const tone = serviceTone(service);
@@ -64,10 +72,12 @@ export function OperationsPage({
             <StatusChip tone={tone.tone} label={tone.label} pulse={active} />
             <code className="body-small">{profile ? `sudo -n systemctl <操作> ${profile.service}` : ""}</code>
             {profile?.environment === "production" && <StatusChip tone="serious" icon="shield" label="本番環境に接続中" />}
+            {deployRunning && <StatusChip tone="info" icon="rocket" label="デプロイ中は操作できません" />}
           </div>
           <div className="action-grid">
             {ACTIONS.map((item) => {
-              const disabled = busyAction !== null || !service || (item.action === "start" && active) || (item.action === "stop" && !active);
+              const disabled =
+                busyAction !== null || deployRunning || !service || (item.action === "start" && active) || (item.action === "stop" && !active);
               return (
                 <div key={item.action} className={`action-card action-${item.variant}`}>
                   <span className="action-icon">{busyAction === item.action ? <LoadingIndicator size={40} /> : <Icon name={item.icon} size={28} />}</span>
@@ -87,7 +97,18 @@ export function OperationsPage({
         </div>
       )}
 
-      <Card title="操作の記録（このセッション）" icon="history" source="ssh" className="span-7">
+      <DeployCard
+        deploy={deploy}
+        running={deployRunning}
+        connected={connected}
+        profile={profile ?? selectedProfile}
+        git={git}
+        disabled={busyAction !== null}
+        onDeploy={onDeploy}
+        now={now}
+      />
+
+      <Card title="操作の記録（このセッション）" icon="history" source="ssh" className="span-12">
         {operations.length ? (
           <div className="table-wrap">
             <table className="m3-table">
@@ -124,24 +145,6 @@ export function OperationsPage({
             <p className="body-medium">起動・停止・再起動をすると、ここに記録されます（バックエンドを再起動すると消えます）。</p>
           </EmptyState>
         )}
-      </Card>
-
-      <Card title="デプロイ（未実装）" icon="rocket" className="span-5" variant="outlined">
-        <ol className="steps">
-          {DEPLOY_STEPS.map((step, index) => (
-            <li key={step.title}>
-              <span className="step-index label-large">{index + 1}</span>
-              <div>
-                <strong className="body-large mono">{step.title}</strong>
-                <span className="body-small muted">{step.detail}</span>
-              </div>
-            </li>
-          ))}
-        </ol>
-        <Button variant="outlined" icon="rocket" disabled title="未実装">
-          デプロイ（未実装）
-        </Button>
-        <span className="body-small muted">画面の案だけです。実装するなら、途中で失敗したときの巻き戻し方を先に決めておく必要があります。</span>
       </Card>
 
       <Card title="誤操作を防ぐ仕組み" icon="shield" className="span-12" variant="outlined">

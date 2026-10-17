@@ -1,0 +1,547 @@
+"""デプロイ（git pull → 依存の更新 → 再起動 → ヘルスチェック）を、1ステップずつ確かめながら進める。
+
+各ステップは「実行したコマンド」「出力」「確かめた事実（チェック）」を記録し、画面はそれをそのまま見せる。
+チェックが1つでも通らなければ、そのステップを失敗として止める（次のステップへ進まない）。
+
+途中（依存の更新・再起動・ヘルスチェック）で失敗したら、自動で前の版へ戻す（利用者の指定）:
+  コードを戻す（git reset --hard デプロイ前のコミット）→ 依存関係を戻す（変えていたら）→ 再起動 → ヘルスチェック
+
+★ 事前確認で「サーバーに未コミットの変更が無い」ことを必ず確かめること。巻き戻しの git reset --hard は
+  未コミットの変更を消してしまうため、変更があるサーバーではデプロイ自体を始めない。
+★ bot.db は戻さない。新しい版がスキーマを上げていても、ボットの移行は列や表を足すだけなので、前の版は
+  知らない列・表を読まないだけで動く（戻すと、デプロイ後に保存された会話の記憶などを失う）。
+★ 実行するコマンドは remote_commands.py のホワイトリストで組み立てたものだけ。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+
+import remote_commands as rc
+from profiles import Profile
+from ssh_session import CommandResult, SshError, SshSession
+
+# 1つのステップに残す出力の長さ（長いと画面と通信が重くなる。末尾を残す）
+OUTPUT_MAX_CHARS = 8000
+# 各コマンドの待ち時間（秒）
+FETCH_TIMEOUT = 90
+PIP_TIMEOUT = 900
+RESTART_TIMEOUT = 90
+# 再起動のあと、稼働中になり PID が変わるまで待つ時間
+RESTART_SETTLE_TIMEOUT = 30
+# 「ログイン成功」のログが出るまで待つ時間（Discord への接続とコマンドの同期を見込む）
+HEALTH_TIMEOUT = 120
+# 状態やログを取り直す間隔
+POLL_INTERVAL = 2.0
+# ヘルスチェックが失敗したとき、出力に残す再起動後のログの行数
+HEALTH_LOG_TAIL = 40
+
+DEPLOY_STEPS = (
+    ("precheck", "事前確認", "ブランチ・未コミットの変更・GitHub の最新を確かめる"),
+    ("pull", "git pull", "{branch} の最新を早送りで取り込む"),
+    ("deps", "pip install -r requirements.txt", "requirements.txt が変わったときだけ、依存関係を入れ直す"),
+    ("restart", "sudo systemctl restart {service}", "新しいコードで起動し、PID が変わったことを確かめる"),
+    ("health", "ヘルスチェック", "「ログイン成功」のログが出て、落ちずに動いていることを確かめる"),
+)
+ROLLBACK_STEPS = (
+    ("rollback_code", "コードを戻す", "git reset --hard でデプロイ前のコミットへ戻す（取り込んだコミットは GitHub に残る）"),
+    ("rollback_deps", "依存関係を戻す", "依存関係を入れ直していたら、前の requirements.txt で入れ直す"),
+    ("rollback_restart", "再起動", "前の版で起動し直し、PID が変わったことを確かめる"),
+    ("rollback_health", "ヘルスチェック", "前の版で「ログイン成功」まで戻ったことを確かめる"),
+)
+
+
+@dataclass
+class Check:
+    """ステップの中で確かめた事実1つ（画面に ✓ / ✗ で出す）。"""
+
+    label: str
+    ok: bool
+    detail: str = ""
+
+
+@dataclass
+class Step:
+    key: str
+    title: str
+    description: str
+    phase: str = "deploy"  # deploy / rollback
+    status: str = "pending"  # pending / running / succeeded / failed / skipped
+    started_at: float | None = None
+    finished_at: float | None = None
+    commands: list[str] = field(default_factory=list)
+    output: str = ""
+    checks: list[Check] = field(default_factory=list)
+    message: str = ""
+
+
+@dataclass
+class DeployRecord:
+    id: int
+    profile_id: str
+    environment: str
+    service: str
+    branch: str
+    started_at: float
+    steps: list[Step]
+    # running / succeeded / up_to_date / failed / rolled_back / rollback_failed
+    status: str = "running"
+    finished_at: float | None = None
+    before_commit: str | None = None
+    target_commit: str | None = None
+    after_commit: str | None = None
+    commits: list[dict] = field(default_factory=list)
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class StepFailed(Exception):
+    """ステップの確認が通らなかった。メッセージは画面にそのまま出す日本語。"""
+
+
+def _short(commit: str | None) -> str:
+    return commit[:7] if commit else "—"
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+class DeployRunner:
+    """1回のデプロイを実行する。進み具合は record を書き換えて伝える（画面は record を取り直して表示する）。"""
+
+    def __init__(
+        self,
+        session: SshSession,
+        profile: Profile,
+        record: DeployRecord,
+        *,
+        restart_settle_timeout: float = RESTART_SETTLE_TIMEOUT,
+        health_timeout: float = HEALTH_TIMEOUT,
+        poll_interval: float = POLL_INTERVAL,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.session = session
+        self.profile = profile
+        self.record = record
+        self._restart_settle_timeout = restart_settle_timeout
+        self._health_timeout = health_timeout
+        self._poll_interval = poll_interval
+        self._sleep = sleep
+        self._clock = clock
+        # 巻き戻しで何を戻す必要があるかの記録
+        self._code_changed = False
+        self._deps_changed = False
+        self._restart_attempted = False
+        # 直前の再起動の時刻（サーバーの UNIX 秒）と、そのときの自動再起動の回数。ヘルスチェックが使う
+        self._since = 0
+        self._restarts_after: int | None = None
+
+    # ------------------------------------------------------------ 全体の流れ
+
+    async def run(self) -> DeployRecord:
+        try:
+            await self._run_all()
+        except asyncio.CancelledError:
+            self._finish("failed", "デプロイが中断されました（バックエンドが止まった可能性があります）。サーバーの状態を確かめてください。")
+            raise
+        except Exception as error:  # noqa: BLE001 — 想定外の失敗でも、画面に「動いたまま」と見せないため記録して終える
+            self._finish("failed", f"想定外のエラーでデプロイを止めました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。")
+        return self.record
+
+    async def _run_all(self) -> None:
+        if not await self._step("precheck", self._precheck):
+            self._skip_rest("事前確認で止めたため、実行しません。")
+            self._finish("failed", "事前確認で止めました。コードもボットも変えていません。")
+            return
+        if self.record.target_commit == self.record.before_commit:
+            self._skip_rest("最新のため、実行しません。")
+            self._finish("up_to_date", f"{self.profile.deploy_branch} は最新です（{_short(self.record.before_commit)}）。何も変えていません。")
+            return
+
+        for key, action in (("pull", self._pull), ("deps", self._deps), ("restart", self._restart), ("health", self._health)):
+            if await self._step(key, action):
+                continue
+            self._skip_rest("前のステップで止めたため、実行しません。")
+            if not self._code_changed:
+                self._finish("failed", "コードの取り込みで止めました。コードもボットも変えていません。")
+                return
+            await self._rollback()
+            return
+
+        count = len(self.record.commits)
+        self._finish(
+            "succeeded",
+            f"デプロイしました（{_short(self.record.before_commit)} → {_short(self.record.after_commit)}、コミット {count} 件）。",
+        )
+
+    def _finish(self, status: str, message: str) -> None:
+        self.record.status = status
+        self.record.message = message
+        self.record.finished_at = time.time()
+
+    def _skip_rest(self, message: str) -> None:
+        for step in self.record.steps:
+            if step.status == "pending":
+                step.status = "skipped"
+                step.message = message
+
+    def _find(self, key: str) -> Step:
+        return next(step for step in self.record.steps if step.key == key)
+
+    async def _step(self, key: str, action: Callable[[Step], Awaitable[None]]) -> bool:
+        """ステップを1つ実行し、成功（または不要で飛ばした）なら True を返す。"""
+        step = self._find(key)
+        step.status = "running"
+        step.started_at = time.time()
+        try:
+            await action(step)
+        except (StepFailed, SshError, ValueError) as error:
+            step.status = "failed"
+            step.message = str(error)
+        else:
+            if step.status == "running":
+                step.status = "succeeded"
+        finally:
+            step.finished_at = time.time()
+        return step.status in ("succeeded", "skipped")
+
+    # ------------------------------------------------------------ コマンドの実行と記録
+
+    async def _run(self, step: Step, command: str, *, label: str, timeout: float = 30, quiet: bool = False) -> CommandResult:
+        """コマンドを実行し、ステップにコマンドと出力を残す（quiet なら残さない。状態の取り直しに使う）。"""
+        if not quiet:
+            step.commands.append(command)
+        result = await self.session.run(command, label=f"デプロイ: {label}", timeout=timeout)
+        if not quiet:
+            parts = [f"$ {command}"]
+            if result.stdout.strip():
+                parts.append(result.stdout.rstrip())
+            if result.stderr.strip():
+                parts.append(result.stderr.rstrip())
+            parts.append(f"（終了コード {result.exit_status}・{result.duration_ms} ms）")
+            self._append_output(step, "\n".join(parts))
+        return result
+
+    def _append_output(self, step: Step, text: str) -> None:
+        combined = f"{step.output}\n{text}" if step.output else text
+        step.output = combined[-OUTPUT_MAX_CHARS:]
+
+    def _check(self, step: Step, label: str, ok: bool, detail: str = "", failure: str | None = None) -> None:
+        """事実を1つ記録する。通らなければ failure（無ければ label）でステップを止める。"""
+        step.checks.append(Check(label, ok, detail))
+        if not ok:
+            raise StepFailed(failure or f"確認が通りませんでした: {label}（{detail}）")
+
+    async def _service(self, step: Step, *, quiet: bool) -> dict:
+        result = await self._run(step, rc.service_show_command(self.profile.service), label="サービスの状態", quiet=quiet)
+        if result.exit_status != 0:
+            raise StepFailed(f"サービスの状態を読めませんでした: {_last_line(result.stderr) or result.exit_status}")
+        return rc.parse_service_show(result.stdout, self.profile.service, None)
+
+    async def _head(self, step: Step) -> str:
+        result = await self._run(step, rc.deploy_state_command(self.profile.bot_dir), label="今のコミット", quiet=True)
+        return rc.check_commit(rc.parse_lines(result.stdout, 2)[1])
+
+    # ------------------------------------------------------------ デプロイのステップ
+
+    async def _precheck(self, step: Step) -> None:
+        bot_dir, branch = self.profile.bot_dir, self.profile.deploy_branch
+        result = await self._run(step, rc.deploy_state_command(bot_dir), label="事前確認（ブランチ・変更）")
+        if result.exit_status != 0:
+            raise StepFailed(f"ボットのフォルダ（{bot_dir}）で git を実行できませんでした: {_last_line(result.stderr) or result.exit_status}")
+        current_branch, head, dirty = rc.parse_lines(result.stdout, 3)
+        self.record.before_commit = rc.check_commit(head)
+        self._check(
+            step,
+            f"ブランチが {branch}",
+            current_branch == branch,
+            f"今のブランチ: {current_branch}",
+            f"サーバーのボットは {branch} ではなく {current_branch} にいます。サーバーで git switch {branch} してから、もう一度デプロイしてください。",
+        )
+        dirty_count = int(dirty) if dirty.isdigit() else -1
+        self._check(
+            step,
+            "サーバーに未コミットの変更が無い",
+            dirty_count == 0,
+            f"{dirty_count} 件" if dirty_count >= 0 else f"読めない出力: {dirty}",
+            "サーバーのボットのフォルダに未コミットの変更があります。巻き戻しで消してしまうため、デプロイしません"
+            "（サーバーで git status を確かめ、変更を片付けてからデプロイしてください）。",
+        )
+
+        result = await self._run(step, rc.deploy_fetch_command(bot_dir, branch), label="GitHub の最新を取得", timeout=FETCH_TIMEOUT)
+        if result.exit_status != 0:
+            raise StepFailed(f"GitHub から {branch} の最新を取り寄せられませんでした: {_last_line(result.stderr) or result.exit_status}")
+        target, behind, ahead = rc.parse_lines(result.stdout, 3)
+        self.record.target_commit = rc.check_commit(target)
+        self._check(
+            step,
+            "サーバーにだけあるコミットが無い（早送りで取り込める）",
+            ahead == "0",
+            f"{ahead} 件",
+            f"サーバーに、GitHub の {branch} に無いコミットが {ahead} 件あります。早送りで取り込めないため、デプロイしません。",
+        )
+        step.message = (
+            f"新しいコミットが {behind} 件あります（{_short(self.record.before_commit)} → {_short(target)}）。"
+            if behind != "0"
+            else f"新しいコミットはありません（{_short(target)}）。"
+        )
+
+    async def _pull(self, step: Step) -> None:
+        bot_dir, branch = self.profile.bot_dir, self.profile.deploy_branch
+        before = self.record.before_commit or ""
+        result = await self._run(step, rc.deploy_merge_command(bot_dir, branch), label="git pull（早送り）", timeout=FETCH_TIMEOUT)
+        if result.exit_status != 0:
+            # 失敗しても、途中まで進んでいたら巻き戻しが要るので、今のコミットを読み直して確かめる
+            try:
+                self._code_changed = await self._head(step) != before
+            except (SshError, ValueError):
+                self._code_changed = True  # 確かめられないときは、戻す側に倒す
+            raise StepFailed(f"{branch} を早送りで取り込めませんでした: {_last_line(result.stderr) or result.exit_status}")
+        self._code_changed = True
+        after = rc.check_commit(_last_line(result.stdout))
+        self.record.after_commit = after
+        self._check(
+            step,
+            f"取り込んだ後のコミットが origin/{branch} と一致",
+            after == self.record.target_commit,
+            f"{_short(after)}（origin/{branch} は {_short(self.record.target_commit)}）",
+        )
+        log = await self._run(step, rc.deploy_log_command(bot_dir, before, after), label="取り込んだコミット")
+        self.record.commits = rc.parse_commit_list(log.stdout) if log.exit_status == 0 else []
+        step.message = f"コミット {len(self.record.commits)} 件を取り込みました（{_short(before)} → {_short(after)}）。"
+
+    async def _deps(self, step: Step) -> None:
+        bot_dir = self.profile.bot_dir
+        before, after = self.record.before_commit or "", self.record.after_commit or ""
+        diff = await self._run(step, rc.deploy_requirements_diff_command(bot_dir, before, after), label="requirements.txt の変更")
+        if diff.exit_status != 0:
+            raise StepFailed(f"requirements.txt の変更を調べられませんでした: {_last_line(diff.stderr) or diff.exit_status}")
+        if not diff.stdout.strip():
+            step.checks.append(Check("requirements.txt に変更なし", True, f"{_short(before)} → {_short(after)}"))
+            step.status = "skipped"
+            step.message = "依存関係は変わっていないため、入れ直しません。"
+            return
+        self._deps_changed = True  # 途中で失敗しても、前の requirements.txt で入れ直す必要がある
+        await self._install_requirements(step)
+        step.message = "requirements.txt が変わったため、依存関係を入れ直しました。"
+
+    async def _install_requirements(self, step: Step) -> None:
+        bot_dir, python = self.profile.bot_dir, self.profile.python
+        result = await self._run(step, rc.deploy_pip_install_command(bot_dir, python), label="pip install", timeout=PIP_TIMEOUT)
+        self._check(step, "pip install が成功（終了コード 0）", result.exit_status == 0, _last_line(result.stderr) or _last_line(result.stdout))
+        result = await self._run(step, rc.deploy_pip_check_command(bot_dir, python), label="pip check")
+        self._check(step, "pip check で依存関係の食い違いなし", result.exit_status == 0, _last_line(result.stdout) or _last_line(result.stderr))
+
+    async def _restart(self, step: Step) -> None:
+        self._restart_attempted = True
+        await self._restart_and_verify(step)
+
+    async def _restart_and_verify(self, step: Step) -> None:
+        before = await self._service(step, quiet=False)
+        old_pid = before["main_pid"]
+        clock = await self._run(step, rc.SERVER_TIME_COMMAND, label="サーバーの時刻", quiet=True)
+        try:
+            # 時計の秒の切り替わりで取りこぼさないよう、1秒前から読む
+            step_since = int(clock.stdout.strip()) - 1
+        except ValueError as error:
+            raise StepFailed(f"サーバーの時刻を読めませんでした: {clock.stdout.strip()!r}") from error
+
+        result = await self._run(
+            step, rc.service_control_command(self.profile.service, "restart"), label="再起動", timeout=RESTART_TIMEOUT
+        )
+        needs_password = "password is required" in result.stderr or "a terminal is required" in result.stderr
+        self._check(
+            step,
+            "systemctl restart が成功（終了コード 0）",
+            result.exit_status == 0,
+            _last_line(result.stderr) or f"終了コード {result.exit_status}",
+            "sudo にパスワードが必要なため、再起動できませんでした（tools/console/examples/sudoers.example を参照）。"
+            if needs_password
+            else None,
+        )
+
+        deadline = self._clock() + self._restart_settle_timeout
+        polls = 0
+        while True:
+            state = await self._service(step, quiet=True)
+            polls += 1
+            running = state["active_state"] == "active" and state["sub_state"] == "running"
+            if running and state["main_pid"] and state["main_pid"] != old_pid:
+                break
+            if self._clock() >= deadline:
+                self._append_output(step, f"（状態を {polls} 回確かめました。最後の状態: {state['active_state']} / {state['sub_state']}）")
+                raise StepFailed(
+                    f"{self._restart_settle_timeout:g} 秒たっても新しいプロセスで稼働中になりませんでした"
+                    f"（状態: {state['active_state']} / {state['sub_state']}、PID: {state['main_pid'] or 'なし'}）。"
+                )
+            await self._sleep(self._poll_interval)
+        self._append_output(step, f"（状態を {polls} 回確かめ、稼働中になったことを確認しました）")
+        step.checks.append(Check("稼働中（active / running）", True, f"{state['active_state']} / {state['sub_state']}"))
+        step.checks.append(Check("PID が変わった（新しいプロセスで起動した）", True, f"{old_pid or 'なし'} → {state['main_pid']}"))
+        step.message = f"新しいプロセス（PID {state['main_pid']}）で起動しました。"
+        self._since = step_since
+        self._restarts_after = state["restarts"]
+
+    async def _health(self, step: Step) -> None:
+        await self._health_check(step)
+
+    async def _health_check(self, step: Step) -> None:
+        since, restarts_after = self._since, self._restarts_after
+        command = rc.journal_since_command(self.profile.service, since, use_sudo=self.profile.journal_sudo)
+        step.commands.append(command)
+        started = self._clock()
+        deadline = started + self._health_timeout
+        entries: list[dict] = []
+        found: dict | None = None
+        while True:
+            entries = await self._logs_since(step, command)
+            found = next((entry for entry in entries if rc.LOGIN_SUCCESS_TEXT in entry["message"]), None)
+            state = await self._service(step, quiet=True)
+            if found:
+                break
+            # 起動に失敗して止まった・落ちて再起動を待っているなら、待たずに失敗にする
+            if state["active_state"] in ("failed", "inactive") or state["sub_state"] == "auto-restart":
+                # ログを読んだ後・状態を読む前に止まったときは、止まった原因（例外など）がまだ手元に無い。
+                # 原因を画面に残すため、止まったと分かってから読み直す
+                self._append_log_tail(step, await self._logs_since(step, command))
+                raise StepFailed(f"ボットが起動の途中で止まりました（状態: {state['active_state']} / {state['sub_state']}）。")
+            if self._clock() >= deadline:
+                self._append_log_tail(step, entries)
+                raise StepFailed(f"{self._health_timeout:g} 秒たっても「{rc.LOGIN_SUCCESS_TEXT}」のログが出ませんでした。")
+            await self._sleep(self._poll_interval)
+
+        waited = max(0.0, self._clock() - started)
+        self._append_log_tail(step, entries)
+        step.checks.append(Check(f"「{rc.LOGIN_SUCCESS_TEXT}」のログが出た", True, found["message"]))
+        state = await self._service(step, quiet=False)
+        self._check(
+            step,
+            "サービスが稼働中のまま",
+            state["active_state"] == "active" and state["sub_state"] == "running",
+            f"{state['active_state']} / {state['sub_state']}",
+        )
+        self._check(
+            step,
+            "落ちて自動再起動していない",
+            state["restarts"] == restarts_after,
+            f"自動再起動の回数: {restarts_after} → {state['restarts']}",
+        )
+        step.message = f"「{rc.LOGIN_SUCCESS_TEXT}」まで確認しました（再起動から約 {waited:.0f} 秒）。"
+
+    async def _logs_since(self, step: Step, command: str) -> list[dict]:
+        result = await self._run(step, command, label="再起動後のログ", quiet=True)
+        return [entry for line in result.stdout.splitlines() if (entry := rc.parse_journal_line(line))]
+
+    def _append_log_tail(self, step: Step, entries: list[dict]) -> None:
+        tail = entries[-HEALTH_LOG_TAIL:]
+        if tail:
+            self._append_output(step, "再起動後のログ（古い順）:\n" + "\n".join(entry["message"] for entry in tail))
+        else:
+            self._append_output(step, "再起動後のログはまだありません。")
+
+    # ------------------------------------------------------------ 巻き戻し
+
+    async def _rollback(self) -> None:
+        for key, title, description in ROLLBACK_STEPS:
+            self.record.steps.append(Step(key, title, description, phase="rollback"))
+
+        if not await self._step("rollback_code", self._rollback_code):
+            self._skip_rest("コードを戻せなかったため、実行しません。")
+            self._finish_rollback_failed()
+            return
+        ok = await self._step("rollback_deps", self._rollback_deps)
+        if self._restart_attempted and ok:
+            ok = await self._step("rollback_restart", self._restart_and_verify) and await self._step("rollback_health", self._health_check)
+        elif not self._restart_attempted:
+            for key in ("rollback_restart", "rollback_health"):
+                step = self._find(key)
+                step.status = "skipped"
+                step.message = "再起動する前に止めたため不要です（ボットは前の版のまま動いています）。"
+        self._skip_rest("前のステップで止めたため、実行しません。")
+        if ok:
+            self._finish("rolled_back", f"デプロイに失敗したため、前の版（{_short(self.record.before_commit)}）へ戻しました。")
+        else:
+            self._finish_rollback_failed()
+
+    async def _rollback_code(self, step: Step) -> None:
+        before = self.record.before_commit or ""
+        result = await self._run(step, rc.deploy_reset_command(self.profile.bot_dir, before), label="コードを戻す")
+        head = _last_line(result.stdout)
+        self._check(
+            step,
+            "コードがデプロイ前のコミットに戻った",
+            result.exit_status == 0 and head == before,
+            f"今のコミット: {_short(head) if head else '不明'}（デプロイ前: {_short(before)}）",
+        )
+        step.message = f"コードを {_short(before)} に戻しました。"
+
+    async def _rollback_deps(self, step: Step) -> None:
+        if not self._deps_changed:
+            step.status = "skipped"
+            step.message = "依存関係は入れ直していないため不要です。"
+            return
+        await self._install_requirements(step)
+        step.message = "前の requirements.txt で依存関係を入れ直しました。"
+
+    def _finish_rollback_failed(self) -> None:
+        bot_dir, service = self.profile.bot_dir, self.profile.service
+        self._finish(
+            "rollback_failed",
+            "巻き戻しにも失敗しました。サーバーで手動の対応が必要です: "
+            f"cd {bot_dir} && git reset --hard {self.record.before_commit} を実行し、依存関係を入れ直してから "
+            f"sudo systemctl restart {service} で起動し、journalctl -u {service} -n 50 で「{rc.LOGIN_SUCCESS_TEXT}」を確かめてください。",
+        )
+
+
+def new_record(record_id: int, profile: Profile) -> DeployRecord:
+    steps = [
+        Step(key, title.format(branch=profile.deploy_branch, service=profile.service), description.format(branch=profile.deploy_branch))
+        for key, title, description in DEPLOY_STEPS
+    ]
+    return DeployRecord(
+        id=record_id,
+        profile_id=profile.id,
+        environment=profile.environment,
+        service=profile.service,
+        branch=profile.deploy_branch,
+        started_at=time.time(),
+        steps=steps,
+    )
+
+
+class DeployManager:
+    """デプロイを1つずつだけ走らせ、最後の記録を持っておく（バックエンドを再起動すると消える）。"""
+
+    def __init__(self) -> None:
+        self.current: DeployRecord | None = None
+        self._task: asyncio.Task | None = None
+        self._ids = itertools.count(1)
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self, session: SshSession, profile: Profile, **runner_options) -> DeployRecord:
+        if self.running:
+            raise RuntimeError("デプロイを実行中です。終わるまで待ってください。")
+        record = new_record(next(self._ids), profile)
+        self.current = record
+        runner = DeployRunner(session, profile, record, **runner_options)
+        # タスクへの強い参照を持ち続ける（捨てると実行途中で回収されうる）
+        self._task = asyncio.get_running_loop().create_task(runner.run())
+        return record
+
+    async def wait(self) -> DeployRecord | None:
+        """実行中のデプロイが終わるまで待つ（テストと終了処理用）。"""
+        if self._task is not None:
+            await asyncio.shield(self._task)
+        return self.current

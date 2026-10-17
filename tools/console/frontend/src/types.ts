@@ -13,6 +13,8 @@ export interface Profile {
   service: string;
   bot_dir: string;
   note: string;
+  /** デプロイで取り込むブランチ（origin/<これ>）。古いバックエンドは返さない */
+  deploy_branch?: string;
   /** 見本の値（YOUR_...）のまま書き換えられていない項目。空でなければ、バックエンドは接続を断る。
    *  古いバックエンドは返さないので、読むときは profiles.ts の unsetFieldsOf を通す */
   unset_fields?: string[];
@@ -132,6 +134,53 @@ export interface DbSummary {
   feedback?: { good: number; bad: number };
   feedback_by_day?: { day: string; good: number; bad: number }[];
   blacklist?: { users: number; blocked: number } | null;
+}
+
+// ---- デプロイ（backend/deploy.py の DeployRecord）
+
+export type DeployStepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type DeployStatus = "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back" | "rollback_failed";
+
+export interface DeployCheck {
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface DeployStep {
+  key: string;
+  title: string;
+  description: string;
+  phase: "deploy" | "rollback";
+  status: DeployStepStatus;
+  started_at: number | null;
+  finished_at: number | null;
+  commands: string[];
+  output: string;
+  checks: DeployCheck[];
+  message: string;
+}
+
+export interface DeployRecord {
+  id: number;
+  profile_id: string;
+  environment: Environment;
+  service: string;
+  branch: string;
+  started_at: number;
+  steps: DeployStep[];
+  status: DeployStatus;
+  finished_at: number | null;
+  before_commit: string | null;
+  target_commit: string | null;
+  after_commit: string | null;
+  commits: { hash: string; subject: string }[];
+  message: string;
+}
+
+export interface DeployResponse {
+  deploy: DeployRecord | null;
+  running: boolean;
 }
 
 // ---- ボットの中の状態（backend/remote_scripts/insights.py の出力）

@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import remote_commands as rc
+
 BACKEND_DIR = Path(__file__).resolve().parent
 PROFILES_PATH = BACKEND_DIR / "profiles.json"
 EXAMPLE_PROFILES_PATH = BACKEND_DIR / "profiles.example.json"
@@ -50,6 +52,9 @@ class Profile:
     bot_dir: str
     journal_sudo: bool
     note: str
+    # デプロイで取り込むブランチ（origin/<これ>）と、ボットの仮想環境の Python（bot_dir からの相対パスか絶対パス）
+    deploy_branch: str = "main"
+    python: str = ".venv/bin/python"
 
     @property
     def unset_fields(self) -> list[str]:
@@ -75,6 +80,7 @@ class Profile:
             "service": self.service,
             "bot_dir": self.bot_dir,
             "note": self.note,
+            "deploy_branch": self.deploy_branch,
             "unset_fields": self.unset_fields,
         }
 
@@ -123,6 +129,17 @@ def _parse_profile(raw: dict) -> Profile:
     if not isinstance(bot_dir, str) or not bot_dir.startswith("/"):
         raise ProfileError(f"プロファイル {profile_id} の bot_dir はサーバー上の絶対パスで書いてください。")
 
+    deploy_branch = raw.get("deploy_branch", "main")
+    python = raw.get("python", ".venv/bin/python")
+    try:
+        rc.check_branch(deploy_branch if isinstance(deploy_branch, str) else "")
+    except ValueError as error:
+        raise ProfileError(f"プロファイル {profile_id} の deploy_branch に使えない文字が含まれています。") from error
+    try:
+        rc.check_python(python if isinstance(python, str) else "")
+    except ValueError as error:
+        raise ProfileError(f"プロファイル {profile_id} の python に使えない文字が含まれています。") from error
+
     return Profile(
         id=profile_id,
         label=str(raw.get("label") or profile_id),
@@ -137,6 +154,8 @@ def _parse_profile(raw: dict) -> Profile:
         bot_dir=bot_dir.rstrip("/") or "/",
         journal_sudo=bool(raw.get("journal_sudo", False)),
         note=str(raw.get("note") or ""),
+        deploy_branch=deploy_branch,
+        python=python,
     )
 
 

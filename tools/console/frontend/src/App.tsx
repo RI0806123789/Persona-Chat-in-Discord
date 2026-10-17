@@ -17,12 +17,24 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
 import { unsetFieldsOf } from "./profiles";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
-import type { ConnectionState, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
+import type { ConnectionState, DeployRecord, DeployStatus, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
 
 const STATUS_INTERVAL_MS = 5000;
 const INSIGHTS_INTERVAL_MS = 60_000; // Discord API の利用制限に配慮して1分ごと（バックエンドも60秒キャッシュする）
 const CONNECTION_INTERVAL_MS = 10000;
 const MAX_SAMPLES = 60; // 5秒 × 60 = 直近5分ぶん
+// デプロイの記録を取り直す間隔（実行中はステップの進み具合を見せるため短く）
+const DEPLOY_RUNNING_INTERVAL_MS = 1000;
+const DEPLOY_IDLE_INTERVAL_MS = 15000;
+
+// デプロイが終わったときの通知
+const DEPLOY_DONE: Record<Exclude<DeployStatus, "running">, { tone: "good" | "critical" | "info"; title: string }> = {
+  succeeded: { tone: "good", title: "デプロイしました" },
+  up_to_date: { tone: "info", title: "最新でした（何も変えていません）" },
+  failed: { tone: "critical", title: "デプロイを止めました（何も変えていません）" },
+  rolled_back: { tone: "critical", title: "デプロイに失敗したため、前の版へ戻しました" },
+  rollback_failed: { tone: "critical", title: "巻き戻しにも失敗しました。手動の対応が必要です" },
+};
 const GO_KEY_TIMEOUT_MS = 1200; // g を押してから次のキーを待つ時間
 
 // M3 のウィンドウサイズの区分（600 未満 = compact、1200 以上 = large）
@@ -95,6 +107,9 @@ function Console() {
   const [insightsError, setInsightsError] = useState<string | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
   const [busyAction, setBusyAction] = useState<ServiceAction | null>(null);
+  const [deploy, setDeploy] = useState<DeployRecord | null>(null);
+  const [deployRunning, setDeployRunning] = useState(false);
+  const deployWasRunning = useRef(false);
 
   // ---- 画面の部品
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -218,6 +233,9 @@ function Console() {
     }
   }, [refreshConnection]);
   usePolling(refreshStatus, STATUS_INTERVAL_MS, connected && autoRefresh);
+  // デプロイの終わりに呼ぶ（ref 経由で、その時点の最新の処理を呼ぶ）
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
 
   const refreshInsights = useCallback(async (force = false) => {
     try {
@@ -250,6 +268,75 @@ function Console() {
   useEffect(() => {
     void refreshOperations();
   }, [refreshOperations, page]);
+
+  // ---- デプロイ
+  const refreshDeploy = useCallback(async () => {
+    try {
+      const result = await api.deploy();
+      setDeploy(result.deploy);
+      setDeployRunning(result.running);
+      // 実行中 → 終わった、に変わったら結果を知らせ、状態を取り直す
+      if (deployWasRunning.current && !result.running && result.deploy && result.deploy.status !== "running") {
+        const done = DEPLOY_DONE[result.deploy.status];
+        notify({ tone: done.tone, title: done.title, detail: result.deploy.message });
+        void refreshStatusRef.current();
+      }
+      deployWasRunning.current = result.running;
+    } catch {
+      // 記録は補助情報なので、取れなくても画面は止めない
+    }
+  }, [notify]);
+  usePolling(refreshDeploy, deployRunning ? DEPLOY_RUNNING_INTERVAL_MS : DEPLOY_IDLE_INTERVAL_MS, connected);
+
+  const runDeploy = useCallback(async () => {
+    try {
+      const result = await api.startDeploy();
+      setDeploy(result.deploy);
+      setDeployRunning(result.running);
+      deployWasRunning.current = result.running;
+      notify({ tone: "info", title: "デプロイを始めました", detail: "サービス操作のページで、1ステップずつ進み具合を確かめられます。" });
+    } catch (error) {
+      notify({ tone: "critical", title: "デプロイを始められませんでした", detail: errorMessage(error) });
+    }
+  }, [notify]);
+
+  const requestDeploy = useCallback(() => {
+    const profile = connection?.profile;
+    if (!profile || deployRunning || busyAction) return;
+    const branch = profile.deploy_branch ?? "main";
+    const isProduction = profile.environment === "production";
+    setConfirm({
+      title: `${branch} の最新をデプロイしますか？`,
+      icon: "rocket",
+      body: (
+        <>
+          <p>次の順に進め、ステップごとに結果を確かめてから次へ進みます。</p>
+          <ol className="dialog-steps">
+            <li>事前確認（ブランチ・未コミットの変更・GitHub の最新）</li>
+            <li>git pull（origin/{branch} を早送りで取り込む）</li>
+            <li>pip install -r requirements.txt（変わったときだけ）</li>
+            <li>sudo systemctl restart {profile.service}</li>
+            <li>ヘルスチェック（「ログイン成功」のログが出るまで）</li>
+          </ol>
+          <p>途中で失敗したら、自動で前の版へ戻します（bot.db は戻しません）。再起動の間、Discord で応答しなくなります。</p>
+          <p className="dialog-target">
+            接続先: <strong>{profile.label}</strong>
+          </p>
+          {isProduction && (
+            <p className="dialog-warning">
+              <Icon name="alert" size={20} filled />
+              本番環境です。Discord の利用者全員に影響します。
+            </p>
+          )}
+        </>
+      ),
+      confirmLabel: "デプロイする",
+      tone: isProduction ? "danger" : "primary",
+      requireText: isProduction ? profile.service : undefined,
+      onConfirm: () => void runDeploy(),
+    });
+    setConfirmOpen(true);
+  }, [connection, deployRunning, busyAction, runDeploy]);
 
   // ---- 接続・切断
   const handleConnect = useCallback(async () => {
@@ -326,6 +413,10 @@ function Console() {
     (action: ServiceAction) => {
       const profile = connection?.profile;
       if (!profile || busyAction) return;
+      if (deployRunning) {
+        notify({ tone: "info", title: "デプロイを実行中です", detail: "終わってから操作してください。" });
+        return;
+      }
       const isProduction = profile.environment === "production";
       setConfirm({
         title: `${profile.service} を${ACTION_LABELS[action]}しますか？`,
@@ -351,7 +442,7 @@ function Console() {
       });
       setConfirmOpen(true);
     },
-    [connection, busyAction, runAction],
+    [connection, busyAction, deployRunning, notify, runAction],
   );
 
   const manualRefresh = useCallback(() => {
@@ -530,6 +621,7 @@ function Console() {
                   onNavigate={navigate}
                   onRequestAction={requestAction}
                   busyAction={busyAction}
+                  deployRunning={deployRunning}
                   onConnect={() => void handleConnect()}
                   selectedProfile={selectedProfile}
                   now={now}
@@ -556,6 +648,11 @@ function Console() {
                   busyAction={busyAction}
                   onRequestAction={requestAction}
                   operations={operations}
+                  git={status?.git ?? null}
+                  deploy={deploy}
+                  deployRunning={deployRunning}
+                  onDeploy={requestDeploy}
+                  now={now}
                 />
               )}
               {page === "data" && (
