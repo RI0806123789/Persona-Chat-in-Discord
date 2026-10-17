@@ -57,6 +57,15 @@ TRACEBACK_LOGS = [
     '  File "/home/ubuntu/Persona-Chat-in-Discord/src/persona_bot/services/gemini_service.py", line 212, in generate',
     "google.genai.errors.ServerError: 503 UNAVAILABLE. The model is overloaded.",
 ]
+# 会話1件ぶんのログ（ボットの usage_graph.log_snapshot と同じ形。応答の2行目以降は journald では別の行になる）。
+# 中身は架空の会話。画面の伏せ字モード（会話の本文を隠す）を確かめるために出す
+CONVERSATIONS = [
+    ("直接会話", "明日の天気って分かる？", "画像添付: 0枚", ["明日は晴れのち曇りみたい。", "夕方から風が強くなるから、上着があると安心だよ。"]),
+    ("直接会話", "おすすめの本を教えて", "画像添付: 0枚", ["最近だと短編集がおすすめ。", "通学の合間にも読みやすいよ。", "気になったら感想を聞かせてね。"]),
+    ("自律行動/独り言", "配信中の独り言", "自動実行", ["今日は誰か来てくれるかな。"]),
+]
+SEPARATOR_LINE = "-" * 124
+
 MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
 
 
@@ -104,17 +113,41 @@ class FakeBot:
         self.log(f"Started {SERVICE_NAME}.service - Persona Chat in Discord bot.", source="systemd", at=moments[0] - 5)
         for message in STARTUP_LOGS:
             self.log(message, at=moments[0] - 4)
-        for moment in moments:
-            self.log(random_log_message(), at=moment)
+        for index, moment in enumerate(moments):
+            if index % 9 == 4:
+                self.log_conversation(at=moment)
+            else:
+                self.log(random_log_message(), at=moment)
+
+    def log_conversation(self, at: float | None = None) -> None:
+        """会話1件ぶんのログを、ボットと同じ形で複数行に分けて出す。"""
+        label, question, attachments, answer = random.choice(CONVERSATIONS)
+        total_in, total_out = random.randint(800, 6000), random.randint(80, 900)
+        lines = [
+            SEPARATOR_LINE,
+            f"User ({label})：{question} / {attachments}",
+            f"Prompt text count：{random.randint(1200, 9000)}",
+            f"Prompt token count：{total_in}",
+            f"Response token count：{total_out}",
+            f"Total token count：{total_in + total_out}",
+            f"AI：{answer[0]}",
+            *answer[1:],
+            SEPARATOR_LINE,
+        ]
+        for line in lines:
+            self.log(line, at=at)
 
     async def live_loop(self, interval: tuple[float, float]) -> None:
         while True:
             await asyncio.sleep(random.uniform(*interval))
             if not self.active:
                 continue
-            if random.random() < 0.04:
+            roll = random.random()
+            if roll < 0.04:
                 for line in TRACEBACK_LOGS:
                     self.log(line, priority=3)
+            elif roll < 0.16:
+                self.log_conversation()
             else:
                 self.log(random_log_message())
 

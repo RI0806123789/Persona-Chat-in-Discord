@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import remote_commands as rc
+from local_repo import local_schema_version
 from profiles import ProfileError, load_profiles
 from ssh_session import NotConnectedError, SshError, SshSession
 
@@ -268,10 +269,7 @@ async def control_service(action: str) -> dict:
     if ok:
         message = f"{profile.service} を{label}しました。"
     elif "password is required" in result.stderr or "a terminal is required" in result.stderr:
-        message = (
-            "sudo にパスワードが必要なため実行できませんでした。サーバー側で sudoers に NOPASSWD を設定するか、"
-            "SSH で手動実行してください。"
-        )
+        message = _sudo_password_message(profile.username, profile.service)
     else:
         message = f"{label}に失敗しました: {_last_line(result.stderr) or f'終了コード {result.exit_status}'}"
 
@@ -335,9 +333,12 @@ async def get_db_summary() -> dict:
     if result.exit_status != 0:
         raise SshError(f"DB の集計に失敗しました: {_last_line(result.stderr) or result.exit_status}")
     try:
-        return json.loads(result.stdout.strip().splitlines()[-1])
+        summary = json.loads(result.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError) as error:
         raise SshError("DB の集計結果を読み取れませんでした。") from error
+    # 手元のリポジトリの最新の版と比べ、新しい版がまだデプロイされていないかを画面に出す
+    summary["latest_schema_version"] = local_schema_version()
+    return summary
 
 
 # ---------------------------------------------------------------- 補助
@@ -346,6 +347,17 @@ async def get_db_summary() -> dict:
 def _last_line(text: str) -> str:
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     return lines[-1] if lines else ""
+
+
+def _sudo_password_message(username: str | None, service: str) -> str:
+    """sudo にパスワードが要る環境向けの案内。許可するのは起動・停止・再起動の3つだけにする例を示す。"""
+    user = username or "<ユーザー名>"
+    commands = ", ".join(f"/usr/bin/systemctl {action} {service}" for action in rc.SERVICE_ACTIONS)
+    return (
+        "sudo にパスワードが必要なため実行できませんでした。サーバーで sudo visudo -f /etc/sudoers.d/persona-bot-console を開き、"
+        f"「{user} ALL=(root) NOPASSWD: {commands}」の1行を書くと、この3つの操作だけをパスワードなしで許可できます"
+        "（systemctl の場所は which systemctl で確かめてください）。"
+    )
 
 
 def _journal_error_message(stderr: str) -> str:
