@@ -65,11 +65,16 @@ def register_commands(
         bot_member = guild.me if guild is not None else None
         if bot_member is not None:
             permissions = voice_channel.permissions_for(bot_member)
-            if not permissions.connect:
+            missing_permissions = [
+                name for name, allowed in (("接続", permissions.connect), ("発言", permissions.speak))
+                if not allowed
+            ]
+            if missing_permissions:
+                permission_names = "・".join(f"「{name}」" for name in missing_permissions)
                 await interaction.response.send_message(
-                    f"⚠️ {voice_channel.name} に接続する権限がボットにありません。\n"
+                    f"⚠️ {voice_channel.name} でボットに{permission_names}の権限がありません。\n"
                     "サーバー設定 →「連携サービス」か、そのボイスチャンネルの権限設定で、"
-                    "ボットのロールに「接続」を許可してください"
+                    f"ボットのロールに{permission_names}を許可してください"
                     "（チャンネル個別の権限で拒否されている場合もあります）。"
                 )
                 return

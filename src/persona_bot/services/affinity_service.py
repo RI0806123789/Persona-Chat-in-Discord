@@ -25,6 +25,12 @@ _AFFINITY_TAG_PATTERN = re.compile(
     r"\[V:\s*([+-]?\d+)\s*,\s*A:\s*([+-]?\d+)\s*\]",
     re.IGNORECASE,
 )
+# 読み上げ用。一般の角括弧表記まで消さないよう、感情名と数値タグだけを扱う。
+_SPEECH_EMOTION_TAG_PATTERN = re.compile(
+    r"\[\s*(?:(?:happy|sad|angry|neutral|excited|calm|surprised|scared)"
+    r"|(?:arousal|valence|affinity)\s*:\s*[+-]?\d+)\s*\]",
+    re.IGNORECASE,
+)
 
 
 def extract_affinity_changes(text: str) -> tuple[str, tuple[int, int] | None]:
@@ -48,6 +54,11 @@ def strip_affinity_tag(text: str) -> str:
     親密度を更新しない。ペルソナが指示に反してタグを付けた場合の保険として使う。
     """
     return _AFFINITY_TAG_PATTERN.sub("", text).strip()
+
+
+def strip_speech_tags(text: str) -> str:
+    """読み上げ前に感情名・親密度・感情変化の内部タグを取り除く。"""
+    return _SPEECH_EMOTION_TAG_PATTERN.sub("", strip_affinity_tag(text)).strip()
 
 
 class AffinityService:

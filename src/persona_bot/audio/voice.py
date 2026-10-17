@@ -48,6 +48,7 @@ from persona_bot.config.constants import (
     VOICE_PROFILES,
 )
 from persona_bot.audio.voice_dsp import apply_equalizer, needs_equalizer, resolve_profile
+from persona_bot.services.affinity_service import strip_speech_tags
 
 # 読み上げに不向きな要素を落とすためのパターン群。
 # 音声で聞いて意味をなさないもの（URL・記号・コード）は読み上げる価値がないうえ、
@@ -99,7 +100,8 @@ def build_speech_text(response_text: str) -> str:
     「声で聞いて分かる部分」だけを残す。長すぎる返信は途中で切り、
     ボイスチャンネルを何分も占有しないようにする。
     """
-    text = _CODE_BLOCK_PATTERN.sub(" ", response_text)
+    text = strip_speech_tags(response_text)
+    text = _CODE_BLOCK_PATTERN.sub(" ", text)
     text = _INLINE_CODE_PATTERN.sub(" ", text)
     text = _URL_PATTERN.sub(" ", text)
     text = _CUSTOM_EMOJI_PATTERN.sub(" ", text)

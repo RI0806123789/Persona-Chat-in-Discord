@@ -1,4 +1,4 @@
-"""/join が同じチャンネルへの再接続を避け、接続の待ち時間を明示することを確かめる（#67）。"""
+"""/join の権限確認・接続の再利用・接続待ち時間を確かめる（#67・#87）。"""
 
 from pathlib import Path
 import sys
@@ -41,7 +41,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
     def make_channel(channel_id: int) -> Mock:
         channel = Mock(spec=discord.VoiceChannel, id=channel_id)
         channel.name = f"架空の通話{channel_id}"
-        channel.permissions_for.return_value = SimpleNamespace(connect=True)
+        channel.permissions_for.return_value = SimpleNamespace(connect=True, speak=True)
         channel.connect = AsyncMock()
         return channel
 
@@ -85,6 +85,29 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         reply = await self.join()
         self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
         self.assertIn("に接続しました", reply)
+
+    async def test_missing_permissions_reject_before_changing_existing_connection(self) -> None:
+        for connect, speak in ((False, True), (True, False), (False, False)):
+            with self.subTest(connect=connect, speak=speak):
+                self.interaction.response.send_message.reset_mock()
+                self.channel.permissions_for.return_value = SimpleNamespace(connect=connect, speak=speak)
+                current = self.make_voice_client(self.make_channel(30))
+                self.guild.voice_client = current
+
+                await self.commands["join"](self.interaction)
+
+                self.channel.permissions_for.assert_called_with(self.guild.me)
+                self.interaction.response.send_message.assert_awaited_once()
+                reply = self.interaction.response.send_message.call_args.args[0]
+                self.assertIn(self.channel.name, reply)
+                self.assertEqual("「接続」" in reply, not connect)
+                self.assertEqual("「発言」" in reply, not speak)
+                self.assertIn("権限", reply)
+                self.interaction.response.defer.assert_not_awaited()
+                self.autonomous.stop_session.assert_not_awaited()
+                current.disconnect.assert_not_awaited()
+                self.channel.connect.assert_not_awaited()
+                self.interaction.followup.send.assert_not_awaited()
 
 
 if __name__ == "__main__":
