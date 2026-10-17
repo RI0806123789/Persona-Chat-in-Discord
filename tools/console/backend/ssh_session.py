@@ -273,7 +273,7 @@ class SshSession:
 def _describe_connect_error(error: Exception, profile: Profile) -> str:
     """接続エラーを「何が起きて、どうすればよいか」の日本語にする。"""
     if isinstance(error, SshError):
-        return str(error)
+        return "SSH 接続に失敗しました。設定と接続先の状態を確認してから再試行してください。"
     if isinstance(error, asyncssh.HostKeyNotVerifiable):
         return (
             "サーバーのホスト鍵を確認できませんでした（known_hosts に未登録、または鍵が変わっています）。"
