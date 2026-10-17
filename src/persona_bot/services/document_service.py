@@ -109,27 +109,27 @@ class DocumentService:
         これがないと、処理中に Bot が落ちたタスクは二度と拾われず放置される。
         """
         now_iso = datetime.now(timezone.utc).isoformat()
-        recovered = await asyncio.to_thread(self._db.queue_recover_stuck, now_iso)
+        recovered = await run_in_thread(self._db.queue_recover_stuck, now_iso)
         if recovered:
             print(f"文書ワーカー: 中断された processing タスク {recovered} 件を pending に戻しました。")
 
     async def _enqueue(self, task: dict[str, Any]) -> None:
-        await asyncio.to_thread(self._db.queue_upsert_task, task)
+        await run_in_thread(self._db.queue_upsert_task, task)
 
     async def _update_task(self, task_id: str, **updates: Any) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
-        await asyncio.to_thread(self._db.queue_update_task, task_id, updates, now_iso)
+        await run_in_thread(self._db.queue_update_task, task_id, updates, now_iso)
         # 完了/失敗タスクが際限なく溜まらないよう、終了時に古いものから削除する
         if updates.get("status") in _TERMINAL_STATUSES:
             try:
-                await asyncio.to_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
+                await run_in_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
             except Exception as error:
                 # 終端状態の保存は成功済み。掃除の失敗で二重返信やfailedへの転落を起こさない。
                 print(f"文書ワーカー: 終了タスクの掃除に失敗しました: {error}")
 
     async def _claim_next_task(self) -> dict[str, Any] | None:
         now_iso = datetime.now(timezone.utc).isoformat()
-        return await asyncio.to_thread(self._db.queue_claim_next_pending, now_iso)
+        return await run_in_thread(self._db.queue_claim_next_pending, now_iso)
 
     async def _process_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("task_id", ""))

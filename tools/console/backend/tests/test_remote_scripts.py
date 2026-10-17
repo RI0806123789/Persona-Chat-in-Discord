@@ -256,6 +256,71 @@ subprocess.run = _fake_run
 
 
 class DbSummaryScriptTests(unittest.TestCase):
+    def summarize(self, root):
+        completed = run_script(rc.DB_SUMMARY_SCRIPT, [str(root / "bot.db"), str(root / "blacklist.json")])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout.strip().splitlines()[-1])
+
+    def test_missing_tables_keep_other_counts_and_never_read_conversation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            con = sqlite3.connect(root / "bot.db")
+            con.execute('CREATE TABLE "fictional\""table" (content TEXT)')
+            con.execute('INSERT INTO "fictional\""table" VALUES (?)', ("架空の秘密の会話",))
+            con.execute("CREATE TABLE reminders (status TEXT)")
+            con.execute("INSERT INTO reminders VALUES ('pending')")
+            con.commit()
+            con.close()
+            before = (root / "bot.db").read_bytes()
+            (root / "blacklist.json").write_text(json.dumps({"11": {"blocked": True}, "12": {"blocked": False}}), encoding="utf-8")
+            data = self.summarize(root)
+            self.assertEqual(data["tables"]['fictional"table'], 1)
+            self.assertEqual(data["reminders_by_status"], {"pending": 1})
+            self.assertIsNone(data["queue_by_status"])
+            self.assertIsNone(data["feedback"])
+            self.assertEqual(data["blacklist"], {"users": 2, "blocked": 1})
+            self.assertTrue(any("文書キュー" in error for error in data["errors"]))
+            self.assertNotIn("架空の秘密の会話", json.dumps(data, ensure_ascii=False))
+            self.assertEqual((root / "bot.db").read_bytes(), before)
+
+    def test_missing_database_and_broken_blacklist_are_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "blacklist.json").write_text("[]", encoding="utf-8")
+            data = self.summarize(root)
+            self.assertFalse(data["exists"])
+            self.assertIsNone(data["blacklist"])
+            self.assertTrue(any("blacklist.json" in error for error in data["errors"]))
+            self.assertFalse((root / "bot.db").exists())
+
+    def test_corrupt_database_keeps_blacklist_counts_without_error_details(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bot.db").write_bytes(b"fictional-invalid-database")
+            (root / "blacklist.json").write_text('{"11":{"blocked":true}}', encoding="utf-8")
+            data = self.summarize(root)
+            self.assertEqual(data["blacklist"], {"users": 1, "blocked": 1})
+            self.assertTrue(any("bot.db を読み取れません" in error for error in data["errors"]))
+            self.assertFalse(any("file is not a database" in error for error in data["errors"]))
+
+    def test_daily_feedback_excludes_future_and_old_days_at_jst_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            con = sqlite3.connect(root / "bot.db")
+            con.execute("CREATE TABLE feedback (rating INTEGER, created_at TEXT)")
+            now_jst = datetime.now(timezone.utc) + timedelta(hours=9)
+            today = now_jst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=9)
+            rows = [(1, today), (-1, today - timedelta(seconds=1)),
+                    (1, today - timedelta(days=6)), (-1, today - timedelta(days=6, seconds=1)),
+                    (1, today + timedelta(days=1)), (1, today - timedelta(days=20))]
+            con.executemany("INSERT INTO feedback VALUES (?, ?)", [(rating, at.isoformat()) for rating, at in rows])
+            con.commit()
+            con.close()
+            data = self.summarize(root)
+            self.assertEqual(sum(day["good"] + day["bad"] for day in data["feedback_by_day"]), 3)
+            today_key = now_jst.strftime("%Y-%m-%d")
+            self.assertEqual(next(day for day in data["feedback_by_day"] if day["day"] == today_key)["good"], 1)
+
     def test_counts_and_feedback_by_day(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "bot.db"

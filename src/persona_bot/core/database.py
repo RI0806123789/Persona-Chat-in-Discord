@@ -267,7 +267,7 @@ def _load_legacy_json_object(path: Path) -> dict[str, Any]:
 class Database:
     """memory/bot.db への読み書きを一手に引き受けるクラス。
 
-    サービス各所が asyncio.to_thread 経由（＝別スレッド）で呼ぶため、
+    サービス各所が run_in_thread 経由（＝別スレッド）で呼ぶため、
     check_same_thread=False で接続し、自前の threading.Lock で直列化する。
     書き込みは `with self._conn:` のトランザクションで原子的に行う
     （途中でクラッシュしてもファイルが壊れない — 旧 JSON 方式にはなかった利点）。

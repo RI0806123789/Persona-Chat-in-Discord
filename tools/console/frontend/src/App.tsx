@@ -121,9 +121,11 @@ function Console() {
   const filterInputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLElement>(null);
   const wasConnected = useRef(false);
+  const dataConnectionKey = useRef("");
 
   const connected = connection?.connected ?? false;
-  const stream = useLogStream(connected, 300, `${connection?.profile?.id ?? ""}:${connection?.connected_at ?? ""}`);
+  const connectionKey = `${connection?.profile?.id ?? ""}:${connection?.connected_at ?? ""}`;
+  const stream = useLogStream(connected, 300, connectionKey);
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) ?? null;
   const pageDef = PAGES.find((p) => p.id === page) ?? PAGES[0];
   const production = connected && connection?.profile?.environment === "production";
@@ -172,15 +174,20 @@ function Console() {
   // ---- 接続状態
   const applyConnection = useCallback(
     (state: ConnectionState) => {
+      const nextKey = `${state.profile?.id ?? ""}:${state.connected_at ?? ""}`;
       if (wasConnected.current && !state.connected && state.last_error) {
         notify({ tone: "critical", title: "SSH 接続が切れました", detail: state.last_error });
       }
-      if (!state.connected) {
+      if (!state.connected || dataConnectionKey.current !== nextKey) {
         setStatus(null);
         setSamples([]);
         setInsights(null);
         setInsightsFetchedAt(null);
+        setRefreshing(false);
+        setStatusError(null);
+        setInsightsError(null);
       }
+      dataConnectionKey.current = nextKey;
       wasConnected.current = state.connected;
       setConnection(state);
     },
@@ -219,35 +226,41 @@ function Console() {
 
   // ---- 状態の定期取得
   const refreshStatus = useCallback(async () => {
+    const key = dataConnectionKey.current;
     setRefreshing(true);
     try {
       const next = await api.status();
+      if (key !== dataConnectionKey.current) return;
       setStatus(next);
       setStatusError(null);
       setSamples((previous) => [...previous, toSample(next)].slice(-MAX_SAMPLES));
     } catch (error) {
+      if (key !== dataConnectionKey.current) return;
       setStatusError(errorMessage(error));
       if (error instanceof ApiError && (error.status === 409 || error.status === 502)) void refreshConnection();
     } finally {
-      setRefreshing(false);
+      if (key === dataConnectionKey.current) setRefreshing(false);
     }
   }, [refreshConnection]);
-  usePolling(refreshStatus, STATUS_INTERVAL_MS, connected && autoRefresh);
+  usePolling(refreshStatus, STATUS_INTERVAL_MS, connected && autoRefresh, connectionKey);
   // デプロイの終わりに呼ぶ（ref 経由で、その時点の最新の処理を呼ぶ）
   const refreshStatusRef = useRef(refreshStatus);
   refreshStatusRef.current = refreshStatus;
 
   const refreshInsights = useCallback(async (force = false) => {
+    const key = dataConnectionKey.current;
     try {
       const result = await api.insights(force);
+      if (key !== dataConnectionKey.current) return;
       setInsights(result.data);
       setInsightsFetchedAt(result.fetched_at);
       setInsightsError(null);
     } catch (error) {
+      if (key !== dataConnectionKey.current) return;
       setInsightsError(errorMessage(error));
     }
   }, []);
-  usePolling(refreshInsights, INSIGHTS_INTERVAL_MS, connected && autoRefresh);
+  usePolling(refreshInsights, INSIGHTS_INTERVAL_MS, connected && autoRefresh, connectionKey);
 
   useEffect(() => {
     // 自動更新を切っていても、接続した直後に1回は取る
@@ -256,7 +269,7 @@ function Console() {
       void refreshInsights();
     }
     // 接続が変わったときだけ動かす（自動更新の切り替えでは取り直さない）
-  }, [connected]);
+  }, [connectionKey]);
 
   const refreshOperations = useCallback(async () => {
     try {
@@ -388,10 +401,10 @@ function Console() {
 
   // ---- サービス操作
   const runAction = useCallback(
-    async (action: ServiceAction) => {
+    async (action: ServiceAction, target: { profile_id: string; connected_at: number }) => {
       setBusyAction(action);
       try {
-        const operation = await api.service(action);
+        const operation = await api.service(action, target);
         notify(
           operation.ok
             ? { tone: "good", title: operation.message }
@@ -412,7 +425,8 @@ function Console() {
   const requestAction = useCallback(
     (action: ServiceAction) => {
       const profile = connection?.profile;
-      if (!profile || busyAction) return;
+      if (!profile || busyAction || connection?.connected_at == null) return;
+      const target = { profile_id: profile.id, connected_at: connection.connected_at };
       if (deployRunning) {
         notify({ tone: "info", title: "デプロイを実行中です", detail: "終わってから操作してください。" });
         return;
@@ -438,7 +452,7 @@ function Console() {
         confirmLabel: `${ACTION_LABELS[action]}する`,
         tone: action === "stop" || (isProduction && action === "restart") ? "danger" : "primary",
         requireText: action === "stop" ? profile.service : undefined,
-        onConfirm: () => void runAction(action),
+        onConfirm: () => void runAction(action, target),
       });
       setConfirmOpen(true);
     },
@@ -662,6 +676,7 @@ function Console() {
                   onConnect={() => void handleConnect()}
                   selectedProfile={selectedProfile}
                   refreshToken={refreshToken}
+                  connectionKey={connectionKey}
                 />
               )}
               {page === "guilds" && (

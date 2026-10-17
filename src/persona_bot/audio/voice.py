@@ -32,7 +32,7 @@ import miniaudio
 import numpy as np
 from gtts import gTTS
 
-from persona_bot.core.background import spawn
+from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.constants import (
     EDGE_TTS_VOICE_FEMALE,
     PCM_INT16_MAX,
@@ -163,13 +163,13 @@ async def _fetch_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
         _edge_tts_failing = True
 
     # 退避時は話者・高さ・速さを再現できないためキャラ差は失われる（音色だけは掛かる）。
-    return await asyncio.to_thread(_fetch_gtts_mp3, text)
+    return await run_in_thread(_fetch_gtts_mp3, text)
 
 
 def _decode_to_pcm(mp3_bytes: bytes, profile: Mapping[str, Any]) -> bytes:
     """mp3 を Discord へそのまま送出できる生 PCM に変換し、音色を適用する。
 
-    デコードも EQ も同期の CPU 処理のため、呼び出し側から `asyncio.to_thread` で
+    デコードも EQ も同期の CPU 処理のため、呼び出し側から `run_in_thread` で
     別スレッドに逃がして使う（イベントループを止めるとボット全体の応答が固まる）。
     """
     if not needs_equalizer(profile):
@@ -207,7 +207,7 @@ async def _synthesize_pcm(text: str, profile: Mapping[str, Any]) -> bytes:
     CPU 処理（デコードと EQ）は別スレッドで実行する。
     """
     mp3_bytes = await _fetch_mp3(text, profile)
-    return await asyncio.to_thread(_decode_to_pcm, mp3_bytes, profile)
+    return await run_in_thread(_decode_to_pcm, mp3_bytes, profile)
 
 
 async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:

@@ -38,7 +38,6 @@ FEEDBACK_REACTION_COOLDOWN_SECONDS 以内に同じチャンネルへ付与して
 （間引いた分がそのままデータの損失にはならない）。
 """
 
-import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -47,7 +46,7 @@ from typing import Any
 
 import discord
 
-from persona_bot.core.background import spawn
+from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.choices import MODEL_DISPLAY_NAMES, PERSONA_DISPLAY_NAMES
 from persona_bot.config.constants import (
     FEEDBACK_ENABLED,
@@ -245,7 +244,7 @@ class FeedbackService:
             if member is not None and member.bot:
                 return
 
-            await asyncio.to_thread(
+            await run_in_thread(
                 self._db.feedback_record,
                 message_id=int(payload.message_id),
                 user_id=str(payload.user_id),
@@ -276,7 +275,7 @@ class FeedbackService:
         if not FEEDBACK_ENABLED:
             return
         try:
-            await asyncio.to_thread(self._db.feedback_prune, FEEDBACK_MAX_STORED_ROWS)
+            await run_in_thread(self._db.feedback_prune, FEEDBACK_MAX_STORED_ROWS)
         except Exception as error:
             print(f"フィードバック: 古い記録の整理に失敗しました: {error}")
 
@@ -298,7 +297,7 @@ class FeedbackService:
             # 外した絵文字に対応する評価だけを消す。👍👎 の両方を押している
             # ユーザーが片方だけ外したときに、残っている側の記録まで
             # 消えてしまわないようにするため（feedback_delete の注記を参照）。
-            await asyncio.to_thread(
+            await run_in_thread(
                 self._db.feedback_delete,
                 int(payload.message_id),
                 str(payload.user_id),
@@ -336,7 +335,7 @@ class FeedbackService:
         （集計値だけを返す）。閲覧は管理者専用・エフェメラルを前提とする。
         """
         try:
-            rows = await asyncio.to_thread(self._db.feedback_summary, int(guild_id))
+            rows = await run_in_thread(self._db.feedback_summary, int(guild_id))
         except Exception as error:
             print(f"フィードバック: 集計の取得に失敗しました: {error}")
             return "フィードバックの集計に失敗しました。"

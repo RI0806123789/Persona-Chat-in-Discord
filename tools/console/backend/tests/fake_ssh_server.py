@@ -400,8 +400,8 @@ def insights_output(bot: FakeBot) -> str:
             "gateway_connects": 1, "gateway_resumes": 14, "gateway_invalidated": 0, "heartbeat_blocked": 0,
             "exceptions": 2,
             "autonomous_events": [
-                {"at": now - 7400, "text": "配信を終了しました（理由: コメントが30分途絶えたため）"},
-                {"at": now - 740, "text": "ステージ「雑談ステージ」で配信を開始しました"},
+                {"at": now - 7400, "text": "配信を終了しました"},
+                {"at": now - 740, "text": "配信を開始しました"},
             ],
         },
         "generated_at": now,
