@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { logStreamUrl } from "./api";
+import { appendLogEntries } from "./logs";
 import type { LogEntry } from "./types";
 
 /** enabled の間、callback を intervalMs ごとに呼ぶ（前の呼び出しが終わってから次を予約する）。 */
@@ -117,7 +118,6 @@ export function useModalFocus(open: boolean, containerRef: RefObject<HTMLElement
   }, [open, containerRef, initialFocusRef]);
 }
 
-const MAX_LOG_ENTRIES = 3000;
 const FLUSH_INTERVAL_MS = 120;
 const RECONNECT_DELAY_MS = 4000;
 
@@ -142,7 +142,7 @@ type StreamMessage =
  * journalctl -f をバックエンド経由（WebSocket）で受け取り続ける。
  * 1件ごとに再描画すると重いので、FLUSH_INTERVAL_MS ごとにまとめて反映する。
  */
-export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
+export function useLogStream(enabled: boolean, initialLines = 300, connectionKey = ""): LogStream {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<StreamStatus>("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -151,6 +151,7 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
   const [reconnectToken, setReconnectToken] = useState(0);
   const bufferRef = useRef<LogEntry[]>([]); // 次の反映で追加する分
   const heldRef = useRef<LogEntry[]>([]); // 一時停止中にたまった分
+  const heldCountRef = useRef(0); // 古い行を落としても、新着件数は数え続ける
   const pausedRef = useRef(false);
 
   useEffect(() => {
@@ -162,6 +163,7 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
     let retryTimer: number | undefined;
     bufferRef.current = [];
     heldRef.current = [];
+    heldCountRef.current = 0;
     setEntries([]);
     setPendingCount(0);
     setStatus("connecting");
@@ -172,9 +174,15 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
       if (!disposed) setStatus("live");
     };
     socket.onmessage = (event: MessageEvent<string>) => {
+      if (disposed) return;
       const data = JSON.parse(event.data) as StreamMessage;
       if (data.type === "entry") {
-        (pausedRef.current ? heldRef.current : bufferRef.current).push(data.entry);
+        if (pausedRef.current) {
+          heldRef.current = appendLogEntries(heldRef.current, [data.entry]);
+          heldCountRef.current += 1;
+        } else {
+          bufferRef.current = appendLogEntries(bufferRef.current, [data.entry]);
+        }
       } else {
         setStatus(data.type === "error" ? "error" : "ended");
         setMessage(data.message);
@@ -190,12 +198,9 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
       if (bufferRef.current.length > 0) {
         const batch = bufferRef.current;
         bufferRef.current = [];
-        setEntries((previous) => {
-          const merged = previous.concat(batch);
-          return merged.length > MAX_LOG_ENTRIES ? merged.slice(-MAX_LOG_ENTRIES) : merged;
-        });
+        setEntries((previous) => appendLogEntries(previous, batch));
       }
-      if (pausedRef.current) setPendingCount(heldRef.current.length);
+      if (pausedRef.current) setPendingCount(heldCountRef.current);
     }, FLUSH_INTERVAL_MS);
 
     return () => {
@@ -204,14 +209,20 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
       window.clearTimeout(retryTimer);
       socket.close();
     };
-  }, [enabled, initialLines, reconnectToken]);
+  }, [enabled, initialLines, reconnectToken, connectionKey]);
 
   const setPaused = useCallback((next: boolean) => {
+    if (next && !pausedRef.current) {
+      heldRef.current = appendLogEntries(heldRef.current, bufferRef.current);
+      heldCountRef.current += bufferRef.current.length;
+      bufferRef.current = [];
+    }
     pausedRef.current = next;
     setPausedState(next);
     if (!next) {
-      bufferRef.current.push(...heldRef.current);
+      bufferRef.current = appendLogEntries(bufferRef.current, heldRef.current);
       heldRef.current = [];
+      heldCountRef.current = 0;
       setPendingCount(0);
     }
   }, []);
@@ -219,6 +230,7 @@ export function useLogStream(enabled: boolean, initialLines = 300): LogStream {
   const clear = useCallback(() => {
     bufferRef.current = [];
     heldRef.current = [];
+    heldCountRef.current = 0;
     setPendingCount(0);
     setEntries([]);
   }, []);

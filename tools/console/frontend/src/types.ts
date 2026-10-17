@@ -203,6 +203,7 @@ export interface GuildInsight {
   members: number | null;
   online: number | null;
   voice_channel: string | null;
+  voice_error?: string | null;
   settings: GuildSettingsView;
 }
 

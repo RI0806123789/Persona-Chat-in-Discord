@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 from pathlib import Path
@@ -34,7 +35,7 @@ MAX_LOG_LINES = 1000
 
 # systemd が「値なし」を表すときに使う数値（2^64 - 1）
 _SYSTEMD_UNSET = 18446744073709551615
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9@._-]+$")
+_SAFE_NAME = re.compile(r"[A-Za-z0-9@._][A-Za-z0-9@._-]*")
 
 # 疎通確認（何もしないコマンド。往復時間の計測に使う）
 PING_COMMAND = "true"
@@ -53,7 +54,7 @@ RESOURCES_COMMAND = (
 
 
 def _check_safe_name(value: str) -> str:
-    if not _SAFE_NAME.match(value):
+    if not _SAFE_NAME.fullmatch(value):
         raise ValueError(f"使えない文字を含む名前です: {value!r}")
     return value
 
@@ -195,9 +196,10 @@ def journal_since_command(service: str, since: int, *, use_sudo: bool) -> str:
     return f"{prefix}journalctl -u {_check_safe_name(service)} --since @{int(since)} -o json --no-pager"
 
 
-def insights_command(bot_dir: str, service: str) -> str:
+def insights_command(bot_dir: str, service: str, *, use_sudo: bool = False) -> str:
     """remote_scripts/insights.py（INSIGHTS_SCRIPT）を標準入力から python3 に渡して実行する。"""
-    return f"python3 - --insights {shlex.quote(bot_dir)} {_check_safe_name(service)}"
+    sudo_flag = " --journal-sudo" if use_sudo else ""
+    return f"python3 - --insights {shlex.quote(bot_dir)} {_check_safe_name(service)}{sudo_flag}"
 
 
 def db_summary_command(bot_dir: str) -> str:
@@ -285,7 +287,15 @@ def _to_int(value: object) -> int | None:
         number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
-    return None if number == _SYSTEMD_UNSET else number
+    return number if 0 <= number < _SYSTEMD_UNSET else None
+
+
+def _to_float(value: str) -> float | None:
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def parse_key_values(text: str) -> dict[str, str]:
@@ -337,16 +347,18 @@ def parse_resources(text: str) -> dict:
         "disk": None,
     }
     try:
-        result["uptime_seconds"] = float(lines[0].split()[0])
+        result["uptime_seconds"] = _to_float(lines[0].split()[0])
     except (IndexError, ValueError):
         pass
     try:
         load = lines[1].split()
-        result["load"] = [float(load[0]), float(load[1]), float(load[2])]
+        values = [_to_float(load[index]) for index in range(3)]
+        if all(value is not None for value in values):
+            result["load"] = values
     except (IndexError, ValueError):
         pass
     try:
-        result["cpu_count"] = int(lines[2])
+        result["cpu_count"] = _to_int(lines[2]) or None
     except (IndexError, ValueError):
         pass
 
@@ -390,7 +402,7 @@ def parse_journal_line(line: str) -> dict | None:
     """journalctl -o json の1行を読む。JSON でない行（区切りの表示など）は None。"""
     try:
         data = json.loads(line)
-    except json.JSONDecodeError:
+    except ValueError:
         return None
     if not isinstance(data, dict):
         return None

@@ -24,7 +24,7 @@ EXAMPLE_PROFILES_PATH = BACKEND_DIR / "profiles.example.json"
 ENVIRONMENTS = ("development", "production")
 
 # サービス名に使ってよい文字（シェルに渡すため、記号を厳しく制限する）
-_SAFE_SERVICE_NAME = re.compile(r"^[A-Za-z0-9@._-]+$")
+_SAFE_SERVICE_NAME = re.compile(r"[A-Za-z0-9@._][A-Za-z0-9@._-]*")
 
 # 見本（profiles.example.json）で「書き換えてください」の印にしている値。.env.example の YOUR_GEMINI_API_KEY と同じ流儀。
 # ★ 見本の仮の値のまま接続させないこと: 仮のホスト名を DNS が偶然引けると、知らないサーバーへつなぎに行ってしまう
@@ -114,7 +114,7 @@ def _parse_profile(raw: dict) -> Profile:
         raise ProfileError(f"プロファイル {profile_id} の host が空です。")
 
     port = raw.get("port")
-    if port is not None and (not isinstance(port, int) or not 1 <= port <= 65535):
+    if port is not None and (type(port) is not int or not 1 <= port <= 65535):
         raise ProfileError(f"プロファイル {profile_id} の port は 1〜65535 の数値か null にしてください。")
 
     environment = raw.get("environment", "production")
@@ -122,11 +122,11 @@ def _parse_profile(raw: dict) -> Profile:
         raise ProfileError(f"プロファイル {profile_id} の environment は development か production にしてください。")
 
     service = raw.get("service", "bot")
-    if not isinstance(service, str) or not _SAFE_SERVICE_NAME.match(service):
+    if not isinstance(service, str) or not _SAFE_SERVICE_NAME.fullmatch(service):
         raise ProfileError(f"プロファイル {profile_id} の service に使えない文字が含まれています。")
 
     bot_dir = raw.get("bot_dir", "/home/ubuntu/Persona-Chat-in-Discord")
-    if not isinstance(bot_dir, str) or not bot_dir.startswith("/"):
+    if not isinstance(bot_dir, str) or not bot_dir.startswith("/") or "\x00" in bot_dir:
         raise ProfileError(f"プロファイル {profile_id} の bot_dir はサーバー上の絶対パスで書いてください。")
 
     deploy_branch = raw.get("deploy_branch", "main")
@@ -139,6 +139,10 @@ def _parse_profile(raw: dict) -> Profile:
         rc.check_python(python if isinstance(python, str) else "")
     except ValueError as error:
         raise ProfileError(f"プロファイル {profile_id} の python に使えない文字が含まれています。") from error
+
+    for key in ("use_ssh_config", "journal_sudo"):
+        if key in raw and type(raw[key]) is not bool:
+            raise ProfileError(f"プロファイル {profile_id} の {key} は true か false で書いてください。")
 
     return Profile(
         id=profile_id,

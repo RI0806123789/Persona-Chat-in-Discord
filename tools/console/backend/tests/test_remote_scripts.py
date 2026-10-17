@@ -86,8 +86,36 @@ class InsightsScriptTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def insights(self, env: dict | None = None) -> dict:
-        completed = run_script(rc.INSIGHTS_SCRIPT, ["--insights", str(self.root), "bot"], env={**self.offline_env, **(env or {})})
+    def insights(self, env: dict | None = None, *, responses=None, journal=None, journal_code=0, sudo=False) -> dict:
+        # 子プロセス内で外部境界だけを差し替え、スクリプト全体を実行する
+        prelude = ""
+        if responses is not None or journal is not None:
+            prelude = f'''
+import io, json, subprocess, urllib.request, urllib.error, urllib.parse
+_responses = {responses!r}
+_journal = {journal!r}
+def _fake_urlopen(request, **kwargs):
+    path = urllib.parse.urlsplit(request.full_url).path.removeprefix('/api/v10')
+    value = (_responses or {{}}).get(path, 404)
+    if isinstance(value, int):
+        raise urllib.error.HTTPError(request.full_url, value, 'test', {{}}, None)
+    return io.BytesIO(json.dumps(value).encode())
+def _fake_run(command, **kwargs):
+    if 'journalctl' in command:
+        assert ('sudo' in command) == {sudo!r}
+        values = _journal or []
+        if '-g' in command:
+            values = [row for row in values if isinstance(row, dict) and str(row.get('MESSAGE', '')).startswith('User (')][-1:]
+        output = '\\n'.join(json.dumps(row) for row in values)
+        return subprocess.CompletedProcess(command, {journal_code!r}, output, 'private journal detail')
+    if command[0] == 'systemctl':
+        return subprocess.CompletedProcess(command, 0, '', '')
+    raise AssertionError('許可していない外部コマンド')
+urllib.request.urlopen = _fake_urlopen
+subprocess.run = _fake_run
+'''
+        args = ["--insights", str(self.root), "bot"] + (["--journal-sudo"] if sudo else [])
+        completed = run_script(prelude + rc.INSIGHTS_SCRIPT, args, env={**self.offline_env, **(env or {})})
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.stdout = completed.stdout
         return json.loads(completed.stdout.strip().splitlines()[-1])
@@ -135,6 +163,96 @@ class InsightsScriptTests(unittest.TestCase):
         con.close()
         self.insights()
         self.assertNotIn(str(GUILD_ID), self.stdout)
+
+    def test_discord_success_has_names_defaults_and_no_ids_or_token(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        responses = {
+            "/users/@me": {"id": str(GUILD_ID + 2), "username": "架空のボット", "discriminator": "0"},
+            "/users/@me/guilds": [{"id": str(GUILD_ID), "name": "架空のサーバー",
+                                   "approximate_member_count": 12, "approximate_presence_count": 3}],
+            f"/guilds/{GUILD_ID}/voice-states/@me": {"channel_id": str(GUILD_ID + 1)},
+            f"/channels/{GUILD_ID + 1}": {"id": str(GUILD_ID + 1), "name": "架空のボイス"},
+        }
+        data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
+        guild = data["discord"]["guilds"][0]
+        self.assertEqual((guild["members"], guild["online"], guild["voice_channel"]), (12, 3, "架空のボイス"))
+        self.assertEqual(guild["settings"]["persona"], "標準")
+        self.assertIs(guild["settings"]["autonomous_enabled"], False)
+        self.assertFalse(guild["settings"]["saved"])
+        for secret in (FAKE_TOKEN, str(GUILD_ID), str(GUILD_ID + 1), str(GUILD_ID + 2)):
+            self.assertNotIn(secret, self.stdout)
+
+    def test_discord_errors_keep_db_and_log_results(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        con = sqlite3.connect(self.root / "memory/bot.db")
+        con.execute("INSERT INTO guild_settings (guild_id, respond_mode) VALUES (?, 'all')", (GUILD_ID,))
+        con.commit()
+        con.close()
+        for code in (401, 429):
+            with self.subTest(code=code):
+                data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses={"/users/@me": code},
+                                     journal=[{"MESSAGE": "Total token count：42"}])
+                self.assertIn(str(code), data["discord"]["error"])
+                self.assertEqual(data["discord"]["guilds"][0]["settings"]["respond_mode"], "すべての発言に反応")
+                self.assertEqual(data["activity"]["gemini_tokens"], 42)
+                self.assertNotIn(FAKE_TOKEN, self.stdout)
+                self.assertNotIn(str(GUILD_ID), self.stdout)
+
+    def test_journal_counts_events_without_returning_conversation_or_ids(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        messages = ["Total token count：42", "User (架空の利用者)：架空の会話本文",
+                    "has connected to Gateway", "successfully RESUMED", "session has been invalidated",
+                    "heartbeat blocked", "Traceback (most recent call last):",
+                    f"自律行動: ボイス「架空のボイス」で配信を開始しました（guild={GUILD_ID}）。",
+                    f"自律行動: 配信を終了しました（guild={GUILD_ID} / 理由: 架空の終了理由）。"]
+        entries = [{"MESSAGE": message, "__REALTIME_TIMESTAMP": "1000000"} for message in messages]
+        entries += [None, [], {"MESSAGE": [-1, 300]}, {"MESSAGE": [255], "__REALTIME_TIMESTAMP": None}]
+        data = self.insights(journal=entries, sudo=True)
+        activity = data["activity"]
+        for key in ("gemini_calls", "conversations", "gateway_connects", "gateway_resumes", "gateway_invalidated",
+                    "heartbeat_blocked", "exceptions"):
+            self.assertEqual(activity[key], 1, key)
+        self.assertEqual(activity["last_conversation_at"], 1)
+        self.assertEqual([event["text"] for event in activity["autonomous_events"]],
+                         ["配信を開始しました", "配信を終了しました"])
+        for secret in (str(GUILD_ID), "架空の会話本文", "架空の終了理由", "架空の利用者"):
+            self.assertNotIn(secret, self.stdout)
+
+    def test_journal_failure_is_reported_without_stderr(self):
+        make_fake_bot(self.root, layout="index", with_autonomous_column=False)
+        data = self.insights(journal=[], journal_code=1)
+        self.assertTrue(any("読み取り" in error or "journal_sudo" in error for error in data["errors"]))
+        self.assertNotIn("private journal detail", self.stdout)
+
+    def test_voice_rate_limit_keeps_guilds_and_marks_voice_unknown(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        responses = {"/users/@me": {"username": "架空のボット"},
+                     "/users/@me/guilds": [{"id": str(GUILD_ID), "name": "架空のサーバー"}],
+                     f"/guilds/{GUILD_ID}/voice-states/@me": 429}
+        data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
+        self.assertTrue(data["discord"]["ok"])
+        self.assertIn("429", data["discord"]["guilds"][0]["voice_error"])
+        self.assertNotIn(str(GUILD_ID), self.stdout)
+
+    def test_env_comments_are_supported_and_database_is_unchanged(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        (self.root / ".env").write_text(f'export TOKEN_DISCORD="{FAKE_TOKEN}" # 架空の設定\n', encoding="utf-8")
+        before = (self.root / "memory/bot.db").read_bytes()
+        data = self.insights(responses={"/users/@me": {"username": "架空のボット"}, "/users/@me/guilds": []}, journal=[])
+        self.assertTrue(data["discord"]["ok"])
+        self.assertNotIn(FAKE_TOKEN, self.stdout)
+        self.assertEqual((self.root / "memory/bot.db").read_bytes(), before)
+
+    def test_annotated_sources_are_read_without_importing(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        source = self.root / "src/persona_bot/config"
+        (source / "constants.py").write_text(CONSTANTS_PY.replace("DEFAULT_MODEL_NAME =", "DEFAULT_MODEL_NAME: str =")
+                                            + '\nraise RuntimeError("実行禁止")', encoding="utf-8")
+        (source / "choices.py").write_text(CHOICES_PY.replace("PERSONA_CHOICES =", "PERSONA_CHOICES: list =")
+                                          + '\nraise RuntimeError("実行禁止")', encoding="utf-8")
+        data = self.insights(journal=[])
+        self.assertEqual(data["dm_settings"]["persona"], "ツンデレ")
+        self.assertEqual(data["dm_settings"]["model"], "Gemini 3.1 Flash Lite")
 
 
 class DbSummaryScriptTests(unittest.TestCase):

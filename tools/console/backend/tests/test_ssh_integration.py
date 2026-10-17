@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,6 +71,27 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
         git = rc.parse_git((await self.session.run(rc.git_command("/home/ubuntu/x"), label="Git")).stdout)
         self.assertEqual(git["branch"], "main")
         self.assertGreaterEqual(len(self.session.history), 4)
+        self.assertEqual(len(self.bot.connections), 1)
+
+    async def test_reads_host_name_user_and_key_from_ssh_config(self):
+        home = self.key_dir / "home"
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh/config").write_text(
+            f'Host test-alias\n  HostName 127.0.0.1\n  Port {self.profile.port}\n'
+            f'  User tester\n  IdentityFile "{(self.key_dir / "client_key").as_posix()}"\n', encoding="utf-8"
+        )
+        profile = replace(self.profile, host="test-alias", port=None, username=None, key_path=None, use_ssh_config=True)
+        with mock.patch("ssh_session.Path.home", return_value=home):
+            await self.session.connect(profile)
+        self.assertEqual((await self.session.run("true", label="疎通確認")).exit_status, 0)
+
+    async def test_disabled_ssh_config_does_not_redirect_the_host(self):
+        home = self.key_dir / "home"
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh/config").write_text("Host 127.0.0.1\n  HostName 127.0.0.2\n", encoding="utf-8")
+        with mock.patch("ssh_session.Path.home", return_value=home):
+            await self.session.connect(self.profile)
+        self.assertTrue(self.session.connected)
 
     async def test_logs_and_live_stream(self):
         await self.session.connect(self.profile)

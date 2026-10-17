@@ -2,6 +2,13 @@ import type { LogEntry } from "./types";
 
 export type LogLevel = "error" | "warn" | "info" | "system";
 
+export const MAX_LOG_ENTRIES = 3000;
+
+/** ライブ受信中・一時停止中のどちらも、古い行を落として保持量を制限する。 */
+export function appendLogEntries(previous: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  return previous.concat(incoming).slice(-MAX_LOG_ENTRIES);
+}
+
 export const LEVEL_LABELS: Record<LogLevel, string> = {
   error: "エラー",
   warn: "警告",
@@ -52,12 +59,20 @@ export function classifyEntries(entries: LogEntry[]): LogLevel[] {
       isException = true;
     } else if (OTHER_TRACEBACK.test(message)) {
       // 直前の警告などの続きなので、そのレベルを引き継ぐ
+      const own = levelOf(entry);
       const previous = levels[levels.length - 1];
-      block = previous === "error" || previous === "warn" ? previous : "warn";
+      block = own === "error" || own === "warn" ? own : previous === "error" || previous === "warn" ? previous : "warn";
       isException = false;
     } else if (block && /^\s/.test(message)) {
       // 字下げされた行は塊の続き
+    } else if (block && !message.trim()) {
+      // 空行もスタックの区切りとして同じレベルで表示する
     } else if (block && isException) {
+      if (LOGGING_PREFIX.test(message) || entry.source === "systemd") {
+        block = null; // 途中で別のログが割り込んだ場合は、新しい行として判定する
+        levels.push(levelOf(entry));
+        continue;
+      }
       levels.push("error"); // 例外の本文（例: ValueError: ...）で塊が終わる
       block = null;
       continue;

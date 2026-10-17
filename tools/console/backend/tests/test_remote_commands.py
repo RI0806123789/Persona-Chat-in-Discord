@@ -21,6 +21,9 @@ class CommandBuildTest(unittest.TestCase):
             rc.service_show_command("bot; rm -rf ~")
         with self.assertRaises(ValueError):
             rc.journal_command("bot && id", lines=10, follow=False, use_sudo=False)
+        for service in ("bot\n", "--help", "-bot"):
+            with self.subTest(service=service), self.assertRaises(ValueError):
+                rc.service_show_command(service)
 
     def test_journal_command_clamps_lines_and_adds_flags(self):
         command = rc.journal_command("bot", lines=999999, follow=True, use_sudo=True)
@@ -85,6 +88,18 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(resources["memory"])
         self.assertIsNone(resources["disk"])
 
+    def test_nonfinite_and_out_of_range_status_values_are_empty(self):
+        for value in ("nan", "inf", "-1", "1e9999"):
+            with self.subTest(value=value):
+                resources = rc.parse_resources(f"{value} 0\n{value} 0 0\n0\n")
+                self.assertIsNone(resources["uptime_seconds"])
+                self.assertIsNone(resources["load"])
+                self.assertIsNone(resources["cpu_count"])
+                json.dumps(resources, allow_nan=False)
+        status = rc.parse_service_show("CPUUsageNSec=" + "9" * 400 + "\nMainPID=-2", "bot", None)
+        self.assertIsNone(status["cpu_seconds"])
+        self.assertIsNone(status["main_pid"])
+
     def test_parse_git(self):
         git = rc.parse_git("main\nabc1234\x1ffix: 修正\x1f2026-10-16T21:14:05+09:00\nver0.1.7\n      3\n")
         self.assertEqual(git["branch"], "main")
@@ -107,6 +122,9 @@ class ParseTest(unittest.TestCase):
 
     def test_parse_journal_line_ignores_non_json(self):
         self.assertIsNone(rc.parse_journal_line("-- No entries --"))
+        self.assertIsNone(rc.parse_journal_line('{"MESSAGE":' + "9" * 5000 + "}"))
+        self.assertIsNone(rc.parse_journal_line("[]"))
+        self.assertEqual(rc.parse_journal_line('{"MESSAGE":[-1,256,null]}')["message"], "")
 
 
 if __name__ == "__main__":

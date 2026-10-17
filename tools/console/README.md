@@ -39,7 +39,7 @@ Persona Chat in Discord のボットを、**SSH 経由で**見守り・操作す
 
 ### `remote_scripts/insights.py`（ボットを変えずに中の状態を集める）
 
-SSH の標準入力でサーバーへ送り、サーバーの `python3`（標準ライブラリだけ）で実行します。結果はバックエンドが60秒キャッシュします（Discord API の利用制限への配慮）。
+SSH の標準入力でサーバーへ送り、サーバーの `python3`（標準ライブラリだけ）で実行します。結果はバックエンドが60秒キャッシュし、同時の取得要求も1回にまとめます（Discord API の利用制限への配慮）。手動更新はキャッシュを使わず、再接続や接続先の変更後も取り直します。
 
 1. **Discord API** … サーバー上の `.env` の `TOKEN_DISCORD` で読み取りだけを行います（`/users/@me`・`/users/@me/guilds?with_counts=true`・自分のボイス状態）。
    トークンは出力しません。コマンドライン引数にも載せません（`ps` で見えないよう、ファイルから読みます）。
@@ -52,6 +52,9 @@ SSH の標準入力でサーバーへ送り、サーバーの `python3`（標準
    - `Traceback`（例外）
 
 出力にサーバー / チャンネル / ユーザーの ID は含めません。
+自律配信の記録は開始・終了の種類と時刻だけを返し、元のログにある ID・会話本文・終了理由を持ち帰りません。
+ログ集計にも `journal_sudo` の設定を適用します。Discord API が使えなくても、DB にある設定は「保存済みサーバー」の名前で表示し、ログの集計を続けます。
+設定をまだ保存していないサーバーも、`guild_settings` に自律行動の列があれば既定の OFF として表示します。
 
 **ボットを変えずには取れないもの:** 自律行動の「話したいゲージ」・配信中のセッション・Discord Gateway のレイテンシ。
 これらはボットのメモリの中にしか無いため、画面では「取得できない」ことを明示しています。
@@ -166,7 +169,7 @@ cd tools\console
 - バックエンドは **127.0.0.1 だけ** で待ち受けます。さらに次の3つで、ほかのサイトからの呼び出しを断ります。
   - 専用ヘッダー `X-Requested-By` が無い要求を拒否する（CSRF 対策）
   - Host ヘッダーが 127.0.0.1 / localhost 以外なら拒否する（DNS リバインディング対策）
-  - WebSocket は Origin を確認する
+  - WebSocket は許可された Origin を必須にする（ブラウザの WebSocket は専用ヘッダーを送れないため、Origin と Host で確認する）
 - DB は `mode=ro` で開き、**件数だけ**を持ち帰ります。Discord のトークンはサーバーの外に出しません。
 - 操作はすべて確認ダイアログを通します。停止と本番のデプロイはサービス名の入力で確認し、本番では警告を出します。
   Enter の押し間違いで実行されないよう、最初のフォーカスは停止なら入力欄、本番の再起動なら「キャンセル」に置きます。
@@ -221,9 +224,10 @@ cd tools\console
 ```powershell
 cd tools\console\backend
 $env:PYTHONIOENCODING = "utf-8"
-.venv\Scripts\python.exe -B -m unittest discover -s tests -v   # 56 件
+.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 
 cd ..\frontend
+npm test        # ログのレベル・Traceback・保持件数の回帰テスト
 npm run build   # 型チェック（tsc --noEmit）+ ビルド
 ```
 
@@ -238,6 +242,7 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 | `test_remote_scripts.py` | 一時フォルダに作った架空のボットで `insights.py` と DB 集計を実行し、次を確かめる |
 | `test_local_repo.py` | 手元の `database.py` からスキーマの版を（import せずに）読めること・読めないときの扱い |
 | `test_app_messages.py` | sudo にパスワードが要るときの案内が、起動・停止・再起動の3つだけを許可する書き方になっていること |
+| `test_api.py` | ASGI の入口で専用ヘッダー・Host・Origin を確認し、模擬 SSH で状態取得・ログ転送と切断時の回収・集計キャッシュの期限と手動更新・再接続・同時要求を検証 |
 | `test_profiles.py` | 見本の値（`YOUR_`）のままの接続先を見分けること・`profiles.json` が無いときに見本を読むこと・デプロイ設定の検証と画面へのブランチの通知・見本どうし（接続先・SSH の設定・sudoers）が食い違っていないこと |
 
 `test_ssh_integration.py` で確かめること:
@@ -251,7 +256,9 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 
 - 旧版（`index/`）と新版（`src/`）の両方の配置から表示名を読めること
 - 自律行動の列がない版では「未対応」として扱うこと
+- 設定未保存でも自律行動の列があれば既定値を使い、Discord API の 401・429 でも DB とログの結果を残すこと
 - **トークンを出力しないこと**、サーバー ID を出力しないこと
+- 自律配信の記録に ID・会話本文・終了理由を含めず、不正なログの JSON やバイト列で集計が停止しないこと
 - 評価の日別集計（日本時間で区切る）
 
 ## ファイル構成

@@ -123,7 +123,7 @@ function Console() {
   const wasConnected = useRef(false);
 
   const connected = connection?.connected ?? false;
-  const stream = useLogStream(connected);
+  const stream = useLogStream(connected, 300, `${connection?.profile?.id ?? ""}:${connection?.connected_at ?? ""}`);
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) ?? null;
   const pageDef = PAGES.find((p) => p.id === page) ?? PAGES[0];
   const production = connected && connection?.profile?.environment === "production";
