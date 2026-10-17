@@ -183,8 +183,8 @@ async def get_status() -> dict:
     else:
         try:
             response["git"] = rc.parse_git(git.stdout)
-        except ValueError as error:
-            response["git_error"] = str(error)
+        except ValueError:
+            response["git_error"] = "Git の情報を解析できませんでした。"
 
     return response
 
