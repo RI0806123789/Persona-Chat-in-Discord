@@ -230,7 +230,7 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 `google-genai` の共有 `Client` を、生成・モデレーション・記憶ルーティング・記憶圧縮・文書処理へ注入する。接続先の種類はGemini Developer APIを明示し、APIキーはSDKがヘッダーに載せる。独自REST経路は使わない。Discord側は `bot_client.PersonaClient` を使い、終了時に `close_genai_client` でSDKの非同期・同期接続と、factoryが所有するHTTPX接続を閉じる（その後に、渡された `Database` も閉じる）。SDKは渡されたHTTPX接続を閉じないため、共通終了処理を使う。
 
-生成は `genai_client.generate_content` → `client.aio.models.generate_content` へ集約する。画像はPIL画像をSDKに渡し、検索は `types.Tool(google_search=types.GoogleSearch())` を指定する。検索非対応を示す400/404/422の場合だけ、設定が有効なら `GROUNDING_MODEL_NAME` で検索を試し、最後にユーザーの選択モデルで検索なしへ進む。タイムアウト・5xx・認証・利用枠・その他の通信エラーでは追加生成しない。サブモデルを使っても、最後の非検索生成には元の `model_name` を渡す。
+生成は `genai_client.generate_content` → `client.aio.models.generate_content` へ集約する。画像はPIL画像をSDKに渡し、検索は `types.Tool(google_search=types.GoogleSearch())` を指定する。検索非対応を示す400/404/422と、検索付きの試行の利用枠超過（429）の場合だけ、設定が有効なら `GROUNDING_MODEL_NAME` で検索を試し、最後にユーザーの選択モデルで検索なしへ進む（Gemini 3 以降の検索は無料枠に含まれず 429 になるため、無料枠ではサブモデルの Gemini 2.5 の検索枠で検索する）。タイムアウト・5xx・認証・検索なしの生成の利用枠超過・その他の通信エラーでは追加生成しない。サブモデルを使っても、最後の非検索生成には元の `model_name` を渡す。
 
 `GeminiService.generate` は開始時にmonotonicな締切を1回だけ決め、各段に残り時間だけを渡す。共通入口は秒をSDKの `HttpOptions.timeout`（ミリ秒）へ変換し、`HttpRetryOptions(attempts=1)` で生成のSDK内部リトライを止め、`asyncio.wait_for` でも同じ時間を制限する。期限切れは `(None, None, [])`、利用者からのキャンセルは伝播する。timeout未指定の検索付き生成は `GROUNDING_REQUEST_TIMEOUT_SECONDS` を使う。記憶取得や生成後のモデレーションはこの生成期限の対象外。
 

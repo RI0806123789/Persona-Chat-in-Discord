@@ -21,7 +21,7 @@ PERSONA_CHOICES = [
 MODEL_CHOICES = [
     app_commands.Choice(name="Gemini 2.5 Flash", value="gemini-2.5-flash"),
     app_commands.Choice(name="Gemini 3.5 Flash", value="gemini-3.5-flash"),
-    app_commands.Choice(name="Gemini 3.1 Flash Lite", value=DEFAULT_MODEL_NAME),
+    app_commands.Choice(name="Gemini 3.5 Flash Lite", value=DEFAULT_MODEL_NAME),
 ]
 
 RESPOND_MODE_CHOICES = [
