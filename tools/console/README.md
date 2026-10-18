@@ -79,14 +79,25 @@ npm ci
 
 ```powershell
 cd tools\console
-.\start-dev.ps1          # バックエンド + 画面 を別ウィンドウで起動
+.\start-dev.ps1          # ターミナルを追加せず、専用のブラウザ画面を起動
 ```
 
 「スクリプトの実行が無効」と出る場合は、PowerShell の実行ポリシーで止められています。
 `powershell -ExecutionPolicy Bypass -File .\start-dev.ps1` で、その回だけ許可して実行できます。
 
-ブラウザで http://127.0.0.1:5173 が開いたら、右上で接続先を選んで「接続」を押します。
+Microsoft Edge（無ければ Google Chrome）の専用画面で http://127.0.0.1:5173 が開きます。右上で接続先を選んで「接続」を押します。
+バックエンドと Vite は非表示で動作し、**専用画面を閉じると、両方と子プロセスを自動終了**します。起動に使った PowerShell は起動完了後に閉じてもかまいません。
+画面の再読み込みでは終了しません。専用プロファイルを使うため、通常のブラウザとは設定・保存データが分かれます。
+起動中に再実行すると二重起動を断ります。ポートがほかのアプリで使われている場合も、そのアプリを停止せずに案内します。
+
+起動・終了のログは `.run/launcher.log`、バックエンドは `.run/backend.log`、Vite は `.run/frontend.log` に保存します（起動ごとに上書き）。
+`.run/` はブラウザの保存データも含むため Git 管理外です。ログを共有する際は接続先などを伏せてください。
+
 `npm run build` しておくと、画面も `app.py` が同じポート（http://127.0.0.1:8765）で配信します。
+
+未設定の見本プロファイルで起動した画面です。ボタンやメニューのアイコンもローカルのフォントで描画します。
+
+![コンソールの起動画面とアイコン表示](../../docs/console-icons.png)
 
 ## 本番サーバーにつなぐ
 
@@ -229,7 +240,7 @@ $env:PYTHONIOENCODING = "utf-8"
 .venv\Scripts\python.exe -B -m unittest discover -s tests -v
 
 cd ..\frontend
-npm test        # ログのレベル・Traceback・保持件数、日本時間の日付範囲の回帰テスト
+npm test        # ログ・日本時間の日付範囲・共有フォントの配信を確認
 npm run build   # 型チェック（tsc --noEmit）+ ビルド
 ```
 
@@ -238,6 +249,8 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 
 | テスト | 確認内容 |
 | --- | --- |
+| `test_dev_launcher.py` | 画面を閉じたときと起動失敗時の回収・二重起動につながるポート競合の拒否・監視役を強制終了した場合の子孫プロセスの回収（Windows） |
+| `frontend/tests/fonts.test.mjs` | 共有した依存フォルダからアイコン・本文フォントを配信でき、配信範囲外のファイルは拒否すること |
 | `test_remote_commands.py` | コマンドの組み立て（ホワイトリスト・記号を含む名前の拒否・引用符）と、systemctl / free / df / git / journald の出力の読み取り |
 | `test_ssh_integration.py` | 模擬 SSH サーバーを空きポートで起動し、本物の SSH プロトコルで次を確かめる |
 | `test_deploy.py` | デプロイ成功・依存関係が変わったときだけの入れ直し・最新時の省略・事前確認による拒否・取得失敗・依存更新 / 起動の失敗と巻き戻し・巻き戻し失敗時の案内・同時実行の拒否・コマンド引数の検証 |
@@ -281,7 +294,8 @@ Windows の Edge（ヘッドレス）を一時プロファイルで起動し、�
 
 ```
 tools/console/
-├─ start-dev.ps1                 まとめて起動
+├─ start-dev.ps1                 ターミナルを追加せずに起動
+├─ dev_launcher.py               専用画面の終了に合わせて子プロセスを回収
 ├─ examples/
 │  ├─ ssh_config.example         ~/.ssh/config に書き足す Host の見本
 │  └─ sudoers.example            サーバーで起動・停止・再起動だけを許可する sudoers の見本
