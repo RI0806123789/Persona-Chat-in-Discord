@@ -137,7 +137,7 @@ source .venv/bin/activate
 仮想環境を有効にした状態で実行します。
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.10と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
@@ -186,10 +186,23 @@ python3 deploy/migrate_config_to_env.py --force     # 既存の .env を上書�
 
 ### 6. ボットの起動
 
+依存を導入した仮想環境のPythonを直接指定すると、通常の`python`に入っている別版のSDKを使わずに起動できます。
+
+**Windows / PowerShell**:
+
+```powershell
+cd src
+..\.venv\Scripts\python.exe bot.py
+```
+
+**Ubuntu / Debian**:
+
 ```bash
 cd src
-python bot.py    # Ubuntu で仮想環境を使わない場合は python3
+../.venv/bin/python bot.py
 ```
+
+仮想環境を有効にしている場合は、従来どおり`python bot.py`でも起動できます。依存の更新も同じPythonの`-m pip install -r requirements.txt`で行ってください（リポジトリルートで実行）。
 
 `ログイン成功: BotName#0000` と表示されれば起動完了です。**必ず `src/` の中から実行してください**（`bot.py` は引き続き `src/` 直下にあります）。
 
@@ -377,6 +390,15 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 ---
 ## 📋 更新履歴
+
+### ver0.1.8(BETA)
+
+#### 不具合修正
+
+- **Gemini SDKの起動互換性**: 旧SDKに存在しない`enterprise`引数を渡さず、新旧共通の設定でDeveloper APIへ接続。HTTPXトランスポートも明示して、APIキーのヘッダー送信・再試行制御・終了時の回収を維持
+- **起動手順**: Windows／Linuxとも仮想環境のPythonを直接指定し、通常のPythonにある別版SDKとの取り違えを防止
+
+---
 
 ### ver0.1.7 — 2026/10/19
 

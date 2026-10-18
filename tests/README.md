@@ -352,6 +352,14 @@ DB新規初期化・初期化の再実行・サーバーとDM設定の保存復�
 
 #18〜#20の追加後、Windows・Python 3.13で日本語フォント必須の指定を有効にし、全199テストが省略なしで成功した。依存関係・全Pythonソースの構文・Python 3.10文法・図のXML・メッセージ分割も確認した。Linux、Python 3.10の実行、Discord・Geminiの実接続は未確認。
 
+## Gemini SDKの起動互換性と通信境界
+
+`services/test_genai_client.py`は、`enterprise`を持たない旧クライアントでも生成でき、環境変数でクラウド向けAPIが指定されてもDeveloper APIを使うことを確認する。HTTPXトランスポートを明示し、APIキーのURL・ログへの漏れ、暗黙の再送、キャンセル時の回収と終了処理も検証する。
+
+`helpers/network_guard.py`はSDKテストのDNS・ソケット接続を遮断する。Windowsのイベントループが使うループバックは許可し、HTTPモックが使われない場合も実サービスへ接続しない。SDKによってPIL画像のMIMEがPNG/JPEGに分かれるため、画像のテストは両方の対応形式を受け付ける。
+
+google-genai 1.46.0と2.31.0でSDK関連47件、requirements指定版の環境で全554件が成功。最終検証はHTTPモックと通信遮断下で行い、初期化・終了時の`_api_client`関連の二次例外が出ないことも確認した。実Discord・Gemini接続は未確認。
+
 ## Gemini SDKとPDFの移行検証（#21）
 
 2026-10-16、Windows・Python 3.13の新しい仮想環境へ固定した直接依存を導入し、旧 `google-generativeai`・`PyPDF2` が入っていないことと `pip check` の成功を確認した。`services/test_genai_client.py` / `services/test_gemini_service.py` / `integration/test_sdk_migration.py` で、実際の `google-genai` の型・シリアライズと `httpx.MockTransport` を使い、通常生成・Google検索・PIL画像・ファイル転送／要約／削除・モデレーション・記憶ルーティング／圧縮・安全ブロック・利用トークン集計を確認する。PDFは `pypdf` で作った架空の平文・暗号化PDFと破損データを検証する。

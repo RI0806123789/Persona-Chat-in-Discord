@@ -234,7 +234,7 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 `GeminiService.generate` は開始時にmonotonicな締切を1回だけ決め、各段に残り時間だけを渡す。共通入口は秒をSDKの `HttpOptions.timeout`（ミリ秒）へ変換し、`HttpRetryOptions(attempts=1)` で生成のSDK内部リトライを止め、`asyncio.wait_for` でも同じ時間を制限する。期限切れは `(None, None, [])`、利用者からのキャンセルは伝播する。timeout未指定の検索付き生成は `GROUNDING_REQUEST_TIMEOUT_SECONDS` を使う。記憶取得や生成後のモデレーションはこの生成期限の対象外。
 
-アップロード・削除は `client.aio.files`、文書要約は共通の生成入口を使う。PDFは `application/pdf`、txt/csv/mdは `text/plain` を明示し、ファイル転送にも全体の期限を設ける。factoryは公開HTTPXクライアントを指定し、aiohttp経路のSDK独自再送を避ける。転送transportはuploadコマンドの応答に必須の状態ヘッダーがない場合、応答を閉じて明示的に失敗させる。これによりSDK内の同期sleep・再送を防ぎ、イベントループと期限管理を保つ。SDKのprivate実装は上書きしない。
+アップロード・削除は `client.aio.files`、文書要約は共通の生成入口を使う。PDFは `application/pdf`、txt/csv/mdは `text/plain` を明示し、ファイル転送にも全体の期限を設ける。factoryは新旧SDKに共通する`vertexai=False`でDeveloper APIを選び、旧SDKにない`enterprise`引数は指定しない。公開HTTPXクライアントと`async_client_args.transport`へ同じトランスポートを指定し、aiohttp経路のSDK独自再送を避ける。転送transportはuploadコマンドの応答に必須の状態ヘッダーがない場合、応答を閉じて明示的に失敗させる。これによりSDK内の同期sleep・再送を防ぎ、イベントループと期限管理を保つ。SDKのprivate実装は上書きしない。
 
 Geminiのテキストは `storage.safe_response_text` から取得する。空候補・プロンプトや候補の安全ブロックでは本文を返さず、思考パートはSDKの本文取得で除外される。`get_prompt_block_reason` は新SDKの文字列enumと旧形式の数値enumを区別し、未指定をブロックと誤認しない。モデルのJSONは `storage.extract_json_object` でコードブロックを優先し、ネスト・文字列内の括弧を標準パーサーで処理する。不正候補の後も走査し、モデレーションは `required_keys=("safe",)` で説明中の別形式のJSON例を除外する。
 
