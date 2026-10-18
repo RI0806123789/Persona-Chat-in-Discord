@@ -142,6 +142,8 @@ python -m pip install -r requirements.txt
 
 直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.10と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
 
+`tzdata`も同時に導入し、WindowsやOSのタイムゾーンDBがない環境でも日本時間を使います。既存環境で「タイムゾーン(Asia/Tokyo)の読み込みに失敗」と出る場合は、同じ仮想環境で上のインストールを行ってからボットを再起動してください。
+
 旧SDKを使っていた環境を更新するときは、新しい仮想環境へこの依存一覧を導入して検証してください。Geminiは `google-genai`、PDF検証は `pypdf` を使います。APIキーの設定名と既存の `.env` はそのまま利用できます。SDKの変更点は[Googleの移行ガイド](https://ai.google.dev/gemini-api/docs/migrate)、PDFの名称変更は[pypdfの公式履歴](https://pypdf.readthedocs.io/en/stable/meta/history.html)を参照してください。
 
 ### 4. Opus ライブラリのセットアップ（Linux のみ）
@@ -410,6 +412,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 #### 不具合修正
 
+- **タイムゾーン**: `tzdata`を依存に追加し、WindowsやOSのタイムゾーンDBがない環境で日本時間を使えず、予定・記念日・統計・自律行動の時間帯制限がUTC基準になる問題を修正
 - **Gemini SDKの起動互換性**: 旧SDKに存在しない`enterprise`引数を渡さず、新旧共通の設定でDeveloper APIへ接続。HTTPXトランスポートも明示して、APIキーのヘッダー送信・再試行制御・終了時の回収を維持
 - **起動手順**: Windows／Linuxとも仮想環境のPythonを直接指定し、通常のPythonにある別版SDKとの取り違えを防止
 - **記憶・保存データ**: 圧縮・移行・同時保存でユーザーの記憶や文書要約が失われる問題を修正。JSONとDBの保存失敗時は復元・再試行し、壊れた旧データや取り込めない手書きプロフィールを保護
