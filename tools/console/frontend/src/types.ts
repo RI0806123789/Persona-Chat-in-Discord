@@ -136,6 +136,31 @@ export interface DbSummary {
   blacklist?: { users: number; blocked: number } | null;
 }
 
+// ---- テーブルの中身（backend/remote_scripts/db_table.py の出力）
+
+/** セルの値。ID は桁が丸まらないよう文字列で届く。JSON の列（記憶の値・発言サンプルなど）は中身ごと届く */
+export type DbValue = string | number | boolean | null | DbValue[] | { [key: string]: DbValue };
+
+export interface DbRow {
+  cells: Record<string, DbValue>;
+  /** 持ち帰らなかった列（会話統計の収集を止めた人の発言サンプルと解析） */
+  hidden?: string[];
+}
+
+export interface DbTablePage {
+  table: string;
+  columns: string[];
+  rows: DbRow[];
+  /** テーブル全体の行数 */
+  total: number;
+  offset: number;
+  limit: number;
+  /** 利用者の ID → 表示名（会話統計・リマインダーに残っているもの） */
+  users: Record<string, string>;
+  schema_version?: number;
+  errors: string[];
+}
+
 // ---- デプロイ（backend/deploy.py の DeployRecord）
 
 export type DeployStepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";

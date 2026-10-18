@@ -2,12 +2,14 @@
 
 本物の SSH プロトコル（鍵認証・ホスト鍵の検証・コマンド実行・ストリーム）で通信し、
 systemctl / journalctl / free / git / pip などの「出力だけ」を作り物で返す。
+ただし bot.db を読むスクリプト（DB の集計・テーブルの中身）は、架空の bot.db に対して本当に実行する。
 画面の接続先には出さない（利用者の指定で、開発用の接続先としては使わない）。自動テストだけが使う。
 
 start_fake_server(...) に渡した一時フォルダへ、次のファイルを作る:
 - host_key          … このサーバーのホスト鍵
 - client_key(.pub)  … ダッシュボードがログインに使う鍵
 - known_hosts       … ダッシュボードがホスト鍵を検証するためのファイル
+- bot/memory/bot.db・bot/ng/blacklist.json … 架空の利用者・会話で作った DB と違反記録（make_fake_database）
 
 デプロイの確かめ方: bot.repo（FakeRepo）で、新しいコミット・requirements.txt の変更・pip の失敗・
 起動に失敗する版などを作ってから、デプロイを実行する。
@@ -18,8 +20,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import random
 import re
+import shlex
+import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -162,6 +169,9 @@ class FakeBot:
     """模擬サーバーの中の「ボット」の状態。"""
 
     repo: FakeRepo = field(default_factory=FakeRepo)
+    # 架空の bot.db と違反記録（make_fake_database が作る。DB を読むスクリプトはこれに対して本当に実行する）
+    db_path: Path | None = None
+    blacklist_path: Path | None = None
     # 再起動などの待ち時間の倍率（テストを速くするため小さくする）
     delay_scale: float = 1.0
     failed: bool = False
@@ -408,37 +418,229 @@ def insights_output(bot: FakeBot) -> str:
     }, ensure_ascii=False)
 
 
-def db_summary_output() -> str:
-    good = 412 + random.randint(0, 3)
-    return json.dumps(
-        {
-            "path": "/home/ubuntu/Persona-Chat-in-Discord/memory/bot.db",
-            "exists": True,
-            "errors": [],
-            "size_bytes": 3_481_600,
-            "wal_bytes": random.choice([0, 32_992, 164_832]),
-            "schema_version": 10,
-            "tables": {
-                "affinity": 37,
-                "anniversary_posts": 6,
-                "feedback": good + 58,
-                "guild_settings": 4,
-                "pending_log": random.randint(3, 40),
-                "profile": 121,
-                "queue_tasks": 50,
-                "reminders": 29,
-                "user_stats": 41,
-            },
-            "reminders_by_status": {"pending": 7, "done": 19, "canceled": 3},
-            "queue_by_status": {"done": 47, "failed": 3},
-            "feedback": {"good": good, "bad": 58},
-            "feedback_by_day": [
-                {"day": (datetime.now() - timedelta(days=6 - offset)).strftime("%Y-%m-%d"), "good": g, "bad": b}
-                for offset, (g, b) in enumerate([(21, 4), (34, 6), (18, 2), (27, 9), (31, 5), (40, 7), (16, 3)])
-            ],
-            "blacklist": {"users": 5, "blocked": 1},
-        }
+# ---------------------------------------------------------------- 架空の bot.db
+#
+# DB を読むスクリプト（集計・テーブルの中身）は、出力を作り物にせず、ここで作った架空の bot.db に対して
+# 本当に実行する（件数と中身が食い違わず、スクリプトそのものも SSH 越しに確かめられるように）。
+# 人・サーバー・チャンネル・メッセージの ID と名前、会話の文はすべて架空のもの。
+
+# ボットの bot.db（スキーマ バージョン10）と同じ形。src/persona_bot/core/database.py の初版の定義に
+# 移行をすべて適用した後の形を書き写したもの（ボットのコードは import しない）。
+FAKE_DB_SCHEMA_VERSION = 10
+FAKE_DB_TABLES = (
+    "CREATE TABLE affinity (user_id TEXT PRIMARY KEY, affinity INTEGER NOT NULL DEFAULT 50, "
+    "valence INTEGER NOT NULL DEFAULT 50, arousal INTEGER NOT NULL DEFAULT 50, last_interaction REAL NOT NULL DEFAULT 0)",
+    "CREATE TABLE user_stats (user_id TEXT PRIMARY KEY, user_name TEXT NOT NULL DEFAULT '', "
+    "total_count INTEGER NOT NULL DEFAULT 0, hourly TEXT NOT NULL DEFAULT '[]', first_seen TEXT NOT NULL DEFAULT '', "
+    "last_seen TEXT NOT NULL DEFAULT '', recent_samples TEXT NOT NULL DEFAULT '[]', analysis TEXT, "
+    "stats_opt_out INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE queue_tasks (task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', "
+    "channel_id INTEGER NOT NULL DEFAULT 0, message_id INTEGER NOT NULL DEFAULT 0, author_id INTEGER NOT NULL DEFAULT 0, "
+    "question TEXT NOT NULL DEFAULT '', attachment_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', "
+    "updated_at TEXT NOT NULL DEFAULT '', finished_at TEXT, error TEXT)",
+    "CREATE TABLE pending_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, "
+    "question TEXT NOT NULL, response TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '')",
+    "CREATE TABLE profile (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (user_id, key))",
+    "CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, prompt_file TEXT NOT NULL DEFAULT '', "
+    "model_name TEXT NOT NULL DEFAULT '', respond_mode TEXT NOT NULL DEFAULT '', grounding_enabled INTEGER NOT NULL DEFAULT 1, "
+    "auto_topic_enabled INTEGER NOT NULL DEFAULT 0, auto_topic_interval_hours INTEGER NOT NULL DEFAULT 6, "
+    "autonomous_enabled INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE anniversary_posts (guild_id INTEGER NOT NULL, user_id TEXT NOT NULL, label TEXT NOT NULL, "
+    "posted_date TEXT NOT NULL, PRIMARY KEY (guild_id, user_id, label))",
+    "CREATE TABLE reminders (reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, "
+    "user_name TEXT NOT NULL DEFAULT '', guild_id INTEGER NOT NULL DEFAULT 0, channel_id INTEGER NOT NULL, "
+    "message TEXT NOT NULL, remind_at TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+    "recurrence TEXT NOT NULL DEFAULT 'none', recurrence_anchor TEXT NOT NULL DEFAULT '')",
+    "CREATE TABLE feedback (message_id INTEGER NOT NULL, user_id TEXT NOT NULL, guild_id INTEGER NOT NULL DEFAULT 0, "
+    "channel_id INTEGER NOT NULL DEFAULT 0, target_user_id TEXT NOT NULL DEFAULT '', model_name TEXT NOT NULL DEFAULT '', "
+    "prompt_file TEXT NOT NULL DEFAULT '', rating INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (message_id, user_id))",
+)
+# 架空の利用者（ID, 表示名）。最後の人は会話統計の収集を止めている
+FAKE_USERS = [
+    ("100000000000000101", "さくら"),
+    ("100000000000000102", "たろう"),
+    ("100000000000000103", "Mika"),
+    ("100000000000000104", "ハルト"),
+    ("100000000000000105", "ゆず"),
+    ("100000000000000106", "Ren"),
+]
+FAKE_OPTED_OUT_USER = FAKE_USERS[-1][0]
+FAKE_GUILD_IDS = (100000000000000001, 100000000000000002)
+FAKE_CHANNEL_IDS = (100000000000001001, 100000000000001002, 100000000000001003)
+# 17 桁を超えるメッセージ ID（JavaScript の数値では下の桁が丸まる大きさ）
+FAKE_MESSAGE_ID_BASE = 1_300_000_000_000_000_000
+FAKE_SAMPLES = [
+    "おはよう！今日は何する？", "この前のゲームの続きやった？", "週末は雨らしいね", "おすすめの本ある？",
+    "レポートの締め切りが近くて大変", "猫の写真を送るね", "カレーの作り方を教えて", "明日の天気は？",
+    "最近ハマってる曲があるんだ", "ありがとう、助かった！",
+]
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def make_fake_database(directory: Path) -> tuple[Path, Path]:
+    """架空の bot.db と blacklist.json を作り直して、それぞれの場所を返す。中身は毎回同じ（乱数の種を固定）。"""
+    rng = random.Random(103)
+    now = datetime.now(timezone.utc)
+    db_path = directory / "memory" / "bot.db"
+    blacklist_path = directory / "ng" / "blacklist.json"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    blacklist_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.unlink(missing_ok=True)
+
+    con = sqlite3.connect(db_path)
+    try:
+        for statement in FAKE_DB_TABLES:
+            con.execute(statement)
+        con.execute(f"PRAGMA user_version = {FAKE_DB_SCHEMA_VERSION}")
+        for index, (user_id, name) in enumerate(FAKE_USERS):
+            last = now - timedelta(hours=index * 7 + 1)
+            con.execute(
+                "INSERT INTO affinity VALUES (?, ?, ?, ?, ?)",
+                (user_id, 82 - index * 9, 40 + rng.randint(0, 50), 30 + rng.randint(0, 60), last.timestamp()),
+            )
+            hourly = [rng.randint(0, 3) + (6 if 20 <= hour <= 23 else 0) for hour in range(24)]
+            samples = rng.sample(FAKE_SAMPLES, 6)
+            analysis = {
+                "topics": [{"label": "ゲーム", "weight": 0.6}, {"label": "勉強", "weight": 0.3}, {"label": "料理", "weight": 0.1}],
+                "big_five": {"openness": 72, "conscientiousness": 55, "extraversion": 64, "agreeableness": 80, "neuroticism": 35},
+                "personality": "好奇心が強く、人当たりのよい話し方をします。",
+                "computed_at": _iso(last),
+                "sample_count": len(samples),
+            }
+            con.execute(
+                "INSERT INTO user_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id, name, sum(hourly), json.dumps(hourly), _iso(now - timedelta(days=60 + index)), _iso(last),
+                    json.dumps(samples, ensure_ascii=False), json.dumps(analysis, ensure_ascii=False),
+                    1 if user_id == FAKE_OPTED_OUT_USER else 0,
+                ),
+            )
+        user_ids = [user_id for user_id, _ in FAKE_USERS]
+
+        for index, (status, error) in enumerate(
+            [("completed", None), ("completed", None), ("failed", "PDF を読み取れませんでした（暗号化されています）。"),
+             ("completed", None), ("processing", None), ("pending", None)]
+        ):
+            created = now - timedelta(hours=40 - index * 7)
+            finished = _iso(created + timedelta(seconds=25)) if status in ("completed", "failed") else None
+            con.execute(
+                "INSERT INTO queue_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"task-{index + 1:04d}", status, FAKE_CHANNEL_IDS[index % 3], FAKE_MESSAGE_ID_BASE + 500 + index,
+                    int(user_ids[index % 4]), "この資料の要点をまとめて", 1 + index % 2, _iso(created),
+                    finished or _iso(created), finished, error,
+                ),
+            )
+
+        for index in range(4):
+            con.execute(
+                "INSERT INTO pending_log (created_at, question, response, user_id) VALUES (?, ?, ?, ?)",
+                (
+                    (now - timedelta(minutes=50 - index * 12)).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    FAKE_SAMPLES[index], "いいね！その話、もっと聞かせて。\n次はどうするつもり？", user_ids[index % 2],
+                ),
+            )
+
+        profile_rows = [
+            (user_ids[0], "好きなもの", ["猫", "カレー", "RPG"]),
+            (user_ids[0], "anniversaries", [{"label": "誕生日", "month": 5, "day": 1}]),
+            (user_ids[0], "呼び方", "さくらちゃん"),
+            (user_ids[1], "趣味", ["ドライブ", "音楽鑑賞"]),
+            (user_ids[1], "anniversaries", [{"label": "誕生日", "month": 11, "day": 3}]),
+            (user_ids[2], "所属", {"学校": "架空大学", "学年": 2}),
+            (user_ids[3], "苦手なもの", ["早起き"]),
+        ]
+        for user_id, key, value in profile_rows:
+            con.execute("INSERT INTO profile VALUES (?, ?, ?)", (user_id, key, json.dumps(value, ensure_ascii=False)))
+
+        con.execute(
+            "INSERT INTO guild_settings VALUES (0, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'all', 0, 0, 6, 0)"
+        )
+        con.execute(
+            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_tsun.txt', 'gemini-3-flash', 'mention', 1, 1, 3, 1)",
+            (FAKE_GUILD_IDS[0],),
+        )
+        con.execute(
+            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'mention', 1, 0, 12, 0)",
+            (FAKE_GUILD_IDS[1],),
+        )
+
+        con.execute(
+            "INSERT INTO anniversary_posts VALUES (?, ?, '誕生日', ?)",
+            (FAKE_GUILD_IDS[0], user_ids[1], (now - timedelta(days=15)).strftime("%Y-%m-%d")),
+        )
+        con.execute(
+            "INSERT INTO anniversary_posts VALUES (?, ?, '誕生日', ?)",
+            (FAKE_GUILD_IDS[0], user_ids[0], (now - timedelta(days=170)).strftime("%Y-%m-%d")),
+        )
+
+        reminder_rows = [
+            ("レポートを提出する", timedelta(days=-3), "done", "none"),
+            ("ゴミ出し", timedelta(hours=10), "pending", "weekly"),
+            ("薬を飲む", timedelta(hours=2), "pending", "daily"),
+            ("家賃の振り込み", timedelta(days=12), "pending", "monthly"),
+            ("映画の予約", timedelta(days=-1), "canceled", "none"),
+            ("友だちに電話する", timedelta(days=-6), "done", "none"),
+            ("美容院の予約", timedelta(days=4), "pending", "none"),
+        ]
+        for index, (message, offset, status, recurrence) in enumerate(reminder_rows):
+            user_id, name = FAKE_USERS[index % 3]
+            remind_at = now + offset
+            con.execute(
+                "INSERT INTO reminders (user_id, user_name, guild_id, channel_id, message, remind_at, created_at, status, "
+                "recurrence, recurrence_anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id, name, FAKE_GUILD_IDS[0] if index != 2 else 0, FAKE_CHANNEL_IDS[index % 3], message,
+                    _iso(remind_at), _iso(remind_at - timedelta(days=2)), status, recurrence,
+                    _iso(remind_at) if recurrence != "none" else "",
+                ),
+            )
+
+        # 評価はページ送りを確かめられるよう、1ページ（50件）より多く作る
+        models = ("gemini-3.1-flash-lite", "gemini-3-flash")
+        personas = ("../prompts/prompt_tsun.txt", "../prompts/prompt_default.txt", "../prompts/prompt_oneesan.txt")
+        for index in range(130):
+            created = now - timedelta(minutes=index * 83 + rng.randint(0, 40))
+            con.execute(
+                "INSERT INTO feedback VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    FAKE_MESSAGE_ID_BASE + index * 7919, user_ids[index % 5], FAKE_GUILD_IDS[index % 2],
+                    FAKE_CHANNEL_IDS[index % 3], user_ids[(index + 1) % 5], models[index % 2], personas[index % 3],
+                    -1 if rng.random() < 0.18 else 1, _iso(created),
+                ),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    blacklist = {
+        user_ids[3]: {"count": 1, "blocked": False},
+        user_ids[4]: {"count": 3, "blocked": True},
+    }
+    blacklist_path.write_text(json.dumps(blacklist, ensure_ascii=False), encoding="utf-8")
+    return db_path, blacklist_path
+
+
+def run_db_script(bot: FakeBot, command: str, script: str) -> tuple[str, str, int]:
+    """DB を読むスクリプトを、架空の bot.db に対して本当に実行する（サーバー上の場所だけを差し替える）。"""
+    if bot.db_path is None or bot.blacklist_path is None:
+        return "", "fake-ssh-server: 架空の bot.db がありません。\n", 1
+    arguments = []
+    for argument in shlex.split(command)[2:]:  # 「python3 -」の後ろ
+        if argument.endswith("/memory/bot.db"):
+            argument = str(bot.db_path)
+        elif argument.endswith("/ng/blacklist.json"):
+            argument = str(bot.blacklist_path)
+        arguments.append(argument)
+    completed = subprocess.run(
+        [sys.executable, "-I", "-", *arguments],
+        input=script, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
+    return completed.stdout, completed.stderr, completed.returncode
 
 
 # ---------------------------------------------------------------- SSH の受け口
@@ -506,9 +708,12 @@ async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBo
         process.stdout.write(insights_output(bot) + "\n")
         return 0
     if command.startswith("python3 - "):
-        await process.stdin.read()  # 集計スクリプトを最後まで受け取る（中身は実行しない）
-        process.stdout.write(db_summary_output() + "\n")
-        return 0
+        # DB の集計・テーブルの中身: 受け取ったスクリプトを、架空の bot.db に対して本当に実行する
+        script = await process.stdin.read()
+        stdout, stderr, code = await asyncio.to_thread(run_db_script, bot, command, script)
+        process.stdout.write(stdout)
+        process.stderr.write(stderr)
+        return code
     process.stderr.write(f"fake-ssh-server: 未対応のコマンドです: {command}\n")
     return 127
 
@@ -584,6 +789,8 @@ async def start_fake_server(
     """模擬サーバーを起動して (受け口, 模擬ボット, 実際のポート, ログ生成タスク) を返す。port=0 なら空きポートを使う。"""
     ensure_keys(key_dir)
     bot = FakeBot(delay_scale=delay_scale)
+    # DB の作成（書き込みと同期）でイベントループを止めないよう、別スレッドで作る
+    bot.db_path, bot.blacklist_path = await asyncio.to_thread(make_fake_database, key_dir / "bot")
     bot.seed_history()
     acceptor = await asyncssh.create_server(
         lambda: _FakeServer(bot),

@@ -137,6 +137,16 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.exit_status, 0)
         self.assertIn('"schema_version": 10', result.stdout)
 
+    async def test_db_table_via_stdin(self):
+        await self.session.connect(self.profile)
+        result = await self.session.run(
+            rc.db_table_command(self.profile.bot_dir, "reminders", 0, 3), label="DB の中身", input=rc.DB_TABLE_SCRIPT
+        )
+        self.assertEqual(result.exit_status, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual((data["table"], data["errors"], len(data["rows"])), ("reminders", [], 3))
+        self.assertGreater(data["total"], 3)
+
     async def test_insights_via_stdin(self):
         await self.session.connect(self.profile)
         result = await self.session.run(

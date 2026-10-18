@@ -1,8 +1,9 @@
-"""サーバー側で動かすスクリプト（insights.py・DB 集計）を、手元の一時フォルダに作った架空のボットで検証する。
+"""サーバー側で動かすスクリプト（insights.py・DB 集計・テーブルの中身）を、手元の一時フォルダに作った架空のボットで検証する。
 
 本物のボット・Discord・ネットワークには一切触れない（Discord API の接続先は使われていないポートへ差し替える）。
 """
 
+import ast
 import json
 import os
 import sqlite3
@@ -14,8 +15,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import remote_commands as rc  # noqa: E402
+from fake_ssh_server import FAKE_OPTED_OUT_USER, FAKE_USERS, make_fake_database  # noqa: E402
 
 FAKE_TOKEN = "fake-token-for-test-only"
 # 架空の ID（実在のサーバーではない）
@@ -349,6 +352,130 @@ class DbSummaryScriptTests(unittest.TestCase):
         self.assertEqual(by_day[today_jst], (2, 1))
         self.assertEqual(sum(good + bad for good, bad in by_day.values()), 4)
         self.assertIsNone(data["blacklist"])
+
+
+class DbTableScriptTests(unittest.TestCase):
+    """テーブルの中身を取り出すスクリプト（remote_scripts/db_table.py）。架空の bot.db で確かめる。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_path, _ = make_fake_database(Path(self.temp.name))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def read(self, table, offset=0, limit=50, db_path=None):
+        completed = run_script(rc.DB_TABLE_SCRIPT, ["--db-table", str(db_path or self.db_path), table, str(offset), str(limit)])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        # 出力は ASCII だけ（サーバーのロケールが UTF-8 でなくても書き出せるように）
+        self.assertTrue(completed.stdout.isascii())
+        return json.loads(completed.stdout.strip().splitlines()[-1])
+
+    def test_tables_match_the_backend_whitelist(self) -> None:
+        tree = ast.parse(rc.DB_TABLE_SCRIPT)
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.Assign) and any(getattr(target, "id", "") == "TABLES" for target in item.targets)
+        )
+        self.assertEqual(set(ast.literal_eval(node.value)), set(rc.DB_TABLES))
+
+    def test_every_table_can_be_read(self) -> None:
+        for table in rc.DB_TABLES:
+            with self.subTest(table=table):
+                data = self.read(table)
+                self.assertEqual(data["errors"], [])
+                self.assertEqual(data["table"], table)
+                self.assertGreater(data["total"], 0)
+                self.assertEqual(len(data["rows"]), min(50, data["total"]))
+                self.assertEqual(set(data["rows"][0]["cells"]), set(data["columns"]))
+
+    def test_ids_are_strings_and_names_are_attached(self) -> None:
+        data = self.read("feedback")
+        con = sqlite3.connect(self.db_path)
+        newest = con.execute("SELECT message_id, user_id FROM feedback ORDER BY created_at DESC LIMIT 1").fetchone()
+        con.close()
+        first = data["rows"][0]["cells"]
+        # 19 桁の ID も、下の桁が丸まらないよう文字列で届く
+        self.assertEqual(first["message_id"], str(newest[0]))
+        self.assertIsInstance(first["guild_id"], str)
+        self.assertIsInstance(first["rating"], int)
+        self.assertEqual(data["users"][newest[1]], dict(FAKE_USERS)[newest[1]])
+        created = [row["cells"]["created_at"] for row in data["rows"]]
+        self.assertEqual(created, sorted(created, reverse=True))
+
+    def test_pages_do_not_overlap_and_limit_is_capped(self) -> None:
+        pages = [self.read("feedback", offset=offset) for offset in (0, 50, 100)]
+        self.assertEqual([len(page["rows"]) for page in pages], [50, 50, 30])
+        keys = [(row["cells"]["message_id"], row["cells"]["user_id"]) for page in pages for row in page["rows"]]
+        self.assertEqual(len(set(keys)), 130)
+        self.assertEqual(self.read("feedback", limit=100000)["limit"], 200)
+        self.assertEqual(self.read("feedback", offset=-5)["offset"], 0)
+
+    def test_json_columns_are_parsed(self) -> None:
+        rows = {row["cells"]["user_id"]: row["cells"] for row in self.read("user_stats")["rows"]}
+        stats = rows[FAKE_USERS[0][0]]
+        self.assertEqual(len(stats["hourly"]), 24)
+        self.assertIsInstance(stats["recent_samples"], list)
+        self.assertEqual(set(stats["analysis"]["big_five"]), {"openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"})
+        values = {row["cells"]["key"]: row["cells"]["value"] for row in self.read("profile")["rows"] if row["cells"]["user_id"] == FAKE_USERS[0][0]}
+        self.assertEqual(values["好きなもの"], ["猫", "カレー", "RPG"])
+        self.assertEqual(values["anniversaries"][0]["label"], "誕生日")
+
+    def test_opted_out_user_samples_and_analysis_are_not_returned(self) -> None:
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "UPDATE user_stats SET recent_samples = ?, analysis = ? WHERE user_id = ?",
+            (json.dumps(["架空の停止中の発言"], ensure_ascii=False), json.dumps({"personality": "架空の停止中の解析"}, ensure_ascii=False), FAKE_OPTED_OUT_USER),
+        )
+        con.commit()
+        con.close()
+        data = self.read("user_stats")
+        row = next(row for row in data["rows"] if row["cells"]["user_id"] == FAKE_OPTED_OUT_USER)
+        self.assertIsNone(row["cells"]["recent_samples"])
+        self.assertIsNone(row["cells"]["analysis"])
+        self.assertEqual(row["hidden"], ["recent_samples", "analysis"])
+        text = json.dumps(data, ensure_ascii=False)
+        self.assertNotIn("架空の停止中の発言", text)
+        self.assertNotIn("架空の停止中の解析", text)
+        # 止めていない人の発言サンプルは届く
+        others = [row for row in data["rows"] if row["cells"]["user_id"] != FAKE_OPTED_OUT_USER]
+        self.assertTrue(all(row["cells"]["recent_samples"] and "hidden" not in row for row in others))
+
+    def test_database_is_opened_read_only(self) -> None:
+        before = self.db_path.read_bytes()
+        for table in rc.DB_TABLES:
+            self.read(table)
+        self.assertEqual(self.db_path.read_bytes(), before)
+        self.assertFalse(Path(str(self.db_path) + "-wal").exists())
+
+    def test_unknown_table_and_missing_database_are_reported_without_paths(self) -> None:
+        data = self.read("sqlite_master")
+        self.assertEqual(data["rows"], [])
+        self.assertTrue(data["errors"])
+        missing = Path(self.temp.name) / "fictional-missing" / "bot.db"
+        data = self.read("feedback", db_path=missing)
+        self.assertEqual(data["errors"], ["bot.db が見つかりません。"])
+        self.assertNotIn("fictional-missing", json.dumps(data))
+
+    def test_old_schema_and_broken_values_do_not_stop_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "bot.db"
+            con = sqlite3.connect(db_path)
+            # 並び順に使う created_at が無い古い形・JSON として読めない値・NaN が入った値
+            con.execute("CREATE TABLE feedback (message_id INTEGER, user_id TEXT, rating INTEGER)")
+            con.executemany("INSERT INTO feedback VALUES (?, ?, ?)", [(1, "11", 1), (2, "12", -1)])
+            con.execute("CREATE TABLE user_stats (user_id TEXT, hourly TEXT, analysis TEXT)")
+            con.execute("INSERT INTO user_stats VALUES ('11', '[NaN, 2, Infinity]', 'not-json')")
+            con.commit()
+            con.close()
+            feedback = self.read("feedback", db_path=db_path)
+            self.assertEqual([row["cells"]["message_id"] for row in feedback["rows"]], ["2", "1"])
+            stats = self.read("user_stats", db_path=db_path)["rows"][0]["cells"]
+            self.assertEqual(stats["hourly"], [None, 2, None])
+            self.assertEqual(stats["analysis"], "not-json")
+            missing = self.read("reminders", db_path=db_path)
+            self.assertEqual(missing["rows"], [])
+            self.assertTrue(any("reminders" in error for error in missing["errors"]))
 
 
 if __name__ == "__main__":

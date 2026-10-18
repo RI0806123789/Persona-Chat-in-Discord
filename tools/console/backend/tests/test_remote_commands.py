@@ -49,6 +49,17 @@ class CommandBuildTest(unittest.TestCase):
             "python3 - /srv/bot/memory/bot.db /srv/bot/ng/blacklist.json",
         )
 
+    def test_db_table_command_accepts_only_known_tables_and_clamps_paging(self):
+        self.assertEqual(
+            rc.db_table_command("/home/u/my bot/", "feedback", 50, 50),
+            "python3 - --db-table '/home/u/my bot/memory/bot.db' feedback 50 50",
+        )
+        self.assertTrue(rc.db_table_command("/srv/bot", "reminders", -3, 10**6).endswith(" reminders 0 200"))
+        self.assertTrue(rc.db_table_command("/srv/bot", "profile", 0, 0).endswith(" profile 0 1"))
+        for table in ("sqlite_master", "feedback; id", "../feedback", "Feedback"):
+            with self.subTest(table=table), self.assertRaises(ValueError):
+                rc.db_table_command("/srv/bot", table, 0, 50)
+
 
 class ParseTest(unittest.TestCase):
     def test_parse_service_show_active(self):

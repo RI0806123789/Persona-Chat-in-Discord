@@ -63,6 +63,10 @@ const SYMBOLS = {
   description: "description",
   radio: "radio_button_unchecked",
   radioChecked: "radio_button_checked",
+  chevronLeft: "chevron_left",
+  chevronRight: "chevron_right",
+  expandMore: "expand_more",
+  table: "table_view",
 } as const;
 
 export type IconName = keyof typeof SYMBOLS;

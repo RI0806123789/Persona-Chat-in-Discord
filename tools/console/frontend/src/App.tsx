@@ -136,9 +136,20 @@ function Console() {
   const production = connected && connection?.profile?.environment === "production";
 
   // ---- 伏せ字モード。画面が知っているホスト名・ボット名・サーバー名などを集め、文の中からも隠す
+  // データページでテーブルの中身を開くと、そこに出てきた利用者の表示名も加える（接続先が変わったら捨てる）
+  const [dbUserNames, setDbUserNames] = useState<string[]>([]);
+  const addDbUserNames = useCallback((names: string[]) => {
+    setDbUserNames((current) => {
+      const added = names.filter((name) => !current.includes(name));
+      return added.length ? [...current, ...added] : current;
+    });
+  }, []);
+  useEffect(() => {
+    setDbUserNames([]);
+  }, [connectionKey]);
   const secrets = useMemo(
-    () => collectSecrets({ profile: connection?.profile ?? null, profiles, connection, insights }),
-    [connection, profiles, insights],
+    () => collectSecrets({ profile: connection?.profile ?? null, profiles, connection, insights, userNames: dbUserNames }),
+    [connection, profiles, insights, dbUserNames],
   );
   const privacy = useMemo(() => createPrivacy(privacyOn, secrets), [privacyOn, secrets]);
   const privacyRef = useRef(privacy);
@@ -720,6 +731,7 @@ function Console() {
                   selectedProfile={selectedProfile}
                   refreshToken={refreshToken}
                   connectionKey={connectionKey}
+                  onNames={addDbUserNames}
                 />
               )}
               {page === "guilds" && (
