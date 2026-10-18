@@ -18,6 +18,7 @@ import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
 import { RequestScope } from "./requestScope";
 import { unsetFieldsOf } from "./profiles";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
+import { withViewTransition } from "./viewTransition";
 import type { ConnectionState, DeployRecord, DeployStatus, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
 
 const STATUS_INTERVAL_MS = 5000;
@@ -176,10 +177,17 @@ function Console() {
 
   const navigate = useCallback(
     (next: PageId) => {
-      setStoredPage(next);
-      contentRef.current?.scrollTo({ top: 0 });
+      if (next === page) {
+        contentRef.current?.scrollTo({ top: 0 });
+        return;
+      }
+      // 前のページを薄く消しながら、新しいページのカードを順に浮かび上がらせる（styles.css の「ビュー遷移」）
+      withViewTransition("page", () => {
+        setStoredPage(next);
+        contentRef.current?.scrollTo({ top: 0, behavior: "instant" });
+      });
     },
-    [setStoredPage],
+    [page, setStoredPage],
   );
 
   const toggleRail = useCallback(() => {
@@ -520,7 +528,27 @@ function Console() {
     setRefreshToken((n) => n + 1);
   }, [connected, refreshStatus, refreshInsights]);
 
-  const toggleTheme = useCallback(() => setThemeChoice(theme === "dark" ? "light" : "dark"), [theme, setThemeChoice]);
+  // テーマ・配色・伏せ字の切り替えは、画面全体を写しから溶け込ませる（一瞬で色や文字が変わらないように）
+  const changeTheme = useCallback(
+    (choice: ThemeChoice) =>
+      withViewTransition("theme", () => {
+        // 新しい画面を写す前に色を変える必要があるので、data-theme は useEffect を待たずにここでも書く
+        if (choice) document.documentElement.dataset.theme = choice;
+        else delete document.documentElement.dataset.theme;
+        setThemeChoice(choice);
+      }),
+    [setThemeChoice],
+  );
+  const toggleTheme = useCallback(() => changeTheme(theme === "dark" ? "light" : "dark"), [theme, changeTheme]);
+  const changeSeed = useCallback(
+    (id: string) =>
+      withViewTransition("theme", () => {
+        applyTheme((SEED_OPTIONS.find((seed) => seed.id === id) ?? SEED_OPTIONS[0]).hex);
+        setSeedId(id);
+      }),
+    [setSeedId],
+  );
+  const togglePrivacy = useCallback(() => withViewTransition("privacy", () => setPrivacyOn((value) => !value)), [setPrivacyOn]);
 
   // ---- キーボード操作（Vim 風）。最新の処理を ref 経由で呼ぶので、登録は1回だけ
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
@@ -598,7 +626,7 @@ function Console() {
         toggleRail();
         break;
       case "h":
-        setPrivacyOn((value) => !value);
+        togglePrivacy();
         break;
       case "t":
         toggleTheme();
@@ -650,11 +678,11 @@ function Console() {
             onRefresh={manualRefresh}
             autoRefresh={autoRefresh}
             onToggleAuto={() => setAutoRefresh((value) => !value)}
-            onTogglePrivacy={() => setPrivacyOn((value) => !value)}
+            onTogglePrivacy={togglePrivacy}
             themeChoice={themeChoice}
-            onSelectTheme={setThemeChoice}
+            onSelectTheme={changeTheme}
             seedId={seedId}
-            onSelectSeed={setSeedId}
+            onSelectSeed={changeSeed}
             onOpenConnection={() => navigate("connection")}
             showMenuButton={compact}
             onMenu={() => setModalRailOpen(true)}

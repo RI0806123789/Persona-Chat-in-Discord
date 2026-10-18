@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { api, errorMessage } from "../api";
+import { Collapse } from "../components/Collapse";
 import { LoadingIndicator, WavyProgress } from "../components/expressive";
 import { Icon } from "../components/Icon";
 import { Button, Card, Chip, ConnectedButtonGroup, InlineError, Notice, Stat, StatusChip } from "../components/ui";
@@ -35,18 +36,23 @@ export function DataPage({
   // 中身を開いているテーブル。中身には会話や記憶が入るので、開くのは利用者が選んだときだけにする
   // （覚えておいて、ページを開いただけで取り寄せることはしない）
   const [openTable, setOpenTable] = useState<string | null>(null);
+  // 閉じる動きの間も、最後に開いていたテーブルの中身を残しておく
+  const [shownTable, setShownTable] = useState<string | null>(null);
   const privacy = usePrivacy();
   const requestId = useRef(0);
 
   // 接続先が変わったら閉じる（別のサーバーの中身を、選ばないうちに取り寄せない）
+  // （閉じる動きの間に新しい接続先から取り寄せないよう、中身もすぐに外す）
   useEffect(() => {
     setOpenTable(null);
+    setShownTable(null);
   }, [connectionKey]);
 
   const selectTable = (name: string) => {
     const next = openTable === name ? null : name;
     setOpenTable(next);
     if (next) {
+      setShownTable(next);
       // 開いた中身のカードが見えるところまで送る（描画の後に。動きを減らす設定ならすぐに移る）
       requestAnimationFrame(() => {
         const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -133,15 +139,17 @@ export function DataPage({
         )}
       </Card>
 
-      {openTable && (
-        <DbTableDetail
-          key={`${openTable}:${connectionKey}`}
-          table={openTable}
-          refreshToken={refreshToken}
-          onClose={closeTable}
-          onNames={onNames}
-        />
-      )}
+      <Collapse open={openTable !== null} className="span-12 db-detail-collapse">
+        {shownTable && (
+          <DbTableDetail
+            key={`${shownTable}:${connectionKey}`}
+            table={shownTable}
+            refreshToken={refreshToken}
+            onClose={closeTable}
+            onNames={onNames}
+          />
+        )}
+      </Collapse>
 
       <Card title="リマインダー / 文書キュー" icon="alarm" source="ssh" className="span-4">
         <StatusCounts title="リマインダー" counts={summary ? summary.reminders_by_status ?? null : undefined} />
@@ -205,7 +213,7 @@ function TableRows({
   const max = Math.max(1, ...rows.map(([, count]) => count));
   return (
     <ul className="bar-list">
-      {rows.map(([name, count]) => {
+      {rows.map(([name, count], index) => {
         const content = (
           <>
             <span className="bar-label">
@@ -220,7 +228,7 @@ function TableRows({
         );
         // 中身を見せられるのはボットのテーブルだけ（ほかは件数だけ）
         return (
-          <li key={name}>
+          <li key={name} style={{ "--row-index": index } as CSSProperties}>
             {isViewableTable(name) ? (
               <button
                 type="button"

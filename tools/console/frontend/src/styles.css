@@ -207,6 +207,102 @@ code {
   }
 }
 
+/* カードの中身（読み込み中の表示から、届いたデータへの入れ替わりなど）は、ふっと現れる */
+.m3-card-body > * {
+  animation: content-in var(--spring-effects-slow) both;
+}
+@keyframes content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 一覧の行は、上から1行ずつ少し遅れて浮かび上がる（--row-index は描画側が渡す。遅れは 12 行目で頭打ち） */
+.db-table tbody tr.db-row,
+.bar-list > li {
+  animation: row-in var(--spring-spatial-default) both;
+  animation-delay: calc(min(var(--row-index, 0), 12) * 24ms);
+}
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* ------------------------------------------------------------ 開閉（components/Collapse.tsx） */
+
+/* 高さを 0 から本来の高さへ伸ばす。跳ねないばね（Standard）なので、行き過ぎずに止まる */
+.m3-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--spring-spatial-default),
+    opacity var(--spring-effects-default);
+}
+.m3-collapse.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+/* 最初に描かれたとき（開いた状態で現れたとき）も、0 から伸ばす */
+@starting-style {
+  .m3-collapse.is-open {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+/* 伸び縮みの間だけ中身を切り取る。少し外へはみ出すフォーカスの枠は残す */
+.m3-collapse-inner {
+  min-height: 0;
+  overflow: clip;
+  overflow-clip-margin: 6px;
+}
+.m3-collapse.is-settled > .m3-collapse-inner {
+  overflow: visible;
+}
+.grid > .m3-collapse {
+  animation: none;
+}
+
+/* ------------------------------------------------------------ ビュー遷移（viewTransition.ts） */
+
+/* ページの切り替え: レールなどはそのままにして、前のページだけを少し奥へ引きながら薄く消す。
+   新しいページは、上の page-in / card-in でカードが順に浮かび上がる */
+:root[data-view-transition="page"] .content {
+  view-transition-name: page-content;
+}
+:root[data-view-transition="page"]::view-transition-old(root),
+:root[data-view-transition="page"]::view-transition-new(root),
+:root[data-view-transition="page"]::view-transition-group(page-content),
+:root[data-view-transition="page"]::view-transition-new(page-content) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+:root[data-view-transition="page"]::view-transition-old(page-content) {
+  animation: page-out var(--spring-effects-default) both;
+  mix-blend-mode: normal;
+}
+@keyframes page-out {
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+/* テーマ・配色・伏せ字の切り替え: 画面全体を、前の写しから溶け込ませる */
+:root[data-view-transition="theme"]::view-transition-group(*),
+:root[data-view-transition="privacy"]::view-transition-group(*) {
+  animation-duration: var(--spring-effects-slow-duration);
+}
+:root[data-view-transition="theme"]::view-transition-old(*),
+:root[data-view-transition="theme"]::view-transition-new(*),
+:root[data-view-transition="privacy"]::view-transition-old(*),
+:root[data-view-transition="privacy"]::view-transition-new(*) {
+  animation-duration: var(--spring-effects-slow-duration);
+  animation-timing-function: var(--spring-effects-slow-easing);
+}
+
 .span-3 { grid-column: span 3; }
 .span-4 { grid-column: span 4; }
 .span-5 { grid-column: span 5; }
@@ -2588,9 +2684,33 @@ dl.kv dd {
   flex-direction: column;
   line-height: 1.3;
 }
+/* 余白は伸び縮みする中身の側に置く（td に置くと、閉じきるまで余白の分だけ残る） */
 .db-row-detail > td {
-  padding: 4px 12px 20px 52px !important;
+  padding: 0 !important;
   background: var(--md-sys-color-surface-container);
+}
+.db-row-detail-body {
+  padding: 4px 12px 20px 52px;
+}
+/* テーブルを切り替えたときは、中身のカードがふっと入れ替わる */
+.db-detail {
+  animation: content-in var(--spring-effects-slow) both;
+}
+
+/* デプロイの「コマンドと出力」などの開閉（<details>）も、高さを伸び縮みさせる。
+   ::details-content と interpolate-size に対応したブラウザだけで動き、ほかはこれまでどおりすぐ開く */
+details {
+  interpolate-size: allow-keywords;
+}
+details::details-content {
+  height: 0;
+  overflow: clip;
+  transition:
+    height var(--spring-spatial-default),
+    content-visibility var(--spring-spatial-default-duration) allow-discrete;
+}
+details[open]::details-content {
+  height: auto;
 }
 .db-fields {
   /* 狭い画面で表が横にはみ出しても、開いた行の中身は見えている所に留め、その幅で折り返す */
@@ -2855,6 +2975,11 @@ dl.kv dd {
   opacity: 1;
   transform: none;
   transition: opacity var(--spring-effects-default), transform var(--spring-spatial-slow);
+}
+/* 押したボタンの位置から広がる / そこへ縮んで戻る動き（hooks.ts の useEmergeFrom）の間は、
+   CSS の transition を止める（transition の方が Web Animations より優先されるため） */
+.m3-dialog[data-emerge] {
+  transition: none;
 }
 .m3-dialog h2 {
   text-align: center;
@@ -3265,8 +3390,8 @@ dl.kv dd {
   .db-range {
     margin-left: 0;
   }
-  .db-row-detail > td {
-    padding-left: 12px !important;
+  .db-row-detail-body {
+    padding-left: 12px;
   }
   .db-fields {
     grid-template-columns: minmax(0, 1fr);
@@ -3337,5 +3462,11 @@ dl.kv dd {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  /* ビュー遷移は viewTransition.ts でも使わないようにしているが、念のため写しの動きも止める */
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
   }
 }

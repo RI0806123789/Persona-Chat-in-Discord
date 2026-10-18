@@ -1,8 +1,9 @@
 // データページで選んだ bot.db のテーブルの中身。50 行ずつ取り寄せ、行を開くと全部の列を見せる。
 // 会話・記憶・リマインダーの本文と Discord の ID も届くので、伏せ字モードでは列の種類ごとに隠す
 // （dbTables.ts の isSecretKind）。統計の収集を止めた人の発言サンプルと解析は、サーバーから持ち帰らない。
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, errorMessage } from "../api";
+import { CollapseBody } from "../components/Collapse";
 import { WavyProgress } from "../components/expressive";
 import { Button, Card, Chip, EmptyState, IconButton, InlineError, Notice, StatusChip } from "../components/ui";
 import {
@@ -24,6 +25,7 @@ import {
   type ColumnSpec,
 } from "../dbTables";
 import { formatFullDateTime, formatNumber, formatPercent } from "../format";
+import { usePresence } from "../hooks";
 import { MASK, usePrivacy } from "../privacy";
 import type { DbRow, DbTablePage, DbValue } from "../types";
 
@@ -101,7 +103,7 @@ export function DbTableDetail({
       title={`${table} の中身`}
       icon="table"
       source="ssh"
-      className="span-12 db-detail"
+      className="db-detail"
       actions={
         <>
           <Button variant="text" size="xs" icon="refresh" onClick={() => void load(offset)} busy={loading}>
@@ -173,6 +175,8 @@ export function DbTableDetail({
                   <Fragment key={`${data.offset}:${index}`}>
                     <tr
                       className={`db-row ${open ? "is-open" : ""}`}
+                      // 1行ずつ少し遅らせて浮かび上がらせる（styles.css の row-in）
+                      style={{ "--row-index": index } as CSSProperties}
                       onClick={() => {
                         // 文字を選んでコピーしようとしているときは開閉しない
                         if (!window.getSelection()?.toString()) toggle(index);
@@ -198,13 +202,9 @@ export function DbTableDetail({
                         </td>
                       ))}
                     </tr>
-                    {open && (
-                      <tr className="db-row-detail" id={detailId}>
-                        <td colSpan={listColumns.length + 1}>
-                          <RowFields columns={columns} row={row} page={data} />
-                        </td>
-                      </tr>
-                    )}
+                    <DetailRow open={open} id={detailId} colSpan={listColumns.length + 1}>
+                      <RowFields columns={columns} row={row} page={data} />
+                    </DetailRow>
                   </Fragment>
                 );
               })}
@@ -218,6 +218,21 @@ export function DbTableDetail({
 
 function isNumeric(column: ColumnSpec): boolean {
   return column.kind === "count" || column.kind === "hours";
+}
+
+/** 開いた行の下に足す行。縮み終わるまで残し、高さを伸び縮みさせて開閉する。 */
+function DetailRow({ open, id, colSpan, children }: { open: boolean; id: string; colSpan: number; children: ReactNode }) {
+  const { present, onExited } = usePresence(open);
+  if (!present) return null;
+  return (
+    <tr className="db-row-detail" id={id}>
+      <td colSpan={colSpan}>
+        <CollapseBody open={open} onExited={onExited}>
+          <div className="db-row-detail-body">{children}</div>
+        </CollapseBody>
+      </td>
+    </tr>
+  );
 }
 
 /** 行を開いたときの、全部の列。 */
