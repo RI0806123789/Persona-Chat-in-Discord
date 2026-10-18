@@ -16,6 +16,8 @@ from google.genai import errors, types
 import httpx
 from PIL import Image
 
+from tests.helpers.network_guard import block_network
+
 from persona_bot.services import gemini_service
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.genai_client import close_genai_client, create_genai_client
@@ -32,6 +34,7 @@ def unsupported_search() -> errors.APIError:
 
 class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        block_network(self)
         self.now = 100.0
         # 旧REST経路を含め、移行前の失敗確認でも外部通信を発生させない。
         rest_guard = patch("httpx.AsyncClient.post", new_callable=AsyncMock,
@@ -240,6 +243,7 @@ class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
 
 class GeminiDocumentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        block_network(self)
         self.uploaded = types.File(name="files/example", uri="https://example.com/file", mime_type="application/pdf")
         self.files = SimpleNamespace(upload=AsyncMock(return_value=self.uploaded), delete=AsyncMock())
         response = types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(parts=[
@@ -314,9 +318,13 @@ class GeminiDocumentTests(unittest.IsolatedAsyncioTestCase):
 class GeminiSdkTransportTests(unittest.IsolatedAsyncioTestCase):
     """実SDKのJSON変換とFilesの転送を、ネットワークを使わず確認する。"""
 
+    def setUp(self) -> None:
+        block_network(self)
+
     def sdk_client(self, http_client: httpx.AsyncClient) -> genai.Client:
-        return genai.Client(api_key="YOUR_API_KEY", vertexai=False, enterprise=False,
+        return genai.Client(api_key="YOUR_API_KEY", vertexai=False,
                             http_options=types.HttpOptions(httpx_async_client=http_client,
+                                                          async_client_args={"transport": http_client._transport},
                                                           retry_options=types.HttpRetryOptions(attempts=1)))
 
     async def test_pil_image_and_google_search_reach_sdk_request(self) -> None:
@@ -345,8 +353,10 @@ class GeminiSdkTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(requests[0]["tools"], [{"googleSearch": {}}])
                 parts = requests[0]["contents"][0]["parts"]
                 self.assertEqual(parts[0], {"text": "架空の画像"})
-                self.assertEqual(types.Blob.model_validate(parts[1]["inlineData"]).mime_type, "image/png")
-                self.assertTrue(parts[1]["inlineData"]["data"])
+                # 旧SDKはJPEG、現行SDKはPNGへ変換する。どちらもAPIの対応形式として受け付ける。
+                inline = parts[1]["inlineData"]
+                self.assertIn(types.Blob.model_validate(inline).mime_type, ("image/png", "image/jpeg"))
+                self.assertTrue(inline["data"])
             finally:
                 await client.aio.aclose()
                 client.close()

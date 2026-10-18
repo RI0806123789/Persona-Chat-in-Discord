@@ -1,6 +1,7 @@
 """共通SDK境界のタイムアウトと暗黙リトライ抑止を確認する。"""
 
 import asyncio
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from google import genai
 from google.genai import errors, types
 import httpx
+
+from tests.helpers.network_guard import block_network
 
 from persona_bot.services import genai_client
 from persona_bot.services.genai_client import close_genai_client, create_genai_client, generate_content
@@ -56,6 +59,7 @@ class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
                     await close_genai_client(client)
 
     def setUp(self) -> None:
+        block_network(self)
         self.response = object()
         self.request = AsyncMock(return_value=self.response)
         self.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=self.request)))
@@ -66,9 +70,50 @@ class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, factory.return_value)
         self.assertEqual(factory.call_args.kwargs["api_key"], "YOUR_API_KEY")
         self.assertIs(factory.call_args.kwargs["vertexai"], False)
-        self.assertIs(factory.call_args.kwargs["enterprise"], False)
+        self.assertNotIn("enterprise", factory.call_args.kwargs)
         self.assertEqual(factory.call_args.kwargs["http_options"].retry_options.attempts, 1)
         await factory.call_args.kwargs["http_options"].httpx_async_client.aclose()
+
+    async def test_factory_accepts_legacy_client_without_enterprise_parameter(self) -> None:
+        class LegacyClient:
+            def __init__(self, *, api_key, vertexai, http_options):
+                self.api_key = api_key
+                self.vertexai = vertexai
+                self.http_options = http_options
+                self.aio = SimpleNamespace(aclose=AsyncMock())
+                self.close = Mock()
+
+        with patch.object(genai_client.genai, "Client", LegacyClient):
+            client = create_genai_client("YOUR_API_KEY")
+        try:
+            self.assertEqual(client.api_key, "YOUR_API_KEY")
+            self.assertIs(client.vertexai, False)
+            self.assertEqual(client.http_options.retry_options.attempts, 1)
+        finally:
+            await close_genai_client(client)
+        self.assertTrue(client.http_options.httpx_async_client.is_closed)
+
+    async def test_factory_uses_developer_api_even_with_cloud_environment_flags(self) -> None:
+        requests = []
+
+        async def handle(request):
+            requests.append(request)
+            return httpx.Response(200, json={"candidates": [{
+                "content": {"parts": [{"text": "架空の応答"}]}, "finishReason": "STOP",
+            }]})
+
+        with patch.dict(os.environ, {"GOOGLE_GENAI_USE_VERTEXAI": "true", "GOOGLE_GENAI_USE_ENTERPRISE": "true"}), patch.object(
+            genai_client.httpx, "AsyncHTTPTransport", return_value=httpx.MockTransport(handle),
+        ):
+            client = create_genai_client("YOUR_API_KEY")
+            try:
+                await generate_content(client, model="selected-model", contents="架空の入力", timeout=2)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(requests[0].url.host, "generativelanguage.googleapis.com")
+                self.assertEqual(requests[0].headers["x-goog-api-key"], "YOUR_API_KEY")
+                self.assertNotIn("key", requests[0].url.params)
+            finally:
+                await close_genai_client(client)
 
     async def test_timeout_seconds_are_rounded_up_to_milliseconds(self) -> None:
         result = await generate_content(self.client, model="selected-model", contents="架空の入力", timeout=1.2341,
@@ -125,8 +170,9 @@ class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
                     return httpx.Response(status, json={"error": {"message": "架空のAPI障害", "code": status}})
 
                 async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http_client:
-                    client = genai.Client(api_key="YOUR_API_KEY", vertexai=False, enterprise=False,
-                                          http_options=types.HttpOptions(httpx_async_client=http_client))
+                    client = genai.Client(api_key="YOUR_API_KEY", vertexai=False,
+                                          http_options=types.HttpOptions(httpx_async_client=http_client,
+                                                                        async_client_args={"transport": http_client._transport}))
                     try:
                         with self.assertRaises(errors.APIError):
                             await generate_content(client, model="selected-model", contents="架空の入力", timeout=1)
@@ -203,6 +249,9 @@ class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GenaiFactoryFailureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        block_network(self)
+
     def test_failed_factory_reclaims_unused_httpx_without_running_loop(self) -> None:
         http_client = Mock(spec=httpx.AsyncClient, aclose=AsyncMock())
         with patch.object(genai_client.httpx, "AsyncClient", return_value=http_client), \

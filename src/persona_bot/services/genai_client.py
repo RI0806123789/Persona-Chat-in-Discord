@@ -35,14 +35,17 @@ _owned_http_clients: WeakKeyDictionary[genai.Client, httpx.AsyncClient] = WeakKe
 
 def create_genai_client(api_key: str) -> genai.Client:
     """Developer APIとHTTPXを明示し、生成・転送の暗黙リトライを防ぐ。"""
-    http_client = httpx.AsyncClient(transport=_UploadStatusTransport(httpx.AsyncHTTPTransport(retries=0)))
+    transport = _UploadStatusTransport(httpx.AsyncHTTPTransport(retries=0))
+    http_client = httpx.AsyncClient(transport=transport)
     try:
+        # vertexaiは新旧SDKで共通。新SDKだけの別名enterpriseを使わずDeveloper APIへ固定する。
         client = genai.Client(
             api_key=api_key,
             vertexai=False,
-            enterprise=False,
             http_options=types.HttpOptions(
                 httpx_async_client=http_client,
+                # 旧SDKもHTTPXを選ぶよう、同じtransportを設定に明示する。
+                async_client_args={"transport": transport},
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         )
