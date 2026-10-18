@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -111,6 +112,92 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_summaries_survive_when_llm_omits_them(self) -> None:
         # #73: 圧縮中に追加が無くても、圧縮前からの要約が消えない。
         await self.check_additions(3, 0)
+
+    async def prepare_compaction_save(self) -> list[dict]:
+        self.original = default_projects_memory()
+        self.original["users"] = {"test-user": {"note": "既存の記憶"}, "other-user": {"note": "他人の記憶"}}
+        write_json_file(self.projects_path, self.original)
+        self.db.profile_replace_all("test-user", {"note": "既存のプロフィール"})
+        await self.service.append_pending_log("test-user", "架空の質問", "架空の回答")
+        self.service._compact_fail_count["test-user"] = 2
+        self.service._compact_memory = AsyncMock(return_value=({"note": "新しいプロフィール"}, {"note": "新しい記憶"}))
+        return self.db.pending_fetch_entries("test-user")
+
+    async def test_json_save_failure_rolls_back_profile_and_pending_log_then_retries(self) -> None:
+        entries = await self.prepare_compaction_save()
+        with patch.object(memory_service, "write_json_file", side_effect=OSError("架空のJSON保存失敗")):
+            with self.assertRaises(OSError):
+                await self.service._flush_user("test-user", entries)
+        self.assertEqual(self.db.profile_load("test-user"), {"note": "既存のプロフィール"})
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), entries)
+        self.assertEqual(load_json_file(self.projects_path, {}), self.original)
+        self.assertEqual(self.service._compact_fail_count["test-user"], 2)
+        await self.service._flush_user("test-user", entries)
+        self.assertEqual(self.db.profile_load("test-user"), {"note": "新しいプロフィール"})
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
+        self.assertEqual(self.service._compact_fail_count["test-user"], 0)
+
+    async def test_database_commit_failure_restores_json_profile_and_pending_log(self) -> None:
+        entries = await self.prepare_compaction_save()
+        connection = self.db._conn
+
+        class FailedCommit:
+            def __getattr__(self, name):
+                return getattr(connection, name)
+
+            def __enter__(self):
+                return connection.__enter__()
+
+            def __exit__(self, kind, error, traceback):
+                if kind is None:
+                    connection.rollback()
+                    raise OSError("架空のDB確定失敗")
+                return connection.__exit__(kind, error, traceback)
+
+        with patch.object(self.db, "_conn", FailedCommit()):
+            with self.assertRaises(OSError):
+                await self.service._flush_user("test-user", entries)
+        self.assertEqual(load_json_file(self.projects_path, {}), self.original)
+        self.assertEqual(self.db.profile_load("test-user"), {"note": "既存のプロフィール"})
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), entries)
+        self.assertEqual(self.service._compact_fail_count["test-user"], 2)
+
+    async def test_repeated_cancellation_finishes_all_saves_before_releasing_lock(self) -> None:
+        entries = await self.prepare_compaction_save()
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        original_save = self.service._save_compacted_projects
+
+        def delayed_save(*args):
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(timeout=5):
+                raise TimeoutError("架空の保存待機が終了しませんでした")
+            original_save(*args)
+
+        with patch.object(self.service, "_save_compacted_projects", side_effect=delayed_save):
+            task = asyncio.create_task(self.service._flush_user("test-user", entries))
+            pending = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                pending = asyncio.create_task(self.service.append_pending_log("test-user", "保存中の質問", "保存中の回答"))
+                for _ in range(2):
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertTrue(self.service.io_lock.locked())
+                    self.assertFalse(pending.done())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                await pending
+            finally:
+                release.set()
+                await asyncio.gather(task, *([pending] if pending else []), return_exceptions=True)
+        self.assertEqual(self.db.profile_load("test-user"), {"note": "新しいプロフィール"})
+        self.assertEqual(load_json_file(self.projects_path, {})["users"]["test-user"], {"note": "新しい記憶"})
+        self.assertEqual([entry["question"] for entry in self.db.pending_fetch_entries("test-user")], ["保存中の質問"])
+        self.assertEqual(self.service._compact_fail_count["test-user"], 0)
 
     async def test_summaries_invented_by_llm_are_discarded(self) -> None:
         invented = [{"document_name": "fake.txt", "summary": "LLMの作り話"}]

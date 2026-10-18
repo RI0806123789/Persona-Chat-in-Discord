@@ -53,6 +53,12 @@ class ProfileAbsorptionTests(unittest.TestCase):
         self.db.initialize()
         self.assertEqual(self.db.profile_load("other-user"), {"趣味": "架空の読書"})
 
+    def test_bom_profile_is_absorbed_and_reset(self) -> None:
+        self.profile_path.write_text('{"test-user": {"趣味": "架空の工作"}}', encoding="utf-8-sig")
+        self.db.initialize()
+        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
+
     def test_shared_profile_with_owner_is_still_imported(self) -> None:
         self.db._legacy_owner_id = "legacy-user"
         self.write_profile({"趣味": "架空の工作"})

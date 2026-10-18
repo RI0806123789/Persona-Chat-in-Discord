@@ -254,6 +254,20 @@ class LegacyDataEdgeCaseTests(unittest.TestCase):
         db.initialize()
         self.assertEqual(self.pending_users(db), ["owner-user"])
 
+    def test_bom_legacy_json_and_first_pending_entry_are_imported(self) -> None:
+        (self.root / "affinity.json").write_text('{"test-user": {"affinity": 61}}', encoding="utf-8-sig")
+        (self.root / "pending_log.txt").write_text(
+            "[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の回答\n", encoding="utf-8-sig",
+        )
+        db = self.open("test-user")
+        db.initialize()
+        self.assertEqual(db.affinity_load_all()["test-user"]["affinity"], 61)
+        self.assertEqual([row["question"] for row in db.pending_fetch_entries("test-user")], ["架空の質問"])
+        self.assertTrue((self.root / "affinity.json.imported.bak").exists())
+        self.assertTrue((self.root / "pending_log.txt.imported.bak").exists())
+        db.initialize()
+        self.assertEqual(len(db.pending_fetch_entries("test-user")), 1)
+
     def test_pending_log_txt_is_kept_as_backup_without_owner(self) -> None:
         text = "[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n"
         for owner, expected in (("", []), ("owner-user", ["owner-user"])):

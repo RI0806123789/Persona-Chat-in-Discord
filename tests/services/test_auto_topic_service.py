@@ -45,6 +45,50 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
             auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="架空の履歴"),
         ).start()
 
+    async def test_response_settings_are_captured_before_prompt_or_history_wait(self):
+        for kind in ("topic", "anniversary"):
+            for stage in ("prompt", "history"):
+                with self.subTest(kind=kind, stage=stage):
+                    self.settings.current_prompt_file = "../prompts/prompt_default.txt"
+                    self.settings.current_model_name = "old-model"
+
+                    def change():
+                        self.settings.current_prompt_file = "../prompts/prompt_maid.txt"
+                        self.settings.current_model_name = "new-model"
+
+                    def prompt(path):
+                        if stage == "prompt":
+                            change()
+                        return "架空のペルソナ"
+
+                    async def history(*args):
+                        if stage == "history":
+                            change()
+                        return "架空の履歴"
+
+                    self.prompt.side_effect = prompt
+                    self.history.side_effect = history
+                    async def post():
+                        if kind == "topic":
+                            return await self.service._post_topic(self.channel, self.settings)
+                        return await self.service._post_anniversary(self.channel, self.settings, self.member, "誕生日")
+
+                    self.assertTrue(await post())
+                    self.assertEqual(self.prompt.call_args.args[0].name, "prompt_default.txt")
+                    self.assertEqual(self.gemini.generate.await_args.args[1], "old-model")
+                    self.assertTrue(await post())
+                    self.assertEqual(self.prompt.call_args.args[0].name, "prompt_maid.txt")
+                    self.assertEqual(self.gemini.generate.await_args.args[1], "new-model")
+
+    async def test_whitespace_or_tag_only_auto_posts_are_skipped_before_screening(self):
+        for text in (" \n\t", "  \n[V:+1, A:+1]  "):
+            with self.subTest(text=text):
+                self.gemini.generate.return_value = (text, None, [])
+                self.assertFalse(await self.service._post_topic(self.channel, self.settings))
+                self.assertFalse(await self.service._post_anniversary(self.channel, self.settings, self.member, "誕生日"))
+        self.moderator.check.assert_not_awaited()
+        self.channel.send.assert_not_awaited()
+
     async def test_dm_is_not_watched_or_updated(self):
         self.service.watch_channel(20, None)
         self.assertEqual(self.state.dm_settings.auto_topic_channels, {})

@@ -56,6 +56,24 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
         self.assert_no_files()
         self.gemini.upload_file.assert_not_awaited()
 
+    async def test_actual_download_size_is_checked_and_temporary_file_is_removed(self) -> None:
+        self.attachment.read.return_value = b"12345"
+        self.attachment.size = 1
+        with patch.object(document_service, "MAX_DOCUMENT_SIZE_BYTES", 4), patch.object(Path, "write_bytes") as write:
+            with self.assertRaisesRegex(ValueError, "上限"):
+                await self.process()
+        self.assert_no_files()
+        write.assert_not_called()
+        self.gemini.upload_file.assert_not_awaited()
+
+    async def test_actual_download_at_size_limit_is_accepted(self) -> None:
+        self.attachment.read.return_value = b"1234"
+        self.attachment.size = 1
+        with patch.object(document_service, "MAX_DOCUMENT_SIZE_BYTES", 4):
+            await self.process()
+        self.assert_no_files()
+        self.gemini.upload_file.assert_awaited_once()
+
     async def test_partial_write_failure_removes_temporary_file(self) -> None:
         original = Path.write_bytes
 

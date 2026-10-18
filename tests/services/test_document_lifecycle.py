@@ -87,6 +87,41 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         for attachment in self.message.attachments:
             self.assertIn(f"架空の要約 {attachment.filename}", prompt)
 
+    async def test_log_failure_after_answer_still_saves_completed_state(self) -> None:
+        with patch.object(self.memory, "append_pending_log", side_effect=OSError("架空の記憶追記失敗")), patch.object(
+            self.service, "_update_task", wraps=self.service._update_task,
+        ) as update:
+            await self.service._process_task(self.task)
+        self.sent.assert_awaited_once()
+        self.message.reply.assert_not_awaited()
+        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["completed"])
+
+    async def test_completion_save_failure_does_not_save_failed_or_reply_twice(self) -> None:
+        with patch.object(self.service, "_update_task", side_effect=OSError("架空の状態保存失敗")) as update:
+            await self.service._process_task(self.task)
+        self.sent.assert_awaited_once()
+        self.message.reply.assert_not_awaited()
+        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["completed"])
+
+    async def test_failed_status_save_does_not_prevent_failure_notice(self) -> None:
+        self.service._process_attachment.side_effect = ValueError("架空の添付失敗")
+        with patch.object(self.service, "_update_task", side_effect=OSError("架空の状態保存失敗")):
+            await self.service._process_task(self.task)
+        self.sent.assert_not_awaited()
+        self.message.reply.assert_awaited_once()
+
+    async def test_legacy_author_falls_back_to_fetched_message_for_all_memory_paths(self) -> None:
+        self.message.author = SimpleNamespace(id=22)
+        for author in (0, "0", None, ""):
+            with self.subTest(author=author):
+                self.task["author_id"] = author
+                self.service._process_attachment.reset_mock()
+                with patch.object(self.memory, "append_pending_log", AsyncMock()) as append:
+                    await self.service._process_task(self.task)
+                self.assertEqual(append.await_args.args[0], "22")
+                self.assertTrue(all(call.args[1] == "22" for call in self.service._process_attachment.await_args_list))
+                self.assertIn("fictional-0.txt", self.gemini.generate.await_args.args[0])
+
     async def test_setting_change_during_first_attachment_keeps_initial_settings(self) -> None:
         async def change(item, user_id, model):
             await self.attachment(item, user_id, model)

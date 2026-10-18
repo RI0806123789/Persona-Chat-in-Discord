@@ -80,7 +80,7 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
             id=10, name="架空のチャンネル", send=AsyncMock(), guild=SimpleNamespace(me=object()),
             permissions_for=Mock(return_value=SimpleNamespace(view_channel=True, send_messages=True)),
         )
-        settings = SimpleNamespace(current_prompt_file="架空のパス", current_model_name="架空モデル", channel_reset_points={})
+        settings = auto_topic_service.GuildSettings(current_prompt_file="架空のパス", current_model_name="架空モデル")
         service = AutoTopicService(
             SimpleNamespace(user=None), None, None,
             SimpleNamespace(generate=AsyncMock(return_value=(text, None, []))), None, None,

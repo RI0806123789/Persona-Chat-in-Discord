@@ -217,6 +217,44 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             thread.join(1)
         self.client.stop.assert_not_called()
 
+    async def test_cancelled_playback_stops_and_closes_stream_even_if_stop_fails(self):
+        for stop_error in (None, RuntimeError("架空の停止失敗")):
+            with self.subTest(stop_error=stop_error):
+                started = asyncio.Event()
+                sources = []
+
+                def play(source, **kwargs):
+                    sources.append(source)
+                    started.set()
+
+                self.client.play.side_effect = play
+                self.client.stop.reset_mock(side_effect=True)
+                self.client.stop.side_effect = stop_error
+                task = asyncio.create_task(voice._play_pcm(self.client, b"\0" * 16))
+                try:
+                    await asyncio.wait_for(started.wait(), 2)
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                finally:
+                    if not task.done():
+                        task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                self.client.stop.assert_called_once()
+                self.assertTrue(sources[0].stream.closed)
+
+    async def test_play_rejection_closes_stream(self):
+        sources = []
+
+        def reject(source, **kwargs):
+            sources.append(source)
+            raise RuntimeError("架空の再生失敗")
+
+        self.client.play.side_effect = reject
+        with self.assertRaises(RuntimeError):
+            await voice._play_pcm(self.client, b"\0" * 16)
+        self.assertTrue(sources[0].stream.closed)
+
     async def test_missing_completion_stops_playback_instead_of_hanging_worker(self):
         async def timeout(awaitable, *, timeout):
             awaitable.close()

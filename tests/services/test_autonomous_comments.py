@@ -140,6 +140,49 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.sent.assert_awaited_once()
         self.assertEqual(self.session.last_comment_reply_at, claimed_at)
 
+    async def test_comment_images_are_closed_on_every_exit(self) -> None:
+        from PIL import Image
+
+        for case in ("success", "image_only", "persona", "history", "generate", "cancel", "empty", "session", "send"):
+            with self.subTest(case=case):
+                self.settings.autonomous_session = self.session
+                self.session.last_comment_reply_at = None
+                images = [Image.new("RGB", (2, 2)) for _ in range(2)]
+
+                async def generate(*args, **kwargs):
+                    for image in images:
+                        image.getpixel((0, 0))
+                    if case == "generate":
+                        raise RuntimeError("架空の生成失敗")
+                    if case == "cancel":
+                        raise asyncio.CancelledError
+                    if case == "session":
+                        self.settings.autonomous_session = None
+                    return "" if case == "empty" else "架空の回答"
+
+                with patch.object(autonomous_service, "load_image_attachments", AsyncMock(return_value=images)), patch.object(
+                    self.service, "_load_persona", return_value=None if case == "persona" else "架空のペルソナ",
+                ), patch.object(autonomous_service, "fetch_channel_history_text", AsyncMock(
+                    side_effect=RuntimeError("架空の履歴失敗") if case == "history" else None, return_value="",
+                )), patch.object(autonomous_service, "send_long_reply", AsyncMock(
+                    side_effect=RuntimeError("架空の送信失敗") if case == "send" else None,
+                )), patch.object(self.service, "_generate", AsyncMock(side_effect=generate)):
+                    call = self.service.handle_comment(self.message, "" if case == "image_only" else "架空のコメント", self.settings)
+                    if case in ("history", "generate", "send", "cancel"):
+                        with self.assertRaises(asyncio.CancelledError if case == "cancel" else RuntimeError):
+                            await call
+                    else:
+                        await call
+                for image in images:
+                    with self.assertRaises(ValueError):
+                        image.getpixel((0, 0))
+
+    async def test_empty_comment_skips_persona_history_and_generation(self) -> None:
+        self.assertIsNone(await self.service.handle_comment(self.message, " \n", self.settings))
+        self.service._load_persona.assert_not_called()
+        autonomous_service.fetch_channel_history_text.assert_not_awaited()
+        self.gemini.generate.assert_not_awaited()
+
     async def test_concurrent_comments_share_one_admission_slot(self) -> None:
         async def check(*args):
             await asyncio.sleep(0)

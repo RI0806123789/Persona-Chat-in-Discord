@@ -158,12 +158,13 @@ class AutoTopicService:
         if not self._can_send(channel):
             return False
 
+        response_settings = guild_settings.snapshot_response()
         try:
             persona_prompt = await run_in_thread(
-                lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+                lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
             )
         except FileNotFoundError:
-            print(f"自発的な会話: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。")
+            print(f"自発的な会話: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return False
 
         history_text = await fetch_channel_history_text(
@@ -185,7 +186,7 @@ class AutoTopicService:
         # 話題提供に Google 検索は不要なためグラウンディングは無効で呼び出す
         response_text, usage_info, _sources = await self._gemini.generate(
             full_prompt,
-            guild_settings.current_model_name,
+            response_settings.model_name,
             images=None,
             timeout=AUTO_TOPIC_TIMEOUT_SECONDS,
             grounding=False,
@@ -442,12 +443,13 @@ class AutoTopicService:
         if not self._can_send(channel):
             return False
 
+        response_settings = guild_settings.snapshot_response()
         try:
             persona_prompt = await run_in_thread(
-                lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+                lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
             )
         except FileNotFoundError:
-            print(f"記念日: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。")
+            print(f"記念日: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return False
 
         history_text = await fetch_channel_history_text(
@@ -460,7 +462,7 @@ class AutoTopicService:
 
         response_text, usage_info, _sources = await self._gemini.generate(
             full_prompt,
-            guild_settings.current_model_name,
+            response_settings.model_name,
             images=None,
             timeout=ANNIVERSARY_TIMEOUT_SECONDS,
             grounding=False,

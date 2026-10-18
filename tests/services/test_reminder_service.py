@@ -8,7 +8,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -16,6 +16,53 @@ from persona_bot.config.constants import REMINDER_MAX_PENDING_PER_USER
 from persona_bot.core.database import Database
 from persona_bot.services import reminder_service
 from persona_bot.services.reminder_service import ReminderService
+import discord
+from persona_bot.utils import timeutil
+
+
+class ReminderCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_z_dates_work_when_standard_parser_rejects_z_like_python_310(self):
+        def parse(text):
+            if text.endswith("Z"):
+                raise ValueError("Python 3.10相当の解析")
+            return datetime.fromisoformat(text)
+
+        service = ReminderService(None, None, None)
+        with patch.object(timeutil, "datetime") as parser:
+            parser.fromisoformat.side_effect = parse
+            parsed = service._parse_at("2026-10-18T09:00:00Z")
+            self.assertEqual(parsed, datetime(2026, 10, 18, 9, tzinfo=timezone.utc))
+            self.assertTrue(service._is_stale({"remind_at": "2026-10-18T09:00:00Z"}, parsed + timedelta(hours=1)))
+            self.assertIsNotNone(reminder_service._to_local_naive("2026-10-18T09:00:00Z", timezone.utc))
+            self.assertNotIn("Z", reminder_service._format_local("2026-10-18T09:00:00Z", timezone.utc))
+            self.assertEqual(reminder_service.next_occurrence(
+                remind_at="2026-10-18T09:00:00Z", recurrence="daily", anchor="2026-10-18T09:00:00Z",
+                after=parsed + timedelta(hours=1), tz=timezone.utc,
+            ), "2026-10-19T09:00:00+00:00")
+        self.assertIsNone(service._parse_at("架空の不正日時"))
+
+    async def test_notifications_check_channel_and_thread_permissions_and_preserve_dm(self):
+        for kind, view, send, member in (
+            ("text", False, True, True), ("text", True, False, True), ("text", True, True, False),
+            ("thread", True, False, True), ("thread", False, True, True),
+            ("text", True, True, True), ("thread", True, True, True), ("dm", True, True, True),
+        ):
+            with self.subTest(kind=kind, view=view, send=send, member=member):
+                permissions = SimpleNamespace(view_channel=view, send_messages=send, send_messages_in_threads=send)
+                if kind == "thread":
+                    permissions.send_messages = False
+                channel = Mock(spec=discord.Thread if kind == "thread" else discord.TextChannel, send=AsyncMock())
+                channel.guild = None if kind == "dm" else SimpleNamespace(me=object() if member else None)
+                channel.permissions_for.return_value = permissions
+                service = ReminderService(Mock(get_channel=Mock(return_value=channel)), None, Mock(
+                    mask_with_log=Mock(side_effect=lambda text, **kwargs: text),
+                ))
+                await service._notify({"channel_id": 10, "user_id": "11", "message": "架空の予定"})
+                if view and send and member:
+                    channel.send.assert_awaited_once()
+                    self.assertEqual(channel.send.await_args.kwargs["allowed_mentions"].to_dict()["users"], [11])
+                else:
+                    channel.send.assert_not_awaited()
 
 
 class ReminderRegistrationTests(unittest.IsolatedAsyncioTestCase):

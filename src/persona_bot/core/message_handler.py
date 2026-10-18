@@ -18,7 +18,7 @@ from persona_bot.services.content_moderator import screen_bot_response
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
     fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
-    is_supported_message_channel, load_image_attachments, send_long_reply,
+    close_image_attachments, is_supported_message_channel, load_image_attachments, send_long_reply,
 )
 from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
@@ -259,86 +259,89 @@ class MessageHandler:
         async with message.channel.typing():
             user_id = str(message.author.id)
             image_objects = await load_image_attachments(message.attachments)
-            if not question:
-                if not image_objects:
-                    # 画像だけの発言で、どの画像も読み込めなかった。質問も画像も無いまま
-                    # Gemini を呼ぶと、見えていない画像への反応を作り話で返してしまうため断る。
-                    await message.reply(
-                        "画像を読み込めませんでした。"
-                        f"{describe_supported_attachments(documents=False)}の画像か確認して、もう一度送ってください。"
-                    )
-                    return None
-                question = IMAGE_ONLY_QUESTION
-
-            history_text = await fetch_channel_history_text(
-                message.channel,
-                guild_settings.channel_reset_points.get(message.channel.id),
-                self.client.user,
-                HISTORY_LIMIT,
-            )
-            # 記憶カテゴリは on_message のモデレーション統合判定で既に決まっている
-            # （追加の Gemini 呼び出しはしない）。ユーザー別の記憶スペースを読み込む。
-            memory_context, document_context = await self.memory.build_contexts(memory_category, user_id)
-
             try:
-                prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file)))
-            except FileNotFoundError:
-                print(f"エラー: {response_settings.prompt_file} が見つかりません。")
-                await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")
-                return None
+                if not question:
+                    if not image_objects:
+                        # 画像だけの発言で、どの画像も読み込めなかった。質問も画像も無いまま
+                        # Gemini を呼ぶと、見えていない画像への反応を作り話で返してしまうため断る。
+                        await message.reply(
+                            "画像を読み込めませんでした。"
+                            f"{describe_supported_attachments(documents=False)}の画像か確認して、もう一度送ってください。"
+                        )
+                        return None
+                    question = IMAGE_ONLY_QUESTION
 
-            full_prompt = build_full_prompt(
-                prompt,
-                build_memory_sections(memory_category, memory_context, document_context),
-                history_text,
-                question,
-                affinity_prompt=self.affinity.build_dynamic_prompt(str(message.author.id))
-            )
-            response_text, usage_info, grounding_sources = await self.gemini.generate(
-                full_prompt,
-                response_settings.model_name,
-                image_objects,
-                timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-                grounding=response_settings.grounding_enabled,
-            )
+                history_text = await fetch_channel_history_text(
+                    message.channel,
+                    guild_settings.channel_reset_points.get(message.channel.id),
+                    self.client.user,
+                    HISTORY_LIMIT,
+                )
+                # 記憶カテゴリは on_message のモデレーション統合判定で既に決まっている
+                # （追加の Gemini 呼び出しはしない）。ユーザー別の記憶スペースを読み込む。
+                memory_context, document_context = await self.memory.build_contexts(memory_category, user_id)
 
-            if response_text is None:
-                await message.reply("エラーが発生しました。（Gemini APIの呼び出しに失敗、または非対応の画像形式です）")
-                return None
+                try:
+                    prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file)))
+                except FileNotFoundError:
+                    print(f"エラー: {response_settings.prompt_file} が見つかりません。")
+                    await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")
+                    return None
 
-            self.usage.log_snapshot("直接会話", question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info)
+                full_prompt = build_full_prompt(
+                    prompt,
+                    build_memory_sections(memory_category, memory_context, document_context),
+                    history_text,
+                    question,
+                    affinity_prompt=self.affinity.build_dynamic_prompt(str(message.author.id))
+                )
+                response_text, usage_info, grounding_sources = await self.gemini.generate(
+                    full_prompt,
+                    response_settings.model_name,
+                    image_objects,
+                    timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
+                    grounding=response_settings.grounding_enabled,
+                )
 
-            # --- タグ抽出とAffinity更新 ---
-            response_text, emotion_changes = extract_affinity_changes(response_text)
-            if emotion_changes is not None:
-                v_change, a_change = emotion_changes
-                self.affinity.update_emotion(str(message.author.id), v_change, a_change)
-                spawn(self.affinity.save_background(user_id), label="親密度の保存")
+                if response_text is None:
+                    await message.reply("エラーが発生しました。（Gemini APIの呼び出しに失敗、または非対応の画像形式です）")
+                    return None
 
-            # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
-            # （モデルが感情タグだけを返したケース）。
-            if not response_text.strip():
-                print("応答本文が空です（感情タグのみ、または空応答）。")
-                await message.reply("申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。")
-                return None
+                self.usage.log_snapshot("直接会話", question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info)
 
-            response_text = await screen_bot_response(response_text, self.ng_filter, self.moderator, log_label="Bot応答")
+                # --- タグ抽出とAffinity更新 ---
+                response_text, emotion_changes = extract_affinity_changes(response_text)
+                if emotion_changes is not None:
+                    v_change, a_change = emotion_changes
+                    self.affinity.update_emotion(str(message.author.id), v_change, a_change)
+                    spawn(self.affinity.save_background(user_id), label="親密度の保存")
 
-            # 参考リンクは送信用テキストにのみ追記する
-            # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
-            reply_text = response_text
-            if grounding_sources:
-                reply_text += format_grounding_sources(grounding_sources)
+                # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
+                # （モデルが感情タグだけを返したケース）。
+                if not response_text.strip():
+                    print("応答本文が空です（感情タグのみ、または空応答）。")
+                    await message.reply("申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。")
+                    return None
 
-            sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
-            # 送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
-            # 生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。
-            self.feedback.track_reply(
-                sent,
-                target_user_id=user_id,
-                model_name=response_settings.model_name,
-                prompt_file=response_settings.prompt_file,
-            )
-            await self.memory.append_pending_log(user_id, question, response_text)
-            spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
-            return response_text
+                response_text = await screen_bot_response(response_text, self.ng_filter, self.moderator, log_label="Bot応答")
+
+                # 参考リンクは送信用テキストにのみ追記する
+                # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
+                reply_text = response_text
+                if grounding_sources:
+                    reply_text += format_grounding_sources(grounding_sources)
+
+                sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
+                # 送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
+                # 生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。
+                self.feedback.track_reply(
+                    sent,
+                    target_user_id=user_id,
+                    model_name=response_settings.model_name,
+                    prompt_file=response_settings.prompt_file,
+                )
+                await self.memory.append_pending_log(user_id, question, response_text)
+                spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
+                return response_text
+            finally:
+                close_image_attachments(image_objects)

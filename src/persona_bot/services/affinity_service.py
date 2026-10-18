@@ -77,18 +77,20 @@ class AffinityService:
             self.cache = {}
 
     def get_user_data(self, user_id: str) -> dict:
-        data = self.cache.get(user_id, {
+        cached = self.cache.get(user_id)
+        if cached is not None:
+            return self._apply_decay(cached.copy())
+        return {
             "affinity": AFFINITY_NEUTRAL,
             "valence": AFFINITY_NEUTRAL,
             "arousal": AFFINITY_NEUTRAL,
             "last_interaction": time.time()
-        }).copy()
-        return self._apply_decay(data)
+        }
 
     def _apply_decay(self, data: dict) -> dict:
         current_time = time.time()
         last_time = data.get("last_interaction", current_time)
-        elapsed = current_time - last_time
+        elapsed = max(0.0, current_time - last_time)
 
         if elapsed > 0:
             decay_factor = math.pow(0.5, elapsed / AFFINITY_HALF_LIFE_SECONDS)

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import ANY, AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -153,6 +153,41 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         await self.check_old_settings_are_used()
         await self.on_message(self.message)
         self.assert_response_settings(model="new-model", prompt_file="../prompts/prompt_maid.txt", grounding=False)
+
+    async def test_images_are_closed_on_success_early_return_exception_and_cancellation(self) -> None:
+        from PIL import Image
+        from persona_bot.core import message_handler
+
+        for case in ("success", "image_only", "prompt", "history", "generate", "cancel", "empty", "send"):
+            with self.subTest(case=case):
+                images = [Image.new("RGB", (2, 2)) for _ in range(2)]
+
+                async def generate(*args, **kwargs):
+                    for image in images:
+                        image.getpixel((0, 0))
+                    if case == "generate":
+                        raise RuntimeError("架空の生成失敗")
+                    if case == "cancel":
+                        raise asyncio.CancelledError
+                    return (None if case == "empty" else "架空の回答"), None, []
+
+                with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=images)), patch.object(
+                    message_handler, "load_prompt_template", side_effect=FileNotFoundError if case == "prompt" else None,
+                    return_value="架空のペルソナ",
+                ), patch.object(message_handler, "fetch_channel_history_text", AsyncMock(
+                    side_effect=RuntimeError("架空の履歴失敗") if case == "history" else None, return_value="",
+                )), patch.object(message_handler, "send_long_reply", AsyncMock(
+                    side_effect=RuntimeError("架空の送信失敗") if case == "send" else None,
+                )), patch.object(self.namespace["gemini"], "generate", AsyncMock(side_effect=generate)):
+                    call = self.handler.handle_chat_message(self.message, "" if case == "image_only" else "架空の質問")
+                    if case in ("history", "generate", "send", "cancel"):
+                        with self.assertRaises(asyncio.CancelledError if case == "cancel" else RuntimeError):
+                            await call
+                    else:
+                        await call
+                for image in images:
+                    with self.assertRaises(ValueError):
+                        image.getpixel((0, 0))
 
     async def test_settings_are_captured_before_typing_await(self) -> None:
         self.stage = "typing"
