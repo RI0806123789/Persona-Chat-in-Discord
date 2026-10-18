@@ -1,26 +1,14 @@
-import re
-
 import discord
 from discord import ui
 
-from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
+from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
 from persona_bot.services.reminder_service import ReminderService
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
-
-# 改行・タブ・連続した空白（全角空白を含む）をまとめて1つの半角空白にするための正規表現
-_WHITESPACE_RUN = re.compile(r"\s+")
+from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text
 
 
 def _to_option_text(text: str) -> str:
-    """セレクトの選択肢に載せる文字列を、1行かつ上限の文字数以内にする。
-
-    リマインダーの本文は会話から登録されるため改行を含みうる。選択肢の
-    label / description に改行が入っていると Discord がパネルごと受け付けず、
-    改行入りの予定を1件登録しただけで一覧も取り消しも開けなくなる。
-    改行を除いてから切り詰め、切った位置に残った空白も落とす。
-    """
-    single_line = _WHITESPACE_RUN.sub(" ", text).strip()
-    return single_line[:DISCORD_SELECT_LABEL_MAX_LENGTH].rstrip()
+    """共通の選択肢整形を使う（既存の呼出元向けの入口）。"""
+    return select_option_text(text)
 
 
 def _build_status_text(records: list[dict], service: ReminderService) -> str:
@@ -73,18 +61,19 @@ class ReminderCancelSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "ReminderView" = self.view  # type: ignore[assignment]
+        await interaction.response.defer(ephemeral=True)
         reminder_id = int(self.values[0])
 
         # 取り消しは SQL 側でも user_id で絞るため、他人のものは取り消せない
         canceled = await view.service.cancel(reminder_id, view.viewer_id)
         if canceled is None:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content="このリマインダーは既に通知済みか、取り消されています。", view=None
             )
             view.stop()
             return
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"🗑️ リマインダーを取り消しました。\n・{view.service.describe(canceled)}",
             view=None,
         )

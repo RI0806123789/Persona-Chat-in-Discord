@@ -112,12 +112,12 @@ class ReminderViewTests(unittest.IsolatedAsyncioTestCase):
         # Discord に送られるコンポーネントにも全件残る。
         self.assertEqual(len(view.to_components()[0]["components"][0]["options"]), len(records))
         select._values = [str(records[-1]["reminder_id"])]
-        interaction = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock()))
+        interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock())
         await select.callback(interaction)
         service.cancel.assert_awaited_once_with(records[-1]["reminder_id"], "11")
         self.assertIn("リマインダーを取り消しました。",
-                      interaction.response.edit_message.call_args.kwargs["content"])
-        self.assertIsNone(interaction.response.edit_message.call_args.kwargs["view"])
+                      interaction.edit_original_response.call_args.kwargs["content"])
+        self.assertIsNone(interaction.edit_original_response.call_args.kwargs["view"])
         self.assertTrue(view.is_finished())
 
     async def test_multiline_messages_become_single_line_options(self) -> None:

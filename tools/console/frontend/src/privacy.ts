@@ -39,7 +39,9 @@ export function collectSecrets(parts: {
   const botUser = parts.insights?.discord.bot_user;
   if (botUser?.includes("#")) values.push(botUser.split("#")[0]);
   for (const profile of [parts.profile, ...parts.profiles]) {
-    values.push(profile?.host, profile?.username);
+    values.push(profile?.host, profile?.username, profile?.label, profile?.bot_dir);
+    const home = profile?.bot_dir?.match(/\/(?:home|Users)\/([^/]+)(?=\/|$)/);
+    values.push(home?.[0], home?.[1]);
   }
   for (const guild of parts.insights?.discord.guilds ?? []) {
     values.push(guild.name, guild.voice_channel);

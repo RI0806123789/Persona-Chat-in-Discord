@@ -50,8 +50,13 @@ ACTION_LABELS = {"start": "起動", "stop": "停止", "restart": "再起動"}
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    yield
-    await session.disconnect()  # 終了時に SSH 接続を閉じる
+    try:
+        yield
+    finally:
+        try:
+            await deploys.wait()
+        finally:
+            await session.disconnect()  # デプロイの終了・巻き戻しを待って接続を閉じる
 
 
 app = FastAPI(title="Persona Bot Console API", lifespan=lifespan)
@@ -60,6 +65,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 
 session = SshSession()
 deploys = DeployManager()
+_connection_change_lock = asyncio.Lock()
 operations: deque[dict] = deque(maxlen=100)
 _operation_ids = itertools.count(1)
 
@@ -107,6 +113,17 @@ def get_connection() -> dict:
 
 @app.post("/api/connect")
 async def connect(body: ConnectRequest) -> dict:
+    async with _connection_change_lock:
+        _reject_connection_change_during_deploy()
+        return await _connect(body)
+
+
+def _reject_connection_change_during_deploy() -> None:
+    if deploys.running:
+        raise HTTPException(status_code=409, detail="デプロイを実行中です。接続先の変更・切断は完了後に行ってください。")
+
+
+async def _connect(body: ConnectRequest) -> dict:
     profiles, source = load_profiles()
     profile = profiles.get(body.profile_id)
     if profile is None:
@@ -126,8 +143,10 @@ async def connect(body: ConnectRequest) -> dict:
 
 @app.post("/api/disconnect")
 async def disconnect() -> dict:
-    await session.disconnect()
-    return session.snapshot()
+    async with _connection_change_lock:
+        _reject_connection_change_during_deploy()
+        await session.disconnect()
+        return session.snapshot()
 
 
 @app.get("/api/history")
@@ -339,13 +358,14 @@ async def start_deploy() -> dict:
 
     画面から受け取るものは何も無い。ブランチ・フォルダ・Python の場所は接続先の設定（profiles.json）から決める。
     """
-    profile = session.require_profile()
-    if profile.unset_fields:
-        raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
-    if deploys.running:
-        raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
-    deploys.start(session, profile)
-    return _deploy_snapshot()
+    async with _connection_change_lock:
+        profile = session.require_profile()
+        if profile.unset_fields:
+            raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
+        if deploys.running:
+            raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
+        deploys.start(session, profile)
+        return _deploy_snapshot()
 
 
 # Discord API の利用制限に配慮し、ボットの中の状態は接続先ごとに一定時間使い回す

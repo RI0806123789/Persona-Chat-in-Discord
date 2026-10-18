@@ -327,7 +327,7 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
         for module in (functions_view, reminder_view, stats_view):
             with self.subTest(module=module.__name__), \
                     patch.object(module, "DISCORD_SELECT_MAX_OPTIONS", 2), \
-                    patch.object(module, "DISCORD_SELECT_LABEL_MAX_LENGTH", 4):
+                    patch.object(view_parts, "DISCORD_SELECT_LABEL_MAX_LENGTH", 4):
                 if module is functions_view:
                     select = module.UnblockSelect([{"user_id": i, "user_name": "あ" * 110} for i in range(3)])
                 elif module is reminder_view:

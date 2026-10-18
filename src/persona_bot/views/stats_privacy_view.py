@@ -62,6 +62,7 @@ class StatsPrivacyConfirmButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsPrivacyView" = self.view  # type: ignore[assignment]
+        await interaction.response.defer(ephemeral=True)
 
         opted_out = not view.temp_collect_enabled
         saved = await view.stats.set_opt_out(view.viewer_id, view.viewer_name, opted_out)
@@ -78,7 +79,7 @@ class StatsPrivacyConfirmButton(ui.Button):
             # 設定はメモリ上には反映済みだが、再起動で失われる可能性があるため隠さず伝える。
             result += "\n⚠️ ただし設定を保存できませんでした。ボットの再起動で元に戻る可能性があります。"
 
-        await interaction.response.edit_message(content=result, view=None)
+        await interaction.edit_original_response(content=result, view=None)
         view.stop()
 
 
@@ -100,6 +101,7 @@ class StatsDataDeleteButton(ui.Button):
             return
 
         # 削除するのは実行者本人の分だけ（他人のIDを指定できる経路は作らない）。
+        await interaction.response.defer(ephemeral=True)
         deleted = await view.stats.clear_user_data(view.viewer_id)
         if deleted:
             result = (
@@ -110,7 +112,7 @@ class StatsDataDeleteButton(ui.Button):
             # プライバシー操作の失敗は隠さない（黙って成功したように見せない）。
             result = "⚠️ データを削除できませんでした。時間をおいて再度お試しください。"
 
-        await interaction.response.edit_message(content=result, view=None)
+        await interaction.edit_original_response(content=result, view=None)
         view.stop()
 
 

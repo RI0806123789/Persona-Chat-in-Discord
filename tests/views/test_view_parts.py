@@ -23,7 +23,7 @@ class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
         webhook_message = SimpleNamespace(edit=AsyncMock())
         return SimpleNamespace(
             message=channel_message, original_response=AsyncMock(return_value=webhook_message),
-            response=SimpleNamespace(edit_message=AsyncMock()),
+            response=SimpleNamespace(edit_message=AsyncMock(), is_done=Mock(return_value=False)),
         ), webhook_message
 
     async def test_subpanel_timeout_edits_original_response_and_stops_hub(self):

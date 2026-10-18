@@ -11,6 +11,11 @@ import remote_commands as rc  # noqa: E402
 
 
 class CommandBuildTest(unittest.TestCase):
+    def test_commit_list_uses_unit_separator_and_preserves_subject_spaces(self):
+        self.assertEqual(rc.parse_commit_list("abc1234\x1f題名\ndef5678\x1ffix: 架空の修正\n\n"), [
+            {"hash": "abc1234", "subject": "題名"}, {"hash": "def5678", "subject": "fix: 架空の修正"},
+        ])
+
     def test_service_control_allows_only_whitelisted_actions(self):
         self.assertEqual(rc.service_control_command("bot", "restart"), "sudo -n systemctl restart bot")
         with self.assertRaises(ValueError):

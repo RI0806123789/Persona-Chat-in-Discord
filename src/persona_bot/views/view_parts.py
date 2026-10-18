@@ -4,13 +4,27 @@ from typing import Any, Callable
 import discord
 from discord import ui
 
-from persona_bot.config.constants import VIEW_TIMEOUT_SECONDS
+from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, VIEW_TIMEOUT_SECONDS
 from persona_bot.utils.discord_helpers import reject_blocked_interaction
 
 # ハブ（機能パネル）を再生成する呼び出し可能オブジェクトの型。
 # functions_view を直接 import すると循環参照になるため、呼び出し側から
 # FunctionsView.clone のような生成関数を受け取る形にする。
 HubFactory = Callable[[], Any]
+
+
+def select_option_text(text: Any, *, fallback: str = "") -> str:
+    """選択肢の表示文を1行・上限以内にし、空なら代わりの表示名を使う。"""
+    single_line = " ".join(("" if text is None else str(text)).split())
+    return single_line[:DISCORD_SELECT_LABEL_MAX_LENGTH].rstrip() or fallback
+
+
+async def edit_panel_message(interaction: discord.Interaction, *, content: str, view: ui.View | None) -> None:
+    """応答保留後も、同じエフェメラルパネルを編集する。"""
+    if interaction.response.is_done():
+        await interaction.edit_original_response(content=content, view=view)
+    else:
+        await interaction.response.edit_message(content=content, view=view)
 
 
 class PanelView(ui.View):
@@ -119,7 +133,7 @@ async def swap_panel(
         content:     差し替え後のメッセージ本文（通常は panel.build_preview()）。
     """
     panel.blocked_user_check = getattr(hub, "blocked_user_check", None)
-    await interaction.response.edit_message(content=content, view=panel)
+    await edit_panel_message(interaction, content=content, view=panel)
     # ハブは役目を終えたので停止する。止めないとハブのタイムアウト処理が
     # 後からメッセージを誤って上書きする（同じメッセージを共有しているため、
     # 表示中のサブパネルが「機能パネルは時間切れです」に化けてしまう）。

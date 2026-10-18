@@ -163,6 +163,7 @@ class AutoTopicConfirmButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
+        await interaction.response.defer(ephemeral=True)
 
         # 一時選択値をこのサーバー（ギルド）専用の設定に反映し、DB へ保存する。
         # 自律行動を OFF にした場合、進行中の配信は見回り（autonomous_loop）が
@@ -187,7 +188,7 @@ class AutoTopicConfirmButton(ui.Button):
             view.temp_interval_hours,
             confirmed=True,
         )
-        await interaction.response.edit_message(content=confirmed_text, view=None)
+        await interaction.edit_original_response(content=confirmed_text, view=None)
         view.stop()
 
 

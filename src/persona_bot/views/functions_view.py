@@ -6,7 +6,7 @@ from persona_bot.core.background import run_in_thread
 from persona_bot.views.auto_topic_view import AutoTopicView
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
-from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS
+from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.utils.discord_helpers import is_administrator
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.views.help_view import HelpView, resolve_bot_name
@@ -19,7 +19,7 @@ from persona_bot.services.stats_service import StatsService
 from persona_bot.views.stats_view import StatsView
 from persona_bot.views.summary_view import SummaryView
 from persona_bot.utils.usage_graph import UsageTracker
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, send_graph_ephemeral, swap_panel
+from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text, send_graph_ephemeral, swap_panel
 
 
 class OpenSettingsButton(ui.Button):
@@ -106,13 +106,14 @@ class GroundingToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        await interaction.response.defer(ephemeral=True)
         hub.guild_settings.grounding_enabled = not hub.guild_settings.grounding_enabled
         # このトグルは確定操作が無く押した瞬間に反映されるため、その場で保存する
         await hub.guild_settings.persist()
 
         # ボタンの表示（ON/OFF）を更新するために View を再構築
         hub.refresh_items()
-        await interaction.response.edit_message(content=hub.build_preview(), view=hub)
+        await interaction.edit_original_response(content=hub.build_preview(), view=hub)
 
 
 class NgReloadButton(ui.Button):
@@ -185,6 +186,7 @@ class ReminderButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
+        await interaction.response.defer(ephemeral=True)
         viewer_id = str(interaction.user.id)
         records = await hub.reminders.list_pending(viewer_id)
         reminder_view = ReminderView(hub.reminders, records, viewer_id, make_hub=hub.clone)
@@ -280,7 +282,7 @@ class UnblockSelect(ui.Select):
             count = record.get("count", "?")
             options.append(
                 discord.SelectOption(
-                    label=name[:DISCORD_SELECT_LABEL_MAX_LENGTH],
+                    label=select_option_text(name, fallback=str(user_id)),
                     value=str(user_id),
                     description=f"違反 {count} 回",
                 )

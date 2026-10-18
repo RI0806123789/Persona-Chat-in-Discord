@@ -121,6 +121,8 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## 開発者用ダッシュボード (`tools/console/`)
 
+接続変更とデプロイ開始はAPIの共通ロックで順序を揃え、デプロイ中の接続・切断を409で拒否する。終了時は`DeployManager.wait`でキャンセルが繰り返されても処理・巻き戻しの終了を待ってから切断し、起動ログ取得の失敗は待機で隠さず即座に扱う。画面は`requestScope.ts`で接続変更開始・接続先変更と取得順序を照合し、古い応答や予約済みタイマーを捨てる。伏せ字にはホーム所有者とホーム部分・接続先ラベルも含め、通知の見出しとログのツールチップにも適用する。
+
 SSH 経由でボットを見守り、サービス操作・デプロイを行う開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` と CI には含めない。セットアップ・起動・設計は `tools/console/README.md` にある。
 
 - **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
@@ -274,6 +276,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 `/functions` のハブ（`functions_view.py` の `FunctionsView`、エフェメラル）から **⚙️ キャラ設定** を選ぶと、同じメッセージが `SettingsView` に変身する（ペルソナ/モデル/応答モードのセレクト + 確定/戻る/リセットボタン、120秒タイムアウト）。一時的な選択値は View 上に保持され、**確定 (Confirm)** ボタンを押したときにのみ `GuildSettings`（`/functions` 実行時に `interaction.guild_id` から解決したもの）に書き込まれる — それまでは共有状態を一切変更しない。Google検索（グラウンディング）のトグルはハブ側にあり、こちらは押した瞬間に `GuildSettings` へ反映される（ハブは「その場で実行」系のため）。**各 View は `BotState` ではなく `GuildSettings` を受け取る** ため、設定変更の影響はそのサーバー内（DM の場合は全 DM）に閉じる。`choices.py` はペルソナ/モデル/モード、および要約期間（`SUMMARY_PERIOD_CHOICES`）の選択肢リストと表示名マップの唯一の情報源。
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
+
+DBを待つGoogle検索トグル・自発会話の確定・リマインダー一覧と取消・統計プライバシーの確定と削除は、先にコンポーネント応答を`defer(ephemeral=True)`してから保存・取得する。その後は`edit_original_response`で元のパネルを更新し、`swap_panel`も`response.is_done()`に応じて編集経路を選ぶ。保留後もViewの停止・Webhookの参照・ブラックリスト判定を引き継ぐ。選択肢の表示文は`view_parts.select_option_text`で1行にし、空の名前はID等で補う。統計の候補取得は選択中のユーザーを上限内に残すが、収集停止中のユーザーは含めず、`has_data`も収集停止分を数えない。
 
 サブパネルへの遷移とハブ復帰では、古いViewを停止して `await interaction.original_response()` の `InteractionMessage` を新しいViewへ渡す。通常の `interaction.message` を保持すると、エフェメラルUIのタイムアウト編集がチャンネル経由になり404で失敗する。
 
