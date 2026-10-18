@@ -431,6 +431,31 @@ async def get_db_summary() -> dict:
     return summary
 
 
+@app.get("/api/db/tables/{table}")
+async def get_db_table(table: str, offset: int = 0, limit: int = 50) -> dict:
+    """bot.db の1つのテーブルの行（会話・記憶の本文と ID を含む）を、読み取り専用で取り寄せる。"""
+    if table not in rc.DB_TABLES:
+        raise HTTPException(status_code=404, detail="このテーブルは表示できません。")
+    profile = session.require_profile()
+    generation = session.generation
+    result = await session.run(
+        rc.db_table_command(profile.bot_dir, table, offset, limit),
+        label=f"DB の中身（{table}・読み取り専用）",
+        input=rc.DB_TABLE_SCRIPT,
+    )
+    if generation != session.generation:
+        raise NotConnectedError("読み取り中に SSH 接続が変わりました。接続先を確認して開き直してください。")
+    if result.exit_status != 0:
+        raise SshError("テーブルの中身を取り寄せられませんでした。サーバーの Python と読み取り権限を確認してください。")
+    try:
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        if not isinstance(data, dict) or data.get("table") != table:
+            raise ValueError("取り寄せた結果が想定の形ではありません。")
+    except (ValueError, IndexError) as error:
+        raise SshError("テーブルの中身を読み取れませんでした。") from error
+    return data
+
+
 # ---------------------------------------------------------------- 補助
 
 

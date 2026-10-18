@@ -16,6 +16,7 @@ export function Card({
   children,
   className = "",
   variant = "filled",
+  id,
 }: {
   title?: string;
   icon?: IconName;
@@ -25,9 +26,11 @@ export function Card({
   className?: string;
   /** filled = 色の面で区切る / outlined = 枠線で区切る / elevated = 影で浮かせる */
   variant?: "filled" | "outlined" | "elevated";
+  /** ページ内のリンクやスクロールの行き先にするとき */
+  id?: string;
 }) {
   return (
-    <section className={`m3-card m3-card-${variant} ${className}`}>
+    <section id={id} className={`m3-card m3-card-${variant} ${className}`}>
       {(title || actions) && (
         <header className="m3-card-head">
           {icon && (

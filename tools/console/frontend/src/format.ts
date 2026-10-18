@@ -39,6 +39,18 @@ export function formatDateTime(ms: number): string {
   });
 }
 
+/** 年まで含めた日時（DB の記録のように、何か月も前の値が混ざる表示に使う） */
+export function formatFullDateTime(ms: number): string {
+  return new Date(ms).toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 export function formatRelative(ms: number | null | undefined, now: number): string {
   if (!ms) return "—";
   const diff = Math.max(0, Math.round((now - ms) / 1000));

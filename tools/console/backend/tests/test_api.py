@@ -31,9 +31,10 @@ async def request(path, *, method="GET", host="127.0.0.1", header=True, body=Non
     async def send(message):
         sent.append(message)
 
+    path, _, query = path.partition("?")
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
              "method": method, "scheme": "http", "path": path, "raw_path": path.encode(),
-             "root_path": "", "query_string": b"", "headers": headers,
+             "root_path": "", "query_string": query.encode(), "headers": headers,
              "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", app.PORT)}
     await app.app(scope, messages.get, send)
     status = next(message["status"] for message in sent if message["type"] == "http.response.start")
@@ -128,9 +129,40 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["schema_version"], 10)
         self.assertEqual(summary["latest_schema_version"], 10)
 
+    async def test_db_table_rows_are_read_through_api_with_paging(self):
+        status, body = await request("/api/db/tables/feedback?offset=100&limit=50")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual((data["table"], data["total"], data["offset"], len(data["rows"])), ("feedback", 130, 100, 30))
+        # 架空の DB に対して本物のスクリプトを実行した結果なので、集計の件数と食い違わない
+        summary = json.loads((await request("/api/db"))[1])
+        self.assertEqual(summary["tables"]["feedback"], data["total"])
+        history = self.session.history_list()
+        self.assertTrue(any(record["command"].startswith("python3 - --db-table ") for record in history))
+
+    async def test_db_table_rejects_unknown_tables_without_running_commands(self):
+        with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+            for path in ("/api/db/tables/sqlite_master", "/api/db/tables/feedback%3B%20id", "/api/db/tables/Feedback"):
+                with self.subTest(path=path):
+                    self.assertEqual((await request(path))[0], 404)
+            self.assertEqual(run.await_count, 0)
+        self.assertEqual((await request("/api/db/tables/feedback", header=False))[0], 403)
+
+    async def test_invalid_db_table_output_does_not_expose_remote_error(self):
+        for stdout, stderr, code in (('{"table": "profile"}', "", 0), ("", "private detail", 1), ("not json", "", 0)):
+            with mock.patch.object(self.session, "run", return_value=CommandResult(stdout, stderr, code, 1)):
+                status, body = await request("/api/db/tables/feedback")
+                self.assertEqual(status, 502)
+                self.assertNotIn(b"private detail", body)
+
     async def test_connection_change_during_status_or_db_read_rejects_old_results(self):
-        for operation in (app.get_status, app.get_db_summary):
-            with self.subTest(operation=operation.__name__):
+        operations = {
+            "get_status": app.get_status,
+            "get_db_summary": app.get_db_summary,
+            "get_db_table": lambda: app.get_db_table("feedback"),
+        }
+        for name, operation in operations.items():
+            with self.subTest(operation=name):
                 await self.session.connect(self.profile)
                 started, release = asyncio.Event(), asyncio.Event()
 

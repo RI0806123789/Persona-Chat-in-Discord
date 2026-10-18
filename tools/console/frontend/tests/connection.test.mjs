@@ -172,6 +172,31 @@ test("データ画面は切り替え前のDB集計を破棄し、切断後も再
   assert.equal(render(false, "").summary, null);
 });
 
+test("データ画面は接続先が変わったら、開いていたテーブルの中身を閉じる", () => {
+  const runtime = renderer();
+  const instrumented = dataSource.replace("  if (!connected) {", "  return {openTable, selectTable};\n  if (!connected) {");
+  assert.notEqual(instrumented, dataSource);
+  const component = compile(instrumented, { react: runtime.hooks, "../api": {
+    api: { db: () => new Promise(() => {}) }, errorMessage: (error) => error.message,
+  }, "../privacy": { usePrivacy: () => ({}) } }).DataPage;
+  const render = (connectionKey) => runtime.render(component, { connected: true, connectionKey, refreshToken: 0 });
+  const originalFrame = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = () => 0; // スクロールは描画の後なので、ここでは呼ばない
+  try {
+    render("A"); runtime.commit();
+    render("A").selectTable("feedback");
+    assert.equal(render("A").openTable, "feedback");
+    render("A").selectTable("feedback");
+    assert.equal(render("A").openTable, null, "同じテーブルをもう一度選ぶと閉じる");
+    render("A").selectTable("reminders");
+    runtime.commit();
+    render("B"); runtime.commit();
+    assert.equal(render("B").openTable, null);
+  } finally {
+    globalThis.requestAnimationFrame = originalFrame;
+  }
+});
+
 test("SSH設定に任せる場合もホーム所有者・パス・ラベルを伏せ字にする", () => {
   const harness = consoleHarness({});
   for (const home of ["home", "Users"]) {

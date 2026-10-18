@@ -1,33 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { api, errorMessage } from "../api";
+import { Collapse } from "../components/Collapse";
 import { LoadingIndicator, WavyProgress } from "../components/expressive";
+import { Icon } from "../components/Icon";
 import { Button, Card, Chip, ConnectedButtonGroup, InlineError, Notice, Stat, StatusChip } from "../components/ui";
 import { formatBytes, formatNumber, formatPercent } from "../format";
 import { lastSevenDays } from "../data";
+import { DB_TABLE_SPECS, STATUS_LABELS, isViewableTable } from "../dbTables";
 import { usePrivacy } from "../privacy";
 import type { DbSummary, Profile } from "../types";
+import { DbTableDetail } from "./DbTableDetail";
 import { NotConnected } from "./shared";
-
-const TABLE_LABELS: Record<string, string> = {
-  affinity: "親密度・感情",
-  user_stats: "会話統計",
-  queue_tasks: "文書処理キュー",
-  pending_log: "記憶圧縮前のログ",
-  profile: "プロフィール記憶",
-  guild_settings: "サーバー設定",
-  anniversary_posts: "記念日の投稿記録",
-  reminders: "リマインダー",
-  feedback: "👍👎 の評価",
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: "待機",
-  processing: "処理中",
-  done: "完了",
-  completed: "完了",
-  failed: "失敗",
-  canceled: "取り消し",
-};
 
 export function DataPage({
   connected,
@@ -36,6 +19,7 @@ export function DataPage({
   selectedProfile,
   refreshToken,
   connectionKey,
+  onNames,
 }: {
   connected: boolean;
   connecting: boolean;
@@ -43,12 +27,40 @@ export function DataPage({
   selectedProfile: Profile | null;
   refreshToken: number;
   connectionKey: string;
+  /** テーブルの中身に出てきた利用者の表示名（伏せ字モードで、ほかの画面の文からも隠す） */
+  onNames: (names: string[]) => void;
 }) {
   const [summary, setSummary] = useState<DbSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 中身を開いているテーブル。中身には会話や記憶が入るので、開くのは利用者が選んだときだけにする
+  // （覚えておいて、ページを開いただけで取り寄せることはしない）
+  const [openTable, setOpenTable] = useState<string | null>(null);
+  // 閉じる動きの間も、最後に開いていたテーブルの中身を残しておく
+  const [shownTable, setShownTable] = useState<string | null>(null);
   const privacy = usePrivacy();
   const requestId = useRef(0);
+
+  // 接続先が変わったら閉じる（別のサーバーの中身を、選ばないうちに取り寄せない）
+  // （閉じる動きの間に新しい接続先から取り寄せないよう、中身もすぐに外す）
+  useEffect(() => {
+    setOpenTable(null);
+    setShownTable(null);
+  }, [connectionKey]);
+
+  const selectTable = (name: string) => {
+    const next = openTable === name ? null : name;
+    setOpenTable(next);
+    if (next) {
+      setShownTable(next);
+      // 開いた中身のカードが見えるところまで送る（描画の後に。動きを減らす設定ならすぐに移る）
+      requestAnimationFrame(() => {
+        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        document.getElementById("db-table-detail")?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      });
+    }
+  };
+  const closeTable = useCallback(() => setOpenTable(null), []);
 
   const load = useCallback(async () => {
     const current = ++requestId.current;
@@ -109,18 +121,35 @@ export function DataPage({
             </span>
           </>
         )}
-        <Notice icon="shield">読み取り専用（mode=ro）で開き、件数だけを持ち帰ります。会話や記憶の中身は読みません。</Notice>
+        <Notice icon="shield">
+          読み取り専用（mode=ro）で開きます。集計では件数だけを持ち帰り、会話や記憶の中身は、テーブルを選んだときだけ取り寄せます。
+        </Notice>
       </Card>
 
       <Card title="テーブルごとの行数" icon="layers" source="ssh" className="span-8">
         {summary?.tables ? (
-          <TableRows tables={summary.tables} />
+          <>
+            <TableRows tables={summary.tables} openTable={openTable} onSelect={selectTable} />
+            <span className="body-small muted">テーブルを選ぶと、その中身（行）を下に表示します。もう一度選ぶと閉じます。</span>
+          </>
         ) : summary ? (
           <span className="body-medium muted">取得できません</span>
         ) : (
           <WavyProgress label="集計しています" />
         )}
       </Card>
+
+      <Collapse open={openTable !== null} className="span-12 db-detail-collapse">
+        {shownTable && (
+          <DbTableDetail
+            key={`${shownTable}:${connectionKey}`}
+            table={shownTable}
+            refreshToken={refreshToken}
+            onClose={closeTable}
+            onNames={onNames}
+          />
+        )}
+      </Collapse>
 
       <Card title="リマインダー / 文書キュー" icon="alarm" source="ssh" className="span-4">
         <StatusCounts title="リマインダー" counts={summary ? summary.reminders_by_status ?? null : undefined} />
@@ -171,23 +200,55 @@ function SchemaChip({ deployed, latest }: { deployed: number | undefined; latest
   return <StatusChip tone="warning" icon="alert" label={`手元は v${latest}（未デプロイ）`} />;
 }
 
-function TableRows({ tables }: { tables: Record<string, number> }) {
+function TableRows({
+  tables,
+  openTable,
+  onSelect,
+}: {
+  tables: Record<string, number>;
+  openTable: string | null;
+  onSelect: (name: string) => void;
+}) {
   const rows = Object.entries(tables).sort((a, b) => b[1] - a[1]);
   const max = Math.max(1, ...rows.map(([, count]) => count));
   return (
     <ul className="bar-list">
-      {rows.map(([name, count]) => (
-        <li key={name}>
-          <span className="bar-label">
-            <span className="body-medium mono">{name}</span>
-            <span className="body-small muted">{TABLE_LABELS[name] ?? ""}</span>
-          </span>
-          <span className="bar-track">
-            <span className="bar-fill" style={{ width: `${(count / max) * 100}%` }} />
-          </span>
-          <span className="bar-value title-small mono">{formatNumber(count)}</span>
-        </li>
-      ))}
+      {rows.map(([name, count], index) => {
+        const content = (
+          <>
+            <span className="bar-label">
+              <span className="body-medium mono">{name}</span>
+              <span className="body-small muted">{DB_TABLE_SPECS[name]?.label ?? ""}</span>
+            </span>
+            <span className="bar-track">
+              <span className="bar-fill" style={{ width: `${(count / max) * 100}%` }} />
+            </span>
+            <span className="bar-value title-small mono">{formatNumber(count)}</span>
+          </>
+        );
+        // 中身を見せられるのはボットのテーブルだけ（ほかは件数だけ）
+        return (
+          <li key={name} style={{ "--row-index": index } as CSSProperties}>
+            {isViewableTable(name) ? (
+              <button
+                type="button"
+                className={`bar-row is-button ${openTable === name ? "is-selected" : ""}`}
+                aria-pressed={openTable === name}
+                aria-label={`${name}（${DB_TABLE_SPECS[name].label}・${count} 行）の中身を${openTable === name ? "閉じる" : "見る"}`}
+                onClick={() => onSelect(name)}
+              >
+                {content}
+                <Icon name={openTable === name ? "expandMore" : "chevronRight"} size={20} className="bar-row-icon" />
+              </button>
+            ) : (
+              <div className="bar-row">
+                {content}
+                <span className="bar-row-icon" aria-hidden="true" />
+              </div>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }

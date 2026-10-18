@@ -210,12 +210,46 @@ def db_summary_command(bot_dir: str) -> str:
     return f"python3 - {db_path} {blacklist_path}"
 
 
+# 中身を表示できる bot.db のテーブル（remote_scripts/db_table.py の TABLES と同じ。テストで照合する）
+DB_TABLES = (
+    "affinity",
+    "user_stats",
+    "queue_tasks",
+    "pending_log",
+    "profile",
+    "guild_settings",
+    "anniversary_posts",
+    "reminders",
+    "feedback",
+)
+# テーブルの中身を一度に取り寄せる最大の行数（発言サンプルを持つ user_stats でも数百 KB に収まる量）
+DB_TABLE_PAGE_MAX = 200
+
+
+def db_table_command(bot_dir: str, table: str, offset: int, limit: int) -> str:
+    """テーブルの行を取り出すスクリプト（DB_TABLE_SCRIPT）を標準入力から python3 に渡して実行する。
+
+    テーブル名は DB_TABLES にあるものだけを受け付ける（画面から届いた文字列を、そのままコマンドに埋め込まない）。
+    """
+    if table not in DB_TABLES:
+        raise ValueError(f"表示できないテーブルです: {table!r}")
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), DB_TABLE_PAGE_MAX))
+    db_path = shlex.quote(f"{bot_dir.rstrip('/')}/memory/bot.db")
+    return f"python3 - --db-table {db_path} {table} {offset} {limit}"
+
+
 # ボットの中の状態（Discord API・サーバーごとの設定・直近24時間のログ）を集めるスクリプト。
 # 中身は remote_scripts/insights.py（サーバー側で標準入力から実行する）。
 INSIGHTS_SCRIPT = (Path(__file__).resolve().parent / "remote_scripts" / "insights.py").read_text(encoding="utf-8")
 
+# bot.db の1つのテーブルの行（会話・記憶の本文や ID を含む）を読み取り専用で取り出すスクリプト。
+# 中身は remote_scripts/db_table.py（データページで、テーブルの中身を開いたときだけ使う）。
+DB_TABLE_SCRIPT = (Path(__file__).resolve().parent / "remote_scripts" / "db_table.py").read_text(encoding="utf-8")
+
 # サーバー側で動かす集計スクリプト（標準ライブラリだけで動く）。
-# ★ DB は mode=ro（読み取り専用）で開き、件数だけを返す。会話や記憶の中身は持ち出さない。
+# ★ DB は mode=ro（読み取り専用）で開き、件数だけを返す。会話や記憶の中身は持ち出さない
+#   （中身は、テーブルを開いたときだけ DB_TABLE_SCRIPT で取り寄せる）。
 DB_SUMMARY_SCRIPT = r'''
 import json, os, sqlite3, sys
 from pathlib import Path

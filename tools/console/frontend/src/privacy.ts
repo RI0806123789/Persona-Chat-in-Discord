@@ -1,6 +1,7 @@
 // 伏せ字モード（スクリーンショットを Public の issue に貼るためのもの）。
 // 欄ごとに隠す（mask）だけでなく、エラー文・ログ・コマンド履歴のような自由な文の中に出てくる
-// ホスト名・ホスト鍵・ボット名・サーバー名・チャンネル名も、分かっている文字列を探して隠す（redact）。
+// ホスト名・ホスト鍵・ボット名・サーバー名・チャンネル名・利用者の表示名も、分かっている文字列を探して隠す（redact）。
+// bot.db のテーブルの中身は、列の種類ごとに隠す（dbTables.ts の isSecretKind）。
 import { createContext, useContext } from "react";
 import type { ConnectionState, Insights, LogEntry, Profile } from "./types";
 
@@ -29,11 +30,14 @@ export function collectSecrets(parts: {
   profiles: Profile[];
   connection: ConnectionState | null;
   insights: Insights | null;
+  /** データページで開いたテーブルの中身に出てきた、利用者の表示名 */
+  userNames?: string[];
 }): string[] {
   const values: (string | null | undefined)[] = [
     parts.connection?.fingerprint,
     parts.connection?.server?.hostname,
     parts.insights?.discord.bot_user,
+    ...(parts.userNames ?? []),
   ];
   // ボット名は「名前#0000」の形で出ることがあるので、名前だけでも探す
   const botUser = parts.insights?.discord.bot_user;

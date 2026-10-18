@@ -1,8 +1,9 @@
 // M3 の基本ダイアログ（角丸 28px・上にアイコン・見出しは headline small）。
 // 閉じる動きを見せるため、閉じても DOM に残して中身だけ保持する。
+// 開くきっかけのボタンから広がり、閉じるとそこへ縮んで戻る（useEmergeFrom）。
 // フォーカスは開いたら中へ移し、Tab は中で循環させ、閉じたら開く前の場所へ戻す（useModalFocus）。
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useModalFocus } from "../hooks";
+import { useEmergeFrom, useModalFocus } from "../hooks";
 import { Icon, type IconName } from "./Icon";
 import { Button, IconButton, Kbd } from "./ui";
 
@@ -27,6 +28,7 @@ export function ConfirmDialog({ request, open, onClose }: { request: ConfirmRequ
   // 最初のフォーカス: 入力が要るなら入力欄、危険な操作ならキャンセル（Enter の押し間違いで実行しないように）
   const initialRef = request?.requireText ? inputRef : request?.tone === "danger" ? cancelRef : confirmRef;
   useModalFocus(open, dialogRef, initialRef);
+  useEmergeFrom(open, dialogRef);
 
   useEffect(() => {
     if (open) setTyped("");
@@ -140,6 +142,7 @@ const SHORTCUT_GROUPS: { title: string; items: { keys: string[]; label: string }
 export function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(open, dialogRef);
+  useEmergeFrom(open, dialogRef);
 
   return (
     <div

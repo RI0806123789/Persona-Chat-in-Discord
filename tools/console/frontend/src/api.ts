@@ -2,6 +2,7 @@ import type {
   CommandRecord,
   ConnectionState,
   DbSummary,
+  DbTablePage,
   DeployResponse,
   InsightsResponse,
   LogEntry,
@@ -63,6 +64,8 @@ export const api = {
   operations: () => request<{ operations: Operation[] }>("/api/operations"),
   history: () => request<{ commands: CommandRecord[] }>("/api/history"),
   db: () => request<DbSummary>("/api/db"),
+  dbTable: (table: string, offset: number, limit: number) =>
+    request<DbTablePage>(`/api/db/tables/${encodeURIComponent(table)}?offset=${offset}&limit=${limit}`),
   deploy: () => request<DeployResponse>("/api/deploy"),
   startDeploy: () => post<DeployResponse>("/api/deploy"),
   insights: (refresh = false) => request<InsightsResponse>(`/api/insights${refresh ? "?refresh=true" : ""}`),
