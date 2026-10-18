@@ -118,11 +118,18 @@ class GeminiService:
         metadata = getattr(candidates[0], "grounding_metadata", None)
         chunks = getattr(metadata, "grounding_chunks", None) or []
         sources = []
-        for chunk in chunks[:MAX_GROUNDING_SOURCES]:
+        seen_uris: set[str] = set()
+        for chunk in chunks:
             web = getattr(chunk, "web", None)
-            uri = (getattr(web, "uri", "") or "").strip()
-            if uri:
-                sources.append({"title": (getattr(web, "title", "") or "").strip(), "uri": uri})
+            raw_uri = getattr(web, "uri", None)
+            uri = raw_uri.strip() if isinstance(raw_uri, str) else ""
+            if not uri or uri in seen_uris:
+                continue
+            title = getattr(web, "title", None)
+            sources.append({"title": title.strip() if isinstance(title, str) else "", "uri": uri})
+            seen_uris.add(uri)
+            if len(sources) >= MAX_GROUNDING_SOURCES:
+                break
         return sources
 
     async def upload_file(self, file_path: Path) -> Any:
@@ -173,7 +180,8 @@ class GeminiService:
         parsed = extract_json_object(safe_response_text(response) or "", required_keys=("summary",))
         if not parsed:
             raise ValueError("要約JSONを取得できませんでした。")
-        summary_text = str(parsed.get("summary", "")).strip()
+        summary = parsed.get("summary")
+        summary_text = summary.strip() if isinstance(summary, str) else ""
         if not summary_text:
             raise ValueError("要約テキストが空です。")
         return {

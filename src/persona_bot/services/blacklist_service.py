@@ -52,9 +52,12 @@ class BlacklistService:
     @staticmethod
     def _count_of(record: dict[str, Any]) -> int:
         """違反回数。数値として読めなければ 0 とみなす。"""
+        value = record.get("count", 0)
+        if isinstance(value, bool):
+            return 0
         try:
-            return max(0, int(record.get("count", 0)))
-        except (TypeError, ValueError):
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
             return 0
 
     # ------------------------------------------------------------------
@@ -76,9 +79,17 @@ class BlacklistService:
         blocked: list[dict[str, Any]] = []
         for uid, record in self._data.items():
             # 解除パネルへ渡す ID は数値でなければならないため、読めない行は飛ばす
-            if not isinstance(record, dict) or not record.get("blocked", False) or not str(uid).isdigit():
+            if (not isinstance(record, dict) or not record.get("blocked", False)
+                    or not isinstance(uid, str) or not uid.isascii() or not uid.isdigit()):
                 continue
-            blocked.append({"user_id": int(uid), **record})
+            try:
+                user_id = int(uid)
+            except ValueError:
+                continue
+            blocked.append({
+                **record, "user_id": user_id,
+                "count": max(BLACKLIST_MAX_VIOLATIONS, self._count_of(record)),
+            })
         return blocked
 
     # ------------------------------------------------------------------
@@ -101,7 +112,7 @@ class BlacklistService:
 
         # 既にブロック済みの場合はカウントを増やさずに現在の状態を返す
         if record.get("blocked", False):
-            return self._count_of(record), False
+            return max(BLACKLIST_MAX_VIOLATIONS, self._count_of(record)), False
 
         record["count"] = self._count_of(record) + 1
         record["user_name"] = user_name

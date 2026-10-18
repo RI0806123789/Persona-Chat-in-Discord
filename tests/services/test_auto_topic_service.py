@@ -39,7 +39,7 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(log_snapshot=Mock()), None,
         )
         self.member = SimpleNamespace(id=11, display_name="架空の利用者", mention="<@11>")
-        self.prompt = patch.object(auto_topic_service, "load_prompt_template", return_value="架空のペルソナ").start()
+        self.prompt = patch("persona_bot.config.paths.load_prompt_template", return_value="架空のペルソナ").start()
         self.addCleanup(patch.stopall)
         self.history = patch.object(
             auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="架空の履歴"),
@@ -193,6 +193,7 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.state = BotState()
         self.settings = self.state.get_guild(1)
+        self.settings.auto_topic_enabled = True
         now = datetime.now(timezone.utc)
         # 10 が最新、20、30 の順に古い監視チャンネル
         for hours, channel_id in enumerate((10, 20, 30), start=1):
@@ -213,7 +214,7 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(mask_with_log=Mock(side_effect=lambda text, **kwargs: text)),
             SimpleNamespace(log_snapshot=Mock()), None,
         )
-        patch.object(auto_topic_service, "load_prompt_template", return_value="架空のペルソナ").start()
+        patch("persona_bot.config.paths.load_prompt_template", return_value="架空のペルソナ").start()
         patch.object(
             auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="架空の履歴"),
         ).start()
@@ -243,6 +244,16 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
         self.channels[30].send.assert_not_awaited()
         self.gemini.generate.assert_awaited_once()
         self.assert_recorded(True)
+
+    async def test_disabled_auto_topic_keeps_watched_channels_but_posts_no_anniversary(self):
+        self.settings.auto_topic_enabled = False
+        await self.celebrate()
+        self.client.get_guild.assert_not_called()
+        self.gemini.generate.assert_not_awaited()
+        for channel in self.channels.values():
+            channel.send.assert_not_awaited()
+        self.assertEqual(set(self.settings.auto_topic_channels), {10, 20, 30})
+        self.assert_recorded(False)
 
     async def test_unsendable_channels_are_skipped_without_api_calls(self):
         self.channels[10].permissions.send_messages = False

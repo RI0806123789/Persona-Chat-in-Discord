@@ -1,6 +1,7 @@
 """エフェメラルパネルの往復後もWebhook経由で時間切れ表示にできることを確認する。"""
 
 from pathlib import Path
+import io
 import sys
 from types import SimpleNamespace
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from persona_bot.views.view_parts import BackButton, PanelView, swap_panel
+from persona_bot.views.view_parts import BackButton, PanelView, send_graph_ephemeral, swap_panel
 
 
 class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
@@ -60,3 +61,40 @@ class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(panel.is_finished())
         interaction.original_response.assert_not_awaited()
         interaction.response.edit_message.assert_awaited_once_with(content="パネルを閉じました。", view=None)
+
+    async def test_reference_fetch_failure_keeps_previous_webhook_for_both_directions(self):
+        for direction in ("forward", "back"):
+            with self.subTest(direction=direction):
+                hub, panel = self.make_panel(), self.make_panel()
+                interaction, webhook = self.make_interaction()
+                interaction.original_response.side_effect = RuntimeError("架空の参照取得失敗")
+                if direction == "forward":
+                    hub.message = webhook
+                    await swap_panel(interaction, hub, panel, "サブパネル")
+                    current = panel
+                    self.assertTrue(hub.is_finished())
+                else:
+                    panel.message = webhook
+                    hub.build_preview = Mock(return_value="機能パネル")
+                    panel.make_hub = Mock(return_value=hub)
+                    button = BackButton(row=0)
+                    panel.add_item(button)
+                    await button.callback(interaction)
+                    current = hub
+                    self.assertTrue(panel.is_finished())
+                self.assertIs(current.message, webhook)
+                await current.on_timeout()
+                webhook.edit.assert_awaited_once_with(content="時間切れです。", view=None)
+
+    async def test_graph_and_error_notice_failure_are_contained_and_buffer_is_closed(self):
+        for followup in (False, True):
+            with self.subTest(followup=followup):
+                sending = AsyncMock(side_effect=RuntimeError("架空の送信失敗"))
+                interaction = SimpleNamespace(
+                    response=SimpleNamespace(send_message=sending, is_done=Mock(return_value=False)),
+                    followup=SimpleNamespace(send=sending),
+                )
+                buffer = io.BytesIO(b"png")
+                await send_graph_ephemeral(interaction, buffer, "graph.png", "グラフ", followup=followup)
+                self.assertTrue(buffer.closed)
+                self.assertEqual(sending.await_count, 2)

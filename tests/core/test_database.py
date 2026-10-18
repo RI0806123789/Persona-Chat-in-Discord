@@ -166,12 +166,13 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_persisted_settings_round_trip_for_guilds_and_dm(self) -> None:
         state = BotState()
         state.restore_from_database(self.db)
+        from persona_bot.config.choices import PERSONA_CHOICES, MODEL_CHOICES
         expected = {}
         for index, guild_id in enumerate((1, 2, None)):
             settings = state.get_guild(guild_id)
             values = {
-                "current_prompt_file": f"../prompts/fictional-{index}.txt",
-                "current_model_name": f"fictional-model-{index}",
+                "current_prompt_file": PERSONA_CHOICES[index].value,
+                "current_model_name": MODEL_CHOICES[index].value,
                 "current_respond_mode": "all" if index == 0 else "mention",
                 "grounding_enabled": index != 1,
                 "auto_topic_enabled": index == 1,

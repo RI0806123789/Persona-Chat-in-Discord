@@ -88,7 +88,7 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
         )
         service._screen_auto_post = AsyncMock(return_value=(text, True))
         member = SimpleNamespace(id=11, display_name="架空の利用者", mention="<@11>")
-        with patch.object(auto_topic_service, "load_prompt_template", return_value="架空のペルソナ"), \
+        with patch("persona_bot.config.paths.load_prompt_template", return_value="架空のペルソナ"), \
                 patch.object(auto_topic_service, "fetch_channel_history_text", new=AsyncMock(return_value="")), \
                 patch.object(auto_topic_service, "send_long_message", wraps=send_long_message, create=True) as sending:
             self.assertTrue(await service._post_topic(channel, settings))

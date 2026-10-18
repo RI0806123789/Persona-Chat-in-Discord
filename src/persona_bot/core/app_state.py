@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from persona_bot.config.choices import MODEL_CHOICES, PERSONA_CHOICES, RESPOND_MODE_CHOICES
+from persona_bot.config.paths import resolve_prompt_path
 from persona_bot.config.constants import (
     DEFAULT_AUTO_TOPIC_INTERVAL_HOURS,
     DEFAULT_MODEL_NAME,
@@ -149,9 +151,25 @@ class GuildSettings:
         値が空・欠落している項目は既定値のままにする（列を増やした直後の行など、
         中途半端なデータでボットが起動しなくなることを避けるため）。
         """
-        self.current_prompt_file = values.get("prompt_file") or self.current_prompt_file
-        self.current_model_name = values.get("model_name") or self.current_model_name
-        self.current_respond_mode = values.get("respond_mode") or self.current_respond_mode
+        for key, attribute, choices, default in (
+            ("prompt_file", "current_prompt_file", PERSONA_CHOICES, DEFAULT_PROMPT_FILE),
+            ("model_name", "current_model_name", MODEL_CHOICES, DEFAULT_MODEL_NAME),
+            ("respond_mode", "current_respond_mode", RESPOND_MODE_CHOICES, DEFAULT_RESPOND_MODE),
+        ):
+            value = values.get(key)
+            if value is None or value == "":
+                continue
+            valid = isinstance(value, str) and any(choice.value == value for choice in choices)
+            if valid and key == "prompt_file":
+                try:
+                    valid = resolve_prompt_path(value).is_file()
+                except OSError:
+                    valid = False
+            if valid:
+                setattr(self, attribute, value)
+            else:
+                print(f"サーバー設定: 保存済みの {key} が無効なため既定値へ戻します。")
+                setattr(self, attribute, default)
         if values.get("grounding_enabled") is not None:
             self.grounding_enabled = bool(values["grounding_enabled"])
         if values.get("auto_topic_enabled") is not None:

@@ -6,11 +6,6 @@ from persona_bot.services.reminder_service import ReminderService
 from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text
 
 
-def _to_option_text(text: str) -> str:
-    """共通の選択肢整形を使う（既存の呼出元向けの入口）。"""
-    return select_option_text(text)
-
-
 def _build_status_text(records: list[dict], service: ReminderService) -> str:
     """リマインダーパネルの表示テキストを組み立てる。"""
     if not records:
@@ -52,9 +47,9 @@ class ReminderCancelSelect(ui.Select):
                 discord.SelectOption(
                     # ラベルは100文字までのため、本文が長い場合は切り詰める。
                     # description も本文を含むので、同じく1行にしてから切り詰める
-                    label=_to_option_text(str(record.get("message", ""))) or "（本文なし）",
+                    label=select_option_text(record.get("message"), fallback="（本文なし）"),
                     value=str(record.get("reminder_id")),
-                    description=_to_option_text(service.describe(record)),
+                    description=select_option_text(service.describe(record)),
                 )
             )
         super().__init__(placeholder="🗑️ 取り消すリマインダーを選択…", options=options, row=0)

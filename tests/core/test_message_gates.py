@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -61,7 +61,7 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
             "spawn": close_coroutine, "play_tts_response": AsyncMock(),
             "load_image_attachments": self.images,
             "fetch_channel_history_text": AsyncMock(return_value=""),
-            "load_prompt_template": Mock(return_value="架空のペルソナ"), "resolve_prompt_path": Path,
+            "load_persona_template": AsyncMock(return_value="架空のペルソナ"),
         }, self)
 
     @staticmethod
@@ -69,6 +69,15 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(filename=filename, content_type=content_type, size=10)
 
     # ---- ブロック中のユーザー --------------------------------------------------
+
+    async def test_unsupported_channel_does_not_update_activity_or_resolve_guild_settings(self):
+        from persona_bot.core import message_handler
+        with patch.object(message_handler, "is_supported_message_channel", return_value=False), patch.object(
+            self.state, "get_guild", side_effect=AssertionError("未対応チャンネルで設定を解決しない"),
+        ):
+            await self.handler.on_message(self.message)
+        self.auto_topic.mark_activity.assert_not_called()
+        self.autonomous.mark_activity.assert_not_called()
 
     async def test_blocked_user_is_dropped_before_activity_is_observed(self) -> None:
         self.blacklist.is_blocked.return_value = True

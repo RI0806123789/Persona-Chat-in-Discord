@@ -137,6 +137,32 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
         self.voice.disconnect.assert_awaited_once_with(force=True)
         self.assertEqual(self.settings.autonomous_start_failures, 0)
 
+    async def test_connect_error_after_stop_is_not_counted_as_start_failure(self) -> None:
+        for error in (RuntimeError("架空の接続失敗"), asyncio.TimeoutError()):
+            with self.subTest(error=type(error).__name__):
+                async def connect(**kwargs):
+                    await self.service.stop_session(1, reason="架空の開始中止")
+                    raise error
+
+                self.channel.connect.side_effect = connect
+                await self.start()
+                self.assert_not_started()
+                self.assertEqual(self.settings.autonomous_start_failures, 0)
+                self.assertIsNone(self.settings.autonomous_start_retry_at)
+
+    async def test_stage_error_after_stop_is_not_counted_as_start_failure(self) -> None:
+        async def edit(**kwargs):
+            await self.service.stop_session(1, reason="架空の準備中止")
+            raise RuntimeError("架空の発言者への昇格失敗")
+
+        self.member.edit.side_effect = edit
+        await self.start()
+        self.assert_not_started()
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        self.assertEqual(self.settings.autonomous_start_failures, 0)
+        self.assertIsNone(self.settings.autonomous_start_retry_at)
+
     async def test_stop_or_disable_during_preparation_closes_only_owned_stage(self) -> None:
         for borrowed in (False, True):
             for change in ("stop", "disabled", "quiet", "moved", "disconnected"):

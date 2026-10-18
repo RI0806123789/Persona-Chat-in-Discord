@@ -15,28 +15,18 @@ import { LogsPage } from "./pages/LogsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
-import { RequestScope } from "./requestScope";
+import { useConnectionScope, useDeployController, useServiceController } from "./controllers";
 import { unsetFieldsOf } from "./profiles";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
 import { withViewTransition } from "./viewTransition";
-import type { ConnectionState, DeployRecord, DeployStatus, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
+import type { ConnectionState, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
 
 const STATUS_INTERVAL_MS = 5000;
 const INSIGHTS_INTERVAL_MS = 60_000; // Discord API の利用制限に配慮して1分ごと（バックエンドも60秒キャッシュする）
 const CONNECTION_INTERVAL_MS = 10000;
 const MAX_SAMPLES = 60; // 5秒 × 60 = 直近5分ぶん
 // デプロイの記録を取り直す間隔（実行中はステップの進み具合を見せるため短く）
-const DEPLOY_RUNNING_INTERVAL_MS = 1000;
-const DEPLOY_IDLE_INTERVAL_MS = 15000;
 
-// デプロイが終わったときの通知
-const DEPLOY_DONE: Record<Exclude<DeployStatus, "running">, { tone: "good" | "critical" | "info"; title: string }> = {
-  succeeded: { tone: "good", title: "デプロイしました" },
-  up_to_date: { tone: "info", title: "最新でした（何も変えていません）" },
-  failed: { tone: "critical", title: "デプロイを止めました（何も変えていません）" },
-  rolled_back: { tone: "critical", title: "デプロイに失敗したため、前の版へ戻しました" },
-  rollback_failed: { tone: "critical", title: "巻き戻しにも失敗しました。手動の対応が必要です" },
-};
 const GO_KEY_TIMEOUT_MS = 1200; // g を押してから次のキーを待つ時間
 
 // M3 のウィンドウサイズの区分（600 未満 = compact、1200 以上 = large）
@@ -108,10 +98,6 @@ function Console() {
   const [insightsFetchedAt, setInsightsFetchedAt] = useState<number | null>(null);
   const [insightsError, setInsightsError] = useState<string | null>(null);
   const [operations, setOperations] = useState<Operation[]>([]);
-  const [busyAction, setBusyAction] = useState<ServiceAction | null>(null);
-  const [deploy, setDeploy] = useState<DeployRecord | null>(null);
-  const [deployRunning, setDeployRunning] = useState(false);
-  const deployWasRunning = useRef(false);
 
   // ---- 画面の部品
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -122,16 +108,14 @@ function Console() {
   const [refreshToken, setRefreshToken] = useState(0);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLElement>(null);
-  const wasConnected = useRef(false);
-  const dataConnectionKey = useRef("");
-  // 接続変更を始めた瞬間にも世代を進め、通信中の応答と予約済みタイマーを無効にする。
-  const requestScope = useRef(new RequestScope());
-  const connectionChanging = useRef(false);
-  const connectionProfileId = useRef<string | null>(null);
+  const { requestScope, connectionChanging, wasConnected, dataConnectionKey, connectionProfileId } = useConnectionScope();
 
   const connected = connection?.connected ?? false;
   const connectionKey = `${connection?.profile?.id ?? ""}:${connection?.connected_at ?? ""}`;
   const stream = useLogStream(connected, 300, connectionKey);
+  useEffect(() => {
+    if (page !== "logs") stream.setPaused(false);
+  }, [page, stream.setPaused]);
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) ?? null;
   const pageDef = PAGES.find((p) => p.id === page) ?? PAGES[0];
   const production = connected && connection?.profile?.environment === "production";
@@ -278,10 +262,6 @@ function Console() {
     }
   }, [refreshConnection]);
   usePolling(refreshStatus, STATUS_INTERVAL_MS, connected && autoRefresh, connectionKey);
-  // デプロイの終わりに呼ぶ（ref 経由で、その時点の最新の処理を呼ぶ）
-  const refreshStatusRef = useRef(refreshStatus);
-  refreshStatusRef.current = refreshStatus;
-
   const refreshInsights = useCallback(async (force = false) => {
     if (!wasConnected.current || connectionChanging.current) return;
     const isCurrent = requestScope.current.start("insights");
@@ -318,48 +298,21 @@ function Console() {
     void refreshOperations();
   }, [refreshOperations, page]);
 
-  // ---- デプロイ
-  const refreshDeploy = useCallback(async () => {
-    if (!wasConnected.current || connectionChanging.current) return;
-    const isCurrent = requestScope.current.start("deploy");
-    try {
-      const result = await api.deploy();
-      if (!isCurrent()) return;
-      if (result.deploy && result.deploy.profile_id !== connectionProfileId.current) return;
-      setDeploy(result.deploy);
-      setDeployRunning(result.running);
-      // 実行中 → 終わった、に変わったら結果を知らせ、状態を取り直す
-      if (deployWasRunning.current && !result.running && result.deploy && result.deploy.status !== "running") {
-        const done = DEPLOY_DONE[result.deploy.status];
-        notify({ tone: done.tone, title: done.title, detail: result.deploy.message });
-        void refreshStatusRef.current();
-      }
-      deployWasRunning.current = result.running;
-    } catch {
-      // 記録は補助情報なので、取れなくても画面は止めない
-    }
-  }, [notify]);
-  usePolling(refreshDeploy, deployRunning ? DEPLOY_RUNNING_INTERVAL_MS : DEPLOY_IDLE_INTERVAL_MS, connected, connectionKey);
-
-  const runDeploy = useCallback(async () => {
-    if (!wasConnected.current || connectionChanging.current) return;
-    const isCurrent = requestScope.current.current();
-    try {
-      const result = await api.startDeploy();
-      if (!isCurrent()) return;
-      setDeploy(result.deploy);
-      setDeployRunning(result.running);
-      deployWasRunning.current = result.running;
-      notify({ tone: "info", title: "デプロイを始めました", detail: "サービス操作のページで、1ステップずつ進み具合を確かめられます。" });
-    } catch (error) {
-      if (!isCurrent()) return;
-      notify({ tone: "critical", title: "デプロイを始められませんでした", detail: errorMessage(error) });
-    }
-  }, [notify]);
+  const refreshAfterChange = useCallback(() => {
+    void refreshStatus();
+    void refreshInsights(true);
+  }, [refreshStatus, refreshInsights]);
+  const { deploy, deployRunning, deployWasRunning, setDeploy, setDeployRunning, refreshDeploy, runDeploy } = useDeployController(
+    { requestScope, wasConnected, connectionChanging, connectionProfileId }, notify, refreshAfterChange, connected, connectionKey,
+  );
+  const { busyAction, runAction } = useServiceController(
+    { requestScope, wasConnected, connectionChanging }, notify, refreshOperations, refreshAfterChange,
+  );
 
   const requestDeploy = useCallback(() => {
     const profile = connection?.profile;
-    if (!profile || deployRunning || busyAction) return;
+    if (!profile || deployRunning || busyAction || connection?.connected_at == null) return;
+    const target = { profile_id: profile.id, connected_at: connection.connected_at };
     const branch = profile.deploy_branch ?? "main";
     const isProduction = profile.environment === "production";
     const isCurrent = requestScope.current.current();
@@ -391,7 +344,7 @@ function Console() {
       confirmLabel: "デプロイする",
       tone: isProduction ? "danger" : "primary",
       requireText: isProduction ? profile.service : undefined,
-      onConfirm: () => { if (isCurrent()) void runDeploy(); },
+      onConfirm: () => { if (isCurrent()) void runDeploy(target); },
     });
     setConfirmOpen(true);
   }, [connection, deployRunning, busyAction, runDeploy]);
@@ -455,35 +408,6 @@ function Console() {
     }
   }, [applyConnection, notify, refreshConnection]);
 
-  // ---- サービス操作
-  const runAction = useCallback(
-    async (action: ServiceAction, target: { profile_id: string; connected_at: number }) => {
-      if (!wasConnected.current || connectionChanging.current) return;
-      const isCurrent = requestScope.current.current();
-      setBusyAction(action);
-      try {
-        const operation = await api.service(action, target);
-        if (!isCurrent()) return;
-        notify(
-          operation.ok
-            ? { tone: "good", title: operation.message }
-            : { tone: "critical", title: `${ACTION_LABELS[action]}に失敗しました`, detail: operation.message },
-        );
-      } catch (error) {
-        if (!isCurrent()) return;
-        notify({ tone: "critical", title: `${ACTION_LABELS[action]}できませんでした`, detail: errorMessage(error) });
-      } finally {
-        setBusyAction(null);
-        if (isCurrent()) {
-          void refreshOperations();
-          void refreshStatus();
-          window.setTimeout(() => { if (isCurrent()) void refreshStatus(); }, 2500); // 起動直後の状態変化を拾う
-        }
-      }
-    },
-    [notify, refreshOperations, refreshStatus],
-  );
-
   const requestAction = useCallback(
     (action: ServiceAction) => {
       const profile = connection?.profile;
@@ -525,8 +449,9 @@ function Console() {
     if (!connected) return;
     void refreshStatus();
     void refreshInsights(true);
+    void refreshDeploy();
     setRefreshToken((n) => n + 1);
-  }, [connected, refreshStatus, refreshInsights]);
+  }, [connected, refreshStatus, refreshInsights, refreshDeploy]);
 
   // テーマ・配色・伏せ字の切り替えは、画面全体を写しから溶け込ませる（一瞬で色や文字が変わらないように）
   const changeTheme = useCallback(
@@ -620,7 +545,7 @@ function Console() {
         window.setTimeout(() => filterInputRef.current?.focus(), 60);
         break;
       case "p":
-        if (connected) stream.setPaused(!stream.paused);
+        if (connected) if (page === "logs") stream.setPaused(!stream.paused);
         break;
       case "[":
         toggleRail();

@@ -27,6 +27,17 @@ async def edit_panel_message(interaction: discord.Interaction, *, content: str, 
         await interaction.response.edit_message(content=content, view=view)
 
 
+async def bind_panel_message(
+    interaction: discord.Interaction, panel: ui.View, *, previous_message: Any = None,
+) -> None:
+    """編集後の参照取得に失敗しても、直前のWebhook参照で時間切れ処理を保つ。"""
+    panel.message = previous_message
+    try:
+        panel.message = await interaction.original_response()
+    except Exception as error:
+        print(f"パネル({type(panel).__name__})の応答参照の取得に失敗しました: {error}")
+
+
 class PanelView(ui.View):
     """/functions のハブと各サブパネルに共通する土台となる View。
 
@@ -102,17 +113,17 @@ class BackButton(ui.Button):
         make_hub: HubFactory | None = getattr(view, "make_hub", None)
         if make_hub is None:
             # エフェメラルメッセージは delete() できないため、内容を編集して閉じる。
-            await interaction.response.edit_message(content="パネルを閉じました。", view=None)
+            await edit_panel_message(interaction, content="パネルを閉じました。", view=None)
             if view is not None:
                 view.stop()
             return
 
         hub = make_hub()
-        await interaction.response.edit_message(content=hub.build_preview(), view=hub)
+        await edit_panel_message(interaction, content=hub.build_preview(), view=hub)
         if view is not None:
             view.stop()
         # エフェメラルはチャンネル経由では編集できないためWebhookの参照を保持する。
-        hub.message = await interaction.original_response()
+        await bind_panel_message(interaction, hub, previous_message=getattr(view, "message", None))
 
 
 async def swap_panel(
@@ -138,7 +149,7 @@ async def swap_panel(
     # 後からメッセージを誤って上書きする（同じメッセージを共有しているため、
     # 表示中のサブパネルが「機能パネルは時間切れです」に化けてしまう）。
     hub.stop()
-    panel.message = await interaction.original_response()
+    await bind_panel_message(interaction, panel, previous_message=getattr(hub, "message", None))
 
 
 async def send_graph_ephemeral(
@@ -182,7 +193,10 @@ async def send_graph_ephemeral(
         # 送信が始まる前に失敗した場合のみ、同じ Interaction でエラーを返せる。
         if followup or not interaction.response.is_done():
             sender = interaction.followup.send if followup else interaction.response.send_message
-            await sender(error_notice or f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True)
+            try:
+                await sender(error_notice or f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True)
+            except Exception as notice_error:
+                print(f"グラフ送信失敗の案内も送れませんでした ({filename}): {notice_error}")
     finally:
         # discord.Fileが差し替えたbuffer.closeを元へ戻してから閉じる。
         if picture is not None:

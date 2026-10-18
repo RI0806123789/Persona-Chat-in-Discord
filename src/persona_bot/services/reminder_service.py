@@ -22,6 +22,7 @@ from typing import Any, Callable
 import discord
 
 from persona_bot.config.constants import (
+    DM_SETTINGS_GUILD_KEY,
     REMINDER_MAX_DAYS_AHEAD,
     REMINDER_MAX_FINISHED,
     REMINDER_MAX_MESSAGE_LENGTH,
@@ -251,7 +252,7 @@ class ReminderService:
         # 抽出できない・未知の繰り返し種別は none（単発）に倒す。
         recurrence = normalize_recurrence(request.get("repeat"))
 
-        guild_id = message.guild.id if message.guild is not None else 0
+        guild_id = message.guild.id if message.guild is not None else DM_SETTINGS_GUILD_KEY
         try:
             reminder_id = await run_in_thread(
                 self._db.reminder_add,

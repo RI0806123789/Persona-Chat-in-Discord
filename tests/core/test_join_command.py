@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -12,6 +12,7 @@ import discord
 from persona_bot.config import constants
 from persona_bot.core.app_state import BotState
 from persona_bot.core.commands import register_commands
+from persona_bot.services import autonomous_stage
 
 
 class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -85,6 +86,47 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         reply = await self.join()
         self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
         self.assertIn("に接続しました", reply)
+
+    def make_stage(self, *, can_promote=True):
+        stage = Mock(spec=discord.StageChannel, id=40)
+        stage.name = "架空のステージ"
+        stage.permissions_for.return_value = SimpleNamespace(connect=True, speak=True, mute_members=can_promote)
+        stage.connect = AsyncMock()
+        self.interaction.user.voice.channel = stage
+        self.guild.me = SimpleNamespace(voice=SimpleNamespace(channel=stage), edit=AsyncMock())
+        return stage
+
+    async def test_stage_join_promotes_bot_before_reporting_speaking(self) -> None:
+        stage = self.make_stage()
+        reply = await self.join()
+        stage.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
+        self.guild.me.edit.assert_awaited_once_with(suppress=False)
+        self.assertIn("発言者", reply)
+
+    async def test_existing_stage_connection_is_promoted_without_reconnect(self) -> None:
+        stage = self.make_stage()
+        self.guild.voice_client = self.make_voice_client(stage)
+        reply = await self.join()
+        stage.connect.assert_not_awaited()
+        self.guild.me.edit.assert_awaited_once_with(suppress=False)
+        self.assertIn("既に接続", reply)
+
+    async def test_stage_without_moderator_permission_explains_before_connect(self) -> None:
+        stage = self.make_stage(can_promote=False)
+        await self.commands["join"](self.interaction)
+        self.assertIn("メンバーをミュート", self.interaction.response.send_message.call_args.args[0])
+        self.interaction.response.defer.assert_not_awaited()
+        self.autonomous.stop_session.assert_not_awaited()
+        stage.connect.assert_not_awaited()
+
+    async def test_moved_stage_voice_state_is_not_promoted_or_reported_as_speaker(self) -> None:
+        self.make_stage()
+        self.guild.me.voice.channel = SimpleNamespace(id=50)
+        with patch.object(autonomous_stage.asyncio, "sleep", new=AsyncMock()):
+            reply = await self.join()
+        self.guild.me.edit.assert_not_awaited()
+        self.assertIn("発言者になれませんでした", reply)
+        self.assertNotIn("発言者として読み上げ", reply)
 
     async def test_missing_permissions_reject_before_changing_existing_connection(self) -> None:
         for connect, speak in ((False, True), (True, False), (False, False)):

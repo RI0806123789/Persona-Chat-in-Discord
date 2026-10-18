@@ -121,7 +121,7 @@ def _bit_crush_bits(equalizer: Mapping[str, Any]) -> int:
 
 
 def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+    return min(high, max(low, value))
 
 
 def _resolve_equalizer(profile: Mapping[str, Any]) -> Mapping[str, Any]:

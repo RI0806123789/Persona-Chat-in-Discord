@@ -59,7 +59,7 @@ class AutonomousStagePreparationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.instance = SimpleNamespace(id=101, delete=AsyncMock())
         self.channel = SimpleNamespace(
-            name="架空のステージ", instance=None,
+            id=10, name="架空のステージ", instance=None,
             create_instance=AsyncMock(return_value=self.instance),
         )
         self.member = SimpleNamespace(voice=SimpleNamespace(channel=self.channel), edit=AsyncMock())
@@ -115,6 +115,14 @@ class AutonomousStagePreparationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_voice_cache_closes_created_stage_without_editing_member(self) -> None:
         self.member.voice = None
+        with patch.object(autonomous_stage.asyncio, "sleep", new=AsyncMock()):
+            with self.assertRaises(RuntimeError):
+                await prepare_stage(self.guild, self.channel)
+        self.instance.delete.assert_awaited_once()
+        self.member.edit.assert_not_awaited()
+
+    async def test_other_channel_voice_cache_never_promotes_member_and_rolls_back(self) -> None:
+        self.member.voice.channel = SimpleNamespace(id=20)
         with patch.object(autonomous_stage.asyncio, "sleep", new=AsyncMock()):
             with self.assertRaises(RuntimeError):
                 await prepare_stage(self.guild, self.channel)

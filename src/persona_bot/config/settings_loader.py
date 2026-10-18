@@ -98,7 +98,7 @@ def _load_env_file(env_path: Path) -> str:
     # 「直したはずのキーが反映されない」事故が起きないようにするため。
     # encoding も明示する（Windows の既定エンコーディングは cp932 で、
     # 日本語コメント入りの UTF-8 な .env を読むと文字化けしうる）。
-    load_dotenv(dotenv_path=env_path, override=False, encoding="utf-8")
+    load_dotenv(dotenv_path=env_path, override=False, encoding="utf-8-sig")
     return _ENV_LOADED
 
 

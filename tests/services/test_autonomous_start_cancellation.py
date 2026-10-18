@@ -46,6 +46,59 @@ class AutonomousStartCancellationTests(unittest.IsolatedAsyncioTestCase):
         quiet.start()
         self.addCleanup(quiet.stop)
 
+    async def test_connect_cancellation_disconnects_only_client_created_by_attempt(self) -> None:
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                replacement = SimpleNamespace(disconnect=AsyncMock())
+                self.voice.disconnect.reset_mock()
+
+                async def connect(**kwargs):
+                    self.guild.voice_client = kwargs["cls"](object(), self.channel)
+                    await asyncio.sleep(0)
+                    if replace:
+                        self.guild.voice_client = replacement
+                    raise asyncio.CancelledError
+
+                self.channel.connect.side_effect = connect
+                with patch.object(autonomous_service.discord, "VoiceClient", return_value=self.voice):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await self.service._start_session(self.guild, self.settings)
+                self.assertEqual(self.voice.disconnect.await_count, 0 if replace else 1)
+                replacement.disconnect.assert_not_awaited()
+                self.assertNotIn(1, self.service._starting)
+                self.assertEqual(self.settings.autonomous_start_failures, 0)
+
+    async def test_repeated_connect_cancellation_waits_for_owned_disconnect(self) -> None:
+        connecting, disconnecting, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def connect(**kwargs):
+            self.guild.voice_client = kwargs["cls"](object(), self.channel)
+            connecting.set()
+            await asyncio.Event().wait()
+
+        async def disconnect(**kwargs):
+            disconnecting.set()
+            await release.wait()
+
+        self.channel.connect.side_effect = connect
+        self.voice.disconnect.side_effect = disconnect
+        with patch.object(autonomous_service.discord, "VoiceClient", return_value=self.voice):
+            task = spawn(self.service._start_session(self.guild, self.settings), label="接続キャンセルの検証")
+            try:
+                await asyncio.wait_for(connecting.wait(), 2)
+                task.cancel()
+                await asyncio.wait_for(disconnecting.wait(), 2)
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+
     async def test_cancellation_during_voice_cache_wait_closes_stage_and_disconnects(self) -> None:
         self.member.voice = None
         with patch.object(autonomous_stage.asyncio, "sleep", new=AsyncMock(side_effect=asyncio.CancelledError)):

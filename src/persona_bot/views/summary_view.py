@@ -6,7 +6,6 @@ from discord import ui
 
 from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import GuildSettings
-from persona_bot.core.background import run_in_thread
 from persona_bot.config.choices import SUMMARY_PERIOD_CHOICES
 from persona_bot.config.constants import SUMMARY_MAX_MESSAGES, SUMMARY_TIMEOUT_SECONDS
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
@@ -19,7 +18,7 @@ from persona_bot.utils.discord_helpers import (
 )
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.ng_word_service import NgWordFilter
-from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
+from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_summary_prompt
 from persona_bot.utils.usage_graph import UsageTracker
 from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
@@ -106,9 +105,7 @@ async def generate_channel_summary(
 
     # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
-        persona_prompt = await run_in_thread(
-            lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
-        )
+        persona_prompt = await load_persona_template(response_settings.prompt_file)
     except FileNotFoundError:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
         print(f"要約: プロンプトファイル({response_settings.prompt_file})が見つかりません。口調なしで続行します。")

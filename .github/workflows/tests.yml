@@ -56,3 +56,66 @@ jobs:
           name: dependencies-${{ runner.os }}-${{ matrix.python }}
           path: resolved-requirements.txt
           if-no-files-found: ignore
+
+  console-backend:
+    name: Console backend / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.13']
+    env:
+      PYTHONIOENCODING: utf-8
+    defaults:
+      run:
+        working-directory: tools/console/backend
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Pythonを準備
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: tools/console/backend/requirements.txt
+      - name: 管理コンソールの既存依存を準備
+        run: python -m pip install -r requirements.txt
+      - name: 依存と構文を確認
+        run: |
+          python -m pip check
+          python -m compileall -q app.py deploy.py profiles.py remote_commands.py ssh_session.py remote_scripts tests ../dev_launcher.py
+      - name: 模擬SSHと一時DBによる回帰テスト
+        run: python -B -m unittest discover -s tests -v
+
+  console-frontend:
+    name: Console frontend / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: tools/console/frontend
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/console/frontend/package-lock.json
+      - name: 固定済み依存を準備
+        run: npm ci
+      - name: 外部通信不要の画面ロジック回帰テスト
+        run: npm test
+      - name: TypeScript検証と本番ビルド
+        run: npm run build

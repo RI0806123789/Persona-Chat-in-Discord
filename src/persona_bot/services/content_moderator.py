@@ -145,8 +145,12 @@ def _normalize_reminder(value: Any) -> dict[str, str] | None:
     """
     if not isinstance(value, dict):
         return None
-    at = str(value.get("at", "")).strip()
-    message = str(value.get("message", "")).strip()
+    at = value.get("at")
+    message = value.get("message")
+    if not isinstance(at, str) or not isinstance(message, str):
+        return None
+    at = at.strip()
+    message = message.strip()
     if not at or not message:
         return None
     repeat = normalize_recurrence(value.get("repeat"))
@@ -222,7 +226,8 @@ class ContentModerator:
             # {"safe": "false"} のように文字列で返るケースに備えて明示的に正規化する。
             # bool("false") は True になるため、単純な bool() では誤判定する。
             is_safe = _normalize_safe_flag(parsed.get("safe", True))
-            reason = str(parsed.get("reason", "")) if not is_safe else ""
+            raw_reason = parsed.get("reason")
+            reason = raw_reason.strip() if not is_safe and isinstance(raw_reason, str) else ""
 
             if not is_safe:
                 print(f"[モデレーション] 不適切検出 ({direction}): {reason}")

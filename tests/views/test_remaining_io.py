@@ -87,8 +87,8 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
                 operation, threads = make_thread_probe("架空のペルソナ")
                 loader = Mock(side_effect=FileNotFoundError() if missing else operation)
                 gemini = SimpleNamespace(generate=AsyncMock(return_value=("架空の要約", None, [])))
-                with patch.object(summary_view, "fetch_messages_since", new=AsyncMock(return_value=[message])), patch.object(
-                    summary_view, "load_prompt_template", loader,
+                with patch.object(summary_view, "fetch_messages_since", new=AsyncMock(return_value=[message])), patch(
+                    "persona_bot.config.paths.load_prompt_template", loader,
                 ), patch.object(summary_view, "screen_bot_response", new=AsyncMock(side_effect=lambda text, *a, **k: text)):
                     ok, text = await summary_view.generate_channel_summary(
                         object(), None, summary_view._DEFAULT_PERIOD, guild_settings=GuildSettings(),

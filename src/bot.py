@@ -83,6 +83,7 @@ moderator = ContentModerator(
 )
 blacklist = BlacklistService()
 documents = DocumentService(client, state, memory, gemini, usage, database, ng_filter, moderator)
+client.add_shutdown_callback(documents.stop_worker)
 stats = StatsService(database, gemini)
 auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
 autonomous = AutonomousService(client, state, gemini, moderator, ng_filter, usage)
@@ -169,7 +170,7 @@ async def on_ready() -> None:
     if not state.document_worker_started:
         # 文書ワーカーはボットの生存期間ずっと走り続ける常駐コルーチン。
         # 参照を保持しないと GC で静かに止まり、添付ファイルが永久に処理されなくなる。
-        spawn(documents.run_worker(), label="文書処理ワーカー")
+        documents.start_worker()
         state.document_worker_started = True
 
     if not state.auto_topic_background_started:

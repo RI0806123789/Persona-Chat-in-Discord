@@ -58,7 +58,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
             self.client, self.state, self.gemini, self.moderator, self.ng_filter,
             SimpleNamespace(log_snapshot=Mock()),
         )
-        self.service._load_persona = Mock(return_value="架空のペルソナ")
+        self.service._load_persona = AsyncMock(return_value="架空のペルソナ")
         self.sent = AsyncMock()
         for name, replacement in (
             ("load_image_attachments", AsyncMock(return_value=[])),

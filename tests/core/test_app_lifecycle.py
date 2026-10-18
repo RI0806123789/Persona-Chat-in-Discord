@@ -14,6 +14,7 @@ from persona_bot.core import bot_client
 from persona_bot.core.app_state import BotState
 from persona_bot.core.bot_client import PersonaClient
 from persona_bot.core.database import Database
+from persona_bot.config.choices import MODEL_CHOICES
 
 
 class RestoreAttachTests(unittest.IsolatedAsyncioTestCase):
@@ -27,11 +28,12 @@ class RestoreAttachTests(unittest.IsolatedAsyncioTestCase):
         state = BotState()
         early = state.get_guild(1)  # 復元より前に作られた設定
         state.restore_from_database(db)
-        early.current_model_name = "fictional-model"
+        model_name = MODEL_CHOICES[0].value
+        early.current_model_name = model_name
         await early.persist()
         restored = BotState()
         restored.restore_from_database(db)
-        self.assertEqual(restored.get_guild(1).current_model_name, "fictional-model")
+        self.assertEqual(restored.get_guild(1).current_model_name, model_name)
 
 
 class ClientCloseTests(unittest.IsolatedAsyncioTestCase):

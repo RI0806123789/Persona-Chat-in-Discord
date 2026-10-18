@@ -257,6 +257,33 @@ subprocess.run = _fake_run
         self.assertEqual(data["dm_settings"]["persona"], "ツンデレ")
         self.assertEqual(data["dm_settings"]["model"], "Gemini 3.1 Flash Lite")
 
+    def test_voice_permission_error_is_local_but_rate_limit_stops_later_requests(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        responses = {
+            "/users/@me": {"username": "架空のボット"},
+            "/users/@me/guilds": [{"id": "11", "name": None}, {"id": "12", "name": "架空の次サーバー"}],
+            "/guilds/11/voice-states/@me": 403,
+            "/guilds/12/voice-states/@me": {"channel_id": "13"},
+            "/channels/13": {"name": "架空の通話"},
+        }
+        first, second = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])["discord"]["guilds"]
+        self.assertIsInstance(first["name"], str)
+        self.assertIn("403", first["voice_error"])
+        self.assertIsNone(second["voice_error"])
+        self.assertEqual(second["voice_channel"], "架空の通話")
+        responses["/guilds/11/voice-states/@me"] = 429
+        first, second = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])["discord"]["guilds"]
+        self.assertIn("429", second["voice_error"])
+        self.assertIsNone(second["voice_channel"])
+
+    def test_env_empty_or_placeholder_lines_do_not_erase_valid_token(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        (self.root / ".env").write_text(f'TOKEN_DISCORD={FAKE_TOKEN}\nTOKEN_DISCORD=\nTOKEN_DISCORD=YOUR_DISCORD_BOT_TOKEN\n', encoding="utf-8-sig")
+        responses = {"/users/@me": {"username": "架空"}, "/users/@me/guilds": []}
+        self.assertTrue(self.insights(responses=responses, journal=[])["discord"]["ok"])
+        (self.root / ".env").write_text('TOKEN_DISCORD=YOUR_DISCORD_BOT_TOKEN\n', encoding="utf-8")
+        self.assertIn("TOKEN_DISCORD がありません", self.insights(responses=responses, journal=[])["discord"]["error"])
+
 
 class DbSummaryScriptTests(unittest.TestCase):
     def summarize(self, root):
@@ -323,6 +350,21 @@ class DbSummaryScriptTests(unittest.TestCase):
             self.assertEqual(sum(day["good"] + day["bad"] for day in data["feedback_by_day"]), 3)
             today_key = now_jst.strftime("%Y-%m-%d")
             self.assertEqual(next(day for day in data["feedback_by_day"] if day["day"] == today_key)["good"], 1)
+
+    def test_boundary_accepts_old_space_and_iso_utc_timestamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            con = sqlite3.connect(root / "bot.db")
+            try:
+                con.execute("CREATE TABLE feedback(created_at TEXT, rating INTEGER)")
+                start = con.execute("SELECT datetime('now', '+9 hours', 'start of day', '-6 days', '-9 hours')").fetchone()[0]
+                for stamp in (start, start.replace(" ", "T") + "+00:00"):
+                    con.execute("INSERT INTO feedback VALUES (?, 1)", (stamp,))
+                con.commit()
+            finally:
+                con.close()
+            data = self.summarize(root)
+            self.assertEqual(sum(day["good"] for day in data["feedback_by_day"]), 2)
 
     def test_counts_and_feedback_by_day(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

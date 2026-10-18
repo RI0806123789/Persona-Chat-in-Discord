@@ -5,10 +5,12 @@ from pathlib import Path
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.core.app_state import GuildSettings
+from persona_bot.config import choices, constants
 
 
 class BlockingDatabase:
@@ -36,6 +38,39 @@ class BlockingDatabase:
 
     def anniversary_post_record(self, guild_key, user_id, label, posted_date) -> None:
         self._write(posted_date)
+
+
+class GuildSettingsRestoreValidationTests(unittest.TestCase):
+    def test_allowed_settings_restore_with_existing_prompt(self) -> None:
+        values = {
+            "prompt_file": choices.PERSONA_CHOICES[0].value,
+            "model_name": choices.MODEL_CHOICES[0].value,
+            "respond_mode": "all",
+        }
+        settings = GuildSettings()
+        settings.apply_persisted(values)
+        self.assertEqual(settings.current_prompt_file, values["prompt_file"])
+        self.assertEqual(settings.current_model_name, values["model_name"])
+        self.assertEqual(settings.current_respond_mode, "all")
+
+    def test_disallowed_values_use_defaults_without_logging_saved_values(self) -> None:
+        for value in ("架空の廃止された値", ["不正な型"], {"不正": "型"}):
+            with self.subTest(value=value), patch("builtins.print") as logging:
+                settings = GuildSettings(current_prompt_file="previous", current_model_name="previous", current_respond_mode="previous")
+                settings.apply_persisted({key: value for key in ("prompt_file", "model_name", "respond_mode")})
+                self.assertEqual(settings.current_prompt_file, constants.DEFAULT_PROMPT_FILE)
+                self.assertEqual(settings.current_model_name, constants.DEFAULT_MODEL_NAME)
+                self.assertEqual(settings.current_respond_mode, constants.DEFAULT_RESPOND_MODE)
+                self.assertEqual(logging.call_count, 3)
+                self.assertNotIn(str(value), str(logging.call_args_list))
+
+    def test_missing_prompt_file_uses_default_and_missing_values_keep_current(self) -> None:
+        settings = GuildSettings(current_model_name=choices.MODEL_CHOICES[0].value)
+        with patch("persona_bot.core.app_state.resolve_prompt_path") as path, patch("builtins.print"):
+            path.return_value.is_file.return_value = False
+            settings.apply_persisted({"prompt_file": choices.PERSONA_CHOICES[0].value})
+        self.assertEqual(settings.current_prompt_file, constants.DEFAULT_PROMPT_FILE)
+        self.assertEqual(settings.current_model_name, choices.MODEL_CHOICES[0].value)
 
 
 class GuildSettingsPersistOrderTests(unittest.IsolatedAsyncioTestCase):

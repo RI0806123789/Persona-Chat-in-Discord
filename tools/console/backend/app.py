@@ -15,8 +15,9 @@ import itertools
 import json
 import time
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from starlette.websockets import WebSocketDisconnect
 
 import asyncssh
 import uvicorn
@@ -133,9 +134,11 @@ async def _connect(body: ConnectRequest) -> dict:
         raise HTTPException(status_code=400, detail=_unset_profile_message(profile, source))
 
     await session.connect(profile)
+    generation = session.generation
     try:
         result = await session.run(rc.SERVER_INFO_COMMAND, label="サーバー情報")
-        session.server_info = rc.parse_server_info(result.stdout)
+        if generation == session.generation and session.connected and result.exit_status == 0:
+            session.server_info = rc.parse_server_info(result.stdout)
     except SshError:
         pass  # サーバー情報が取れなくても接続自体は成功扱いにする
     return session.snapshot()
@@ -243,8 +246,9 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
         command = rc.journal_command(profile.service, lines=lines, follow=True, use_sudo=profile.journal_sudo)
         process = await session.open_process(command, label="ログ追跡（ライブ）")
     except SshError as error:
-        await websocket.send_json({"type": "error", "message": str(error)})
-        await websocket.close()
+        with suppress(WebSocketDisconnect, RuntimeError):
+            await websocket.send_json({"type": "error", "message": str(error)})
+            await websocket.close()
         return
 
     async def pump() -> None:
@@ -254,6 +258,8 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
                 entry = rc.parse_journal_line(line)
                 if entry:
                     await websocket.send_json({"type": "entry", "entry": entry})
+        except WebSocketDisconnect:
+            return
         except (asyncssh.Error, OSError):
             pass
         stderr = ""
@@ -262,11 +268,15 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
         except (asyncio.TimeoutError, asyncssh.Error, OSError):
             pass
         message = _journal_error_message(stderr) if stderr.strip() else "ログの追跡が終了しました。"
-        await websocket.send_json({"type": "end", "message": message})
+        with suppress(WebSocketDisconnect, RuntimeError):
+            await websocket.send_json({"type": "end", "message": message})
 
     async def wait_for_client_close() -> None:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await websocket.receive()
+            except WebSocketDisconnect:
+                return
             if message["type"] == "websocket.disconnect":
                 return
 
@@ -275,19 +285,32 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
     try:
         await asyncio.wait({pump_task, client_task}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        # API の処理自体がキャンセルされた場合も、両方向の転送を回収する
-        for task in (pump_task, client_task):
-            task.cancel()
-        await asyncio.gather(pump_task, client_task, return_exceptions=True)
-        process.close()  # チャンネルを閉じると、サーバー側の journalctl も終わる
-        try:
-            await asyncio.wait_for(process.wait_closed(), timeout=5)
-        except (asyncio.TimeoutError, asyncssh.Error, OSError):
-            pass
-        try:
-            await websocket.close()
-        except RuntimeError:
-            pass  # 既に閉じている
+        async def cleanup() -> None:
+            # 転送の終了待ちが再キャンセルされても、SSH側のjournalctlを残さない。
+            process.close()
+            for task in (pump_task, client_task):
+                task.cancel()
+            await asyncio.gather(pump_task, client_task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(process.wait_closed(), timeout=5)
+            except (asyncio.TimeoutError, asyncssh.Error, OSError):
+                pass
+            with suppress(RuntimeError, WebSocketDisconnect):
+                await websocket.close()
+
+        cleanup_task = asyncio.create_task(cleanup())
+        canceled = False
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                break
+            except asyncio.CancelledError:
+                if cleanup_task.cancelled():
+                    raise
+                canceled = True
+        if canceled:
+            raise asyncio.CancelledError
+
 
 
 # ---------------------------------------------------------------- 操作
@@ -313,6 +336,8 @@ async def control_service(action: str, body: ServiceTarget | None = None) -> dic
     result = await session.run(command, label=f"サービス{label}", timeout=60)
 
     ok = result.exit_status == 0
+    if ok:
+        _invalidate_insights()
     if ok:
         message = f"{profile.service} を{label}しました。"
     elif "password is required" in result.stderr or "a terminal is required" in result.stderr:
@@ -353,18 +378,21 @@ def get_deploy() -> dict:
 
 
 @app.post("/api/deploy")
-async def start_deploy() -> dict:
+async def start_deploy(body: ServiceTarget | None = None) -> dict:
     """接続中のサーバーへデプロイを始める（git pull → 依存の更新 → 再起動 → ヘルスチェック）。
 
-    画面から受け取るものは何も無い。ブランチ・フォルダ・Python の場所は接続先の設定（profiles.json）から決める。
+    画面が確認した接続先と接続時刻を照合する。実行するブランチ等は接続先の設定から決める。
     """
     async with _connection_change_lock:
         profile = session.require_profile()
+        if body is None or body.profile_id != profile.id or body.connected_at != session.connected_at:
+            raise HTTPException(status_code=409, detail="確認後に接続状態が変わりました。接続先を確認してデプロイをやり直してください。")
         if profile.unset_fields:
             raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
         if deploys.running:
             raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
-        deploys.start(session, profile)
+        _invalidate_insights()
+        deploys.start(session, profile, on_finished=_invalidate_insights)
         return _deploy_snapshot()
 
 
@@ -372,6 +400,13 @@ async def start_deploy() -> dict:
 INSIGHTS_CACHE_SECONDS = 60
 _insights_cache: dict[tuple[int, Profile], tuple[float, float, dict]] = {}
 _insights_lock = asyncio.Lock()
+_insights_epoch = 0
+
+
+def _invalidate_insights() -> None:
+    global _insights_epoch
+    _insights_epoch += 1
+    _insights_cache.clear()
 
 
 @app.get("/api/insights")
@@ -380,6 +415,7 @@ async def get_insights(refresh: bool = False) -> dict:
     async with _insights_lock:
         profile = session.require_profile()
         generation = session.generation
+        epoch = _insights_epoch
         key = (generation, profile)
         cached = _insights_cache.get(key)
         if cached and not refresh and time.monotonic() - cached[0] < INSIGHTS_CACHE_SECONDS:
@@ -403,7 +439,8 @@ async def get_insights(refresh: bool = False) -> dict:
             raise SshError("ボットの状態の集計結果を読み取れませんでした。") from error
         fetched_at = time.time()
         _insights_cache.clear()
-        _insights_cache[key] = (time.monotonic(), fetched_at, data)
+        if epoch == _insights_epoch:
+            _insights_cache[key] = (time.monotonic(), fetched_at, data)
         return {"data": data, "fetched_at": fetched_at, "cached": False}
 
 

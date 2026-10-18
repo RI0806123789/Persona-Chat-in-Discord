@@ -109,6 +109,8 @@ def build_speech_text(response_text: str) -> str:
     text = _MARKDOWN_SYMBOL_PATTERN.sub(" ", text)
     text = _WHITESPACE_PATTERN.sub(" ", text).strip()
 
+    if not any(character.isalnum() for character in text):
+        return ""
     if len(text) > TTS_MAX_CHARS:
         text = text[:TTS_MAX_CHARS].rstrip() + TTS_TRUNCATION_NOTICE
     return text

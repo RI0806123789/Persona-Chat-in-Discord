@@ -77,6 +77,29 @@ class NgWordOrderTests(NgWordFileTestCase):
 
 
 class NgWordReloadTests(NgWordFileTestCase):
+    def test_invalid_encoding_preserves_both_previous_files_and_reports_failure(self) -> None:
+        self.write(self.public, "架空語A\n", bom=False)
+        self.write(self.private, "架空語B\n", bom=False)
+        ng_filter = NgWordFilter()
+        self.write(self.public, "架空語C\n", bom=False)
+        self.private.write_bytes(b"\xff")
+        with self.assertRaises(UnicodeDecodeError):
+            ng_filter.reload()
+        self.assertEqual(ng_filter.words, ["架空語A", "架空語B"])
+        self.assertTrue(ng_filter.contains_ng_word("架空語B"))
+        self.assertFalse(ng_filter.contains_ng_word("架空語C"))
+
+    def test_read_error_preserves_previous_snapshot_then_valid_reload_succeeds(self) -> None:
+        self.write(self.public, "架空語A\n", bom=False)
+        ng_filter = NgWordFilter()
+        with patch.object(Path, "read_text", side_effect=PermissionError("架空のロック")):
+            with self.assertRaises(PermissionError):
+                ng_filter.reload()
+        self.assertEqual(ng_filter.words, ["架空語A"])
+        self.write(self.public, "架空語B\n", bom=False)
+        ng_filter.reload()
+        self.assertEqual(ng_filter.words, ["架空語B"])
+
     def test_reload_publishes_words_and_pattern_only_after_compilation(self) -> None:
         self.write(self.public, "架空語A\n", bom=False)
         ng_filter = NgWordFilter()
