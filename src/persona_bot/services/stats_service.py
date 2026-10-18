@@ -270,7 +270,7 @@ class StatsService:
     # ---- 参照ヘルパー -----------------------------------------------------
 
     def has_data(self) -> bool:
-        return any(int(d.get("total_count", 0)) > 0 for d in self.cache.values())
+        return any(int(d.get("total_count", 0)) > 0 and not self._entry_opted_out(d) for d in self.cache.values())
 
     def display_name(self, user_id: str) -> str:
         entry = self.cache.get(user_id)
@@ -278,7 +278,7 @@ class StatsService:
             return entry["user_name"]
         return str(user_id)
 
-    def get_user_options(self) -> list[tuple[str, str, int]]:
+    def get_user_options(self, current_user_id: str | None = None) -> list[tuple[str, str, int]]:
         """管理者向けユーザー選択メニュー用に (user_id, 表示名, 発言回数) を回数の多い順で返す。
 
         収集停止中のユーザーは載せない（「収集を止めたい」という意思表示には
@@ -291,7 +291,12 @@ class StatsService:
             if int(data.get("total_count", 0)) > 0 and not self._entry_opted_out(data)
         ]
         items.sort(key=lambda t: t[2], reverse=True)
-        return items[:STATS_MAX_USERS_IN_SELECT]
+        selected = items[:STATS_MAX_USERS_IN_SELECT]
+        if current_user_id is not None and not any(uid == current_user_id for uid, _, _ in selected):
+            current = next((item for item in items if item[0] == current_user_id), None)
+            if current is not None:
+                selected = selected[:STATS_MAX_USERS_IN_SELECT - 1] + [current]
+        return selected
 
     # ---- 話題・性格推定の LLM 解析 ---------------------------------------
 

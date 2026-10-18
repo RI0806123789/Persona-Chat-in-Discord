@@ -144,6 +144,7 @@ export function LogsPage({
 }
 
 function StreamIndicator({ stream }: { stream: LogStream }) {
+  const privacy = usePrivacy();
   if (stream.paused) {
     return <StatusChip tone="warning" icon="pause" label={stream.pendingCount ? `一時停止中（新着 ${stream.pendingCount}）` : "一時停止中"} />;
   }
@@ -154,13 +155,13 @@ function StreamIndicator({ stream }: { stream: LogStream }) {
       return <StatusChip tone="info" label="接続中…" />;
     case "error":
       return (
-        <span title={stream.message ?? undefined}>
+        <span title={privacy.redact(stream.message) || undefined}>
           <StatusChip tone="critical" label="エラー（再接続します）" />
         </span>
       );
     case "ended":
       return (
-        <span title={stream.message ?? undefined}>
+        <span title={privacy.redact(stream.message) || undefined}>
           <StatusChip tone="serious" label="途切れました（再接続します）" />
         </span>
       );

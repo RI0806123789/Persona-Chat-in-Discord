@@ -439,6 +439,11 @@ class DeployRunner:
 
     async def _logs_since(self, step: Step, command: str) -> list[dict]:
         result = await self._run(step, command, label="再起動後のログ", quiet=True)
+        if result.exit_status != 0:
+            self._check(
+                step, "再起動後のログを取得できた", False, f"終了コード {result.exit_status}",
+                failure="再起動後のログを取得できませんでした。journal_sudo とログの読み取り権限を確認してください。",
+            )
         return [entry for line in result.stdout.splitlines() if (entry := rc.parse_journal_line(line))]
 
     def _append_log_tail(self, step: Step, entries: list[dict]) -> None:
@@ -542,6 +547,17 @@ class DeployManager:
 
     async def wait(self) -> DeployRecord | None:
         """実行中のデプロイが終わるまで待つ（テストと終了処理用）。"""
-        if self._task is not None:
-            await asyncio.shield(self._task)
+        task = self._task
+        canceled = False
+        if task is not None:
+            while True:
+                try:
+                    await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError:
+                    if task.cancelled():
+                        raise
+                    canceled = True
+        if canceled:
+            raise asyncio.CancelledError
         return self.current

@@ -1,11 +1,11 @@
 import discord
 from discord import ui
 
-from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, DISCORD_SELECT_MAX_OPTIONS
+from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.utils.discord_helpers import is_administrator, split_message
 from persona_bot.services.feedback_service import FeedbackService, get_default_service
 from persona_bot.services.stats_service import StatsService
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, send_graph_ephemeral
+from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text, send_graph_ephemeral
 
 # 項目セレクトの値 → 表示名
 _ITEM_LABELS = {
@@ -38,10 +38,15 @@ class StatsUserSelect(ui.Select):
 
     def __init__(self, users: list[tuple[str, str, int]], current: str) -> None:
         options = []
-        for user_id, name, count in users[:DISCORD_SELECT_MAX_OPTIONS]:
+        selected = users[:DISCORD_SELECT_MAX_OPTIONS]
+        if not any(str(uid) == current for uid, _, _ in selected):
+            target = next((user for user in users if str(user[0]) == current), None)
+            if target is not None:
+                selected = selected[:DISCORD_SELECT_MAX_OPTIONS - 1] + [target]
+        for user_id, name, count in selected:
             options.append(
                 discord.SelectOption(
-                    label=name[:DISCORD_SELECT_LABEL_MAX_LENGTH],
+                    label=select_option_text(name, fallback=str(user_id)),
                     value=str(user_id),
                     description=f"発言 {count} 回",
                     default=(str(user_id) == current),
@@ -247,7 +252,7 @@ class StatsView(PanelView):
     def _add_all_items(self) -> None:
         """UI パーツを View に追加する。選択更新時にも呼び出す。"""
         if self.is_admin:
-            users = self.stats.get_user_options()
+            users = self.stats.get_user_options(self.temp_target_id)
             if users:
                 self.add_item(StatsUserSelect(users, self.temp_target_id))
         self.add_item(StatsItemSelect(self.temp_item))

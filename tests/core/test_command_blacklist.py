@@ -34,7 +34,8 @@ class CommandBlacklistTests(unittest.IsolatedAsyncioTestCase):
                     guild_permissions=SimpleNamespace(administrator=admin))
         return SimpleNamespace(
             user=user, guild=guild if guild_id is not None else None, guild_id=guild_id,
-            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock()),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock(),
+                                     is_done=Mock(return_value=False)),
             original_response=AsyncMock(), followup=SimpleNamespace(send=AsyncMock()),
         )
 

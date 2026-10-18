@@ -15,6 +15,7 @@ import { LogsPage } from "./pages/LogsPage";
 import { OperationsPage } from "./pages/OperationsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PrivacyContext, collectSecrets, createPrivacy } from "./privacy";
+import { RequestScope } from "./requestScope";
 import { unsetFieldsOf } from "./profiles";
 import { SEED_OPTIONS, applyTheme } from "./theme/theme";
 import type { ConnectionState, DeployRecord, DeployStatus, Insights, Operation, Profile, Sample, ServiceAction, StatusResponse } from "./types";
@@ -122,6 +123,10 @@ function Console() {
   const contentRef = useRef<HTMLElement>(null);
   const wasConnected = useRef(false);
   const dataConnectionKey = useRef("");
+  // 接続変更を始めた瞬間にも世代を進め、通信中の応答と予約済みタイマーを無効にする。
+  const requestScope = useRef(new RequestScope());
+  const connectionChanging = useRef(false);
+  const connectionProfileId = useRef<string | null>(null);
 
   const connected = connection?.connected ?? false;
   const connectionKey = `${connection?.profile?.id ?? ""}:${connection?.connected_at ?? ""}`;
@@ -140,7 +145,7 @@ function Console() {
   privacyRef.current = privacy;
   // 通知の詳細（接続エラーの文など）にもホスト名が入りうるので、出す前に伏せる
   const notify = useCallback(
-    (toast: ToastInput) => rawNotify({ ...toast, detail: toast.detail && privacyRef.current.redact(toast.detail) }),
+    (toast: ToastInput) => rawNotify({ ...toast, title: privacyRef.current.redact(toast.title), detail: toast.detail && privacyRef.current.redact(toast.detail) }),
     [rawNotify],
   );
 
@@ -179,6 +184,10 @@ function Console() {
         notify({ tone: "critical", title: "SSH 接続が切れました", detail: state.last_error });
       }
       if (!state.connected || dataConnectionKey.current !== nextKey) {
+        requestScope.current.invalidate();
+        setDeploy(null);
+        setDeployRunning(false);
+        deployWasRunning.current = false;
         setStatus(null);
         setSamples([]);
         setInsights(null);
@@ -187,6 +196,7 @@ function Console() {
         setStatusError(null);
         setInsightsError(null);
       }
+      connectionProfileId.current = state.profile?.id ?? null;
       dataConnectionKey.current = nextKey;
       wasConnected.current = state.connected;
       setConnection(state);
@@ -195,10 +205,15 @@ function Console() {
   );
 
   const refreshConnection = useCallback(async () => {
+    if (connectionChanging.current) return;
+    const isCurrent = requestScope.current.start("connection");
     try {
-      applyConnection(await api.connection());
+      const next = await api.connection();
+      if (!isCurrent() || connectionChanging.current) return;
+      applyConnection(next);
       setBackendError(null);
     } catch (error) {
+      if (!isCurrent() || connectionChanging.current) return;
       setBackendError(errorMessage(error));
     }
   }, [applyConnection]);
@@ -226,20 +241,21 @@ function Console() {
 
   // ---- 状態の定期取得
   const refreshStatus = useCallback(async () => {
-    const key = dataConnectionKey.current;
+    if (!wasConnected.current || connectionChanging.current) return;
+    const isCurrent = requestScope.current.start("status");
     setRefreshing(true);
     try {
       const next = await api.status();
-      if (key !== dataConnectionKey.current) return;
+      if (!isCurrent()) return;
       setStatus(next);
       setStatusError(null);
       setSamples((previous) => [...previous, toSample(next)].slice(-MAX_SAMPLES));
     } catch (error) {
-      if (key !== dataConnectionKey.current) return;
+      if (!isCurrent()) return;
       setStatusError(errorMessage(error));
       if (error instanceof ApiError && (error.status === 409 || error.status === 502)) void refreshConnection();
     } finally {
-      if (key === dataConnectionKey.current) setRefreshing(false);
+      if (isCurrent()) setRefreshing(false);
     }
   }, [refreshConnection]);
   usePolling(refreshStatus, STATUS_INTERVAL_MS, connected && autoRefresh, connectionKey);
@@ -248,15 +264,16 @@ function Console() {
   refreshStatusRef.current = refreshStatus;
 
   const refreshInsights = useCallback(async (force = false) => {
-    const key = dataConnectionKey.current;
+    if (!wasConnected.current || connectionChanging.current) return;
+    const isCurrent = requestScope.current.start("insights");
     try {
       const result = await api.insights(force);
-      if (key !== dataConnectionKey.current) return;
+      if (!isCurrent()) return;
       setInsights(result.data);
       setInsightsFetchedAt(result.fetched_at);
       setInsightsError(null);
     } catch (error) {
-      if (key !== dataConnectionKey.current) return;
+      if (!isCurrent()) return;
       setInsightsError(errorMessage(error));
     }
   }, []);
@@ -284,8 +301,12 @@ function Console() {
 
   // ---- デプロイ
   const refreshDeploy = useCallback(async () => {
+    if (!wasConnected.current || connectionChanging.current) return;
+    const isCurrent = requestScope.current.start("deploy");
     try {
       const result = await api.deploy();
+      if (!isCurrent()) return;
+      if (result.deploy && result.deploy.profile_id !== connectionProfileId.current) return;
       setDeploy(result.deploy);
       setDeployRunning(result.running);
       // 実行中 → 終わった、に変わったら結果を知らせ、状態を取り直す
@@ -299,16 +320,20 @@ function Console() {
       // 記録は補助情報なので、取れなくても画面は止めない
     }
   }, [notify]);
-  usePolling(refreshDeploy, deployRunning ? DEPLOY_RUNNING_INTERVAL_MS : DEPLOY_IDLE_INTERVAL_MS, connected);
+  usePolling(refreshDeploy, deployRunning ? DEPLOY_RUNNING_INTERVAL_MS : DEPLOY_IDLE_INTERVAL_MS, connected, connectionKey);
 
   const runDeploy = useCallback(async () => {
+    if (!wasConnected.current || connectionChanging.current) return;
+    const isCurrent = requestScope.current.current();
     try {
       const result = await api.startDeploy();
+      if (!isCurrent()) return;
       setDeploy(result.deploy);
       setDeployRunning(result.running);
       deployWasRunning.current = result.running;
       notify({ tone: "info", title: "デプロイを始めました", detail: "サービス操作のページで、1ステップずつ進み具合を確かめられます。" });
     } catch (error) {
+      if (!isCurrent()) return;
       notify({ tone: "critical", title: "デプロイを始められませんでした", detail: errorMessage(error) });
     }
   }, [notify]);
@@ -318,6 +343,7 @@ function Console() {
     if (!profile || deployRunning || busyAction) return;
     const branch = profile.deploy_branch ?? "main";
     const isProduction = profile.environment === "production";
+    const isCurrent = requestScope.current.current();
     setConfirm({
       title: `${branch} の最新をデプロイしますか？`,
       icon: "rocket",
@@ -346,7 +372,7 @@ function Console() {
       confirmLabel: "デプロイする",
       tone: isProduction ? "danger" : "primary",
       requireText: isProduction ? profile.service : undefined,
-      onConfirm: () => void runDeploy(),
+      onConfirm: () => { if (isCurrent()) void runDeploy(); },
     });
     setConfirmOpen(true);
   }, [connection, deployRunning, busyAction, runDeploy]);
@@ -369,6 +395,9 @@ function Console() {
       });
       return;
     }
+    if (connectionChanging.current) return;
+    connectionChanging.current = true;
+    requestScope.current.invalidate();
     setConnecting(true);
     try {
       const state = await api.connect(selectedProfileId);
@@ -381,9 +410,10 @@ function Console() {
         detail: errorMessage(error),
         action: { label: "再試行", onClick: () => void handleConnectRef.current() },
       });
-      void refreshConnection();
     } finally {
+      connectionChanging.current = false;
       setConnecting(false);
+      void refreshConnection();
     }
   }, [selectedProfileId, profiles, profilesSource, applyConnection, notify, refreshConnection]);
   // 通知の「再試行」からは、その時点の最新の接続処理を呼ぶ
@@ -391,32 +421,45 @@ function Console() {
   handleConnectRef.current = handleConnect;
 
   const handleDisconnect = useCallback(async () => {
+    if (connectionChanging.current) return;
+    connectionChanging.current = true;
+    requestScope.current.invalidate();
     try {
-      applyConnection(await api.disconnect());
+      const state = await api.disconnect();
+      applyConnection(state);
       notify({ tone: "info", title: "切断しました" });
     } catch (error) {
       notify({ tone: "critical", title: "切断できませんでした", detail: errorMessage(error) });
+    } finally {
+      connectionChanging.current = false;
+      void refreshConnection();
     }
-  }, [applyConnection, notify]);
+  }, [applyConnection, notify, refreshConnection]);
 
   // ---- サービス操作
   const runAction = useCallback(
     async (action: ServiceAction, target: { profile_id: string; connected_at: number }) => {
+      if (!wasConnected.current || connectionChanging.current) return;
+      const isCurrent = requestScope.current.current();
       setBusyAction(action);
       try {
         const operation = await api.service(action, target);
+        if (!isCurrent()) return;
         notify(
           operation.ok
             ? { tone: "good", title: operation.message }
             : { tone: "critical", title: `${ACTION_LABELS[action]}に失敗しました`, detail: operation.message },
         );
       } catch (error) {
+        if (!isCurrent()) return;
         notify({ tone: "critical", title: `${ACTION_LABELS[action]}できませんでした`, detail: errorMessage(error) });
       } finally {
         setBusyAction(null);
-        void refreshOperations();
-        void refreshStatus();
-        window.setTimeout(() => void refreshStatus(), 2500); // 起動直後の状態変化を拾う
+        if (isCurrent()) {
+          void refreshOperations();
+          void refreshStatus();
+          window.setTimeout(() => { if (isCurrent()) void refreshStatus(); }, 2500); // 起動直後の状態変化を拾う
+        }
       }
     },
     [notify, refreshOperations, refreshStatus],

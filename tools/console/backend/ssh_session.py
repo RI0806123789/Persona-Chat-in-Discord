@@ -141,6 +141,11 @@ class SshSession:
     async def _close_current(self) -> None:
         self.generation += 1
         conn, self._conn = self._conn, None
+        self.profile = None
+        self.connected_at = None
+        self.fingerprint = None
+        self.server_info = None
+        self.last_error = None
         if conn is None:
             return
         # 先に self._conn を空にしておくので、自分で閉じた場合は「切れた」扱いにならない
@@ -199,6 +204,10 @@ class SshSession:
             return  # 自分で閉じた接続、または古い接続
         self._conn = None
         self.generation += 1
+        self.profile = None
+        self.connected_at = None
+        self.fingerprint = None
+        self.server_info = None
         reason = f"（{exc}）" if exc else ""
         self.last_error = f"SSH 接続が切れました{reason}。もう一度接続してください。"
         self.history.append(
