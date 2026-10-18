@@ -12,3 +12,6 @@ backend/profiles.json
 # Node
 frontend/node_modules/
 frontend/dist/
+
+# 起動ログ・排他ロック・専用ブラウザのプロファイル
+.run/
