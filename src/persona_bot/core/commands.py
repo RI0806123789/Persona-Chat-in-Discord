@@ -6,6 +6,7 @@ from discord import app_commands
 from persona_bot.core.app_state import BotState
 from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.services.autonomous_stage import enable_stage_speaker
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
 from persona_bot.utils.discord_helpers import is_administrator, reject_blocked_interaction
@@ -15,6 +16,28 @@ from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
 from persona_bot.services.stats_service import StatsService
 from persona_bot.utils.usage_graph import UsageTracker
+
+
+async def announce_voice_join(
+    interaction: discord.Interaction, channel: discord.VoiceChannel | discord.StageChannel,
+    *, already_connected: bool = False,
+) -> None:
+    """ステージでは発言者へ昇格してから、接続の結果を案内する。"""
+    if isinstance(channel, discord.StageChannel):
+        try:
+            await enable_stage_speaker(interaction.guild, channel)
+        except Exception as error:
+            print(f"ステージの発言者への昇格に失敗しました: {type(error).__name__}: {error}")
+            await interaction.followup.send(
+                f"⚠️ {channel.name} へ接続していますが、ステージの発言者になれませんでした。"
+                "ボットを発言者へ招待するか、管理者にステージの「メンバーをミュート」権限を確認してください。"
+            )
+            return
+    message = (f"{channel.name} には既に接続しています。" if already_connected
+               else f"{channel.name} に接続しました。")
+    if isinstance(channel, discord.StageChannel):
+        message += "ステージの発言者として読み上げます。"
+    await interaction.followup.send(message)
 
 
 def register_commands(
@@ -58,6 +81,7 @@ def register_commands(
 
         voice_channel = member.voice.channel
         guild = interaction.guild
+        is_stage = isinstance(voice_channel, discord.StageChannel)
 
         # 接続を試す前に権限を確かめる。権限不足は接続失敗の最も多い原因だが、
         # connect() の Forbidden として出るため、後段でまとめて拾うと
@@ -69,6 +93,8 @@ def register_commands(
                 name for name, allowed in (("接続", permissions.connect), ("発言", permissions.speak))
                 if not allowed
             ]
+            if is_stage and not permissions.mute_members:
+                missing_permissions.append("メンバーをミュート")
             if missing_permissions:
                 permission_names = "・".join(f"「{name}」" for name in missing_permissions)
                 await interaction.response.send_message(
@@ -76,6 +102,7 @@ def register_commands(
                     "サーバー設定 →「連携サービス」か、そのボイスチャンネルの権限設定で、"
                     f"ボットのロールに{permission_names}を許可してください"
                     "（チャンネル個別の権限で拒否されている場合もあります）。"
+                    + ("ステージでは観客から発言者になるため「メンバーをミュート」が必要です。" if is_stage else "")
                 )
                 return
 
@@ -95,7 +122,7 @@ def register_commands(
                 # （自律行動の配信だった場合は、上の stop_session が接続ごと片付けている。）
                 if (isinstance(voice_client, discord.VoiceClient) and voice_client.is_connected()
                         and getattr(voice_client.channel, "id", None) == voice_channel.id):
-                    await interaction.followup.send(f"{voice_channel.name} には既に接続しています。")
+                    await announce_voice_join(interaction, voice_channel, already_connected=True)
                     return
                 await voice_client.disconnect(force=True)
 
@@ -126,7 +153,7 @@ def register_commands(
             print(f"接続エラー ({type(error).__name__}): {error}")
             await interaction.followup.send(f"⚠️ 接続に失敗しました（{type(error).__name__}: {error}）。")
         else:
-            await interaction.followup.send(f"{voice_channel.name} に接続しました。")
+            await announce_voice_join(interaction, voice_channel)
 
     @tree.command(
         name="leave",

@@ -33,6 +33,87 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #112・#113・#116〜#121の確認
+
+| Issue | 変更と回帰の範囲 |
+| --- | --- |
+| #112 | PNGバッファ・Figureの回収、ペルソナのパス解決/読込のワーカー実行、送信権限共有、文書の時刻統一と記憶I/O整理 |
+| #113 | 音声テストの統合/移動（既存16件の検証本体が一致）、コミット取得の終了コード確認、WebSocket切断・再キャンセル時の回収 |
+| #116 | 空/重複を除いて有効な参考URLを上限まで取得、LLMのnull/非文字列の棄却、BOM付き.env読込 |
+| #117 | projects既存users保持、要約の二重展開防止、強制flush待機、NG再読込失敗時保持、ブラックリスト正規化、文書終了と遠隔ファイル回収 |
+| #118 | 自律開始中断・接続の所有権、ステージのチャンネル一致、OFF時のお祝い抑止、不完全な統計解析の再試行と表示名削除、記号TTS見送り・空行/字下げ保持・未対応チャンネルの早期終了 |
+| #119 | デプロイの接続先/時刻照合、操作後キャッシュ失効、サーバー別ボイスエラー、トークン見本/不正行、接続メタデータ世代、画面の停止状態と遅延応答 |
+| #120 | 永続設定の許可値/実在検証、ステージ参加時の発言者昇格と案内、選択肢整形・DM定数・チャンネル名の統一 |
+| #121 | DB集計の直接importと読み取り専用性、期間索引のEXPLAIN確認・旧日時形式、操作フック/世代/タイマー破棄、管理コンソールCI統合 |
+
+Windows・Python 3.13でボット552件、バックエンド133件、Node.js 24で画面32件がすべて成功。画面ビルド、両仮想環境の`pip check`、143ファイルの構文/Python 3.10文法、構成図XML・メッセージ分割・`git diff --check`も成功した。実データは使用せず、外部通信はモックまたはループバックの模擬SSHへ限定した。追加したCIジョブの実行、Linux/Python 3.10での実行、実Discord・Gemini・遠隔デプロイとブラウザでの手動操作は未確認。
+
+## 現在の全テストファイル
+
+音声の数値検証は`audio/test_voice_dsp.py`へ統合し、セッション検証は`audio/test_voice_session.py`へ移動した。`services/`に同名の音声テストは残していない。次の一覧は現在の`test_*.py`全ファイルに対応する。
+
+| 分類 | ファイル |
+| --- | --- |
+| config | [test_prompt_loading.py](config/test_prompt_loading.py) |
+| config | [test_settings_loader.py](config/test_settings_loader.py) |
+| config | [test_tuning_constants.py](config/test_tuning_constants.py) |
+| core | [test_app_lifecycle.py](core/test_app_lifecycle.py) |
+| core | [test_background.py](core/test_background.py) |
+| core | [test_bot_reply_settings.py](core/test_bot_reply_settings.py) |
+| core | [test_command_blacklist.py](core/test_command_blacklist.py) |
+| core | [test_database.py](core/test_database.py) |
+| core | [test_guild_settings_persist.py](core/test_guild_settings_persist.py) |
+| core | [test_join_command.py](core/test_join_command.py) |
+| core | [test_message_gates.py](core/test_message_gates.py) |
+| core | [test_message_handler_import.py](core/test_message_handler_import.py) |
+| core | [test_profile_absorption.py](core/test_profile_absorption.py) |
+| audio | [test_voice.py](audio/test_voice.py) |
+| audio | [test_voice_dsp.py](audio/test_voice_dsp.py) |
+| audio | [test_voice_session.py](audio/test_voice_session.py) |
+| services | [test_affinity_service.py](services/test_affinity_service.py) |
+| services | [test_auto_topic_service.py](services/test_auto_topic_service.py) |
+| services | [test_autonomous_comments.py](services/test_autonomous_comments.py) |
+| services | [test_autonomous_metrics.py](services/test_autonomous_metrics.py) |
+| services | [test_autonomous_session_cleanup.py](services/test_autonomous_session_cleanup.py) |
+| services | [test_autonomous_speech.py](services/test_autonomous_speech.py) |
+| services | [test_autonomous_stage.py](services/test_autonomous_stage.py) |
+| services | [test_autonomous_start_cancellation.py](services/test_autonomous_start_cancellation.py) |
+| services | [test_autonomous_start_races.py](services/test_autonomous_start_races.py) |
+| services | [test_blacklist_service.py](services/test_blacklist_service.py) |
+| services | [test_document_lifecycle.py](services/test_document_lifecycle.py) |
+| services | [test_document_service.py](services/test_document_service.py) |
+| services | [test_document_shutdown.py](services/test_document_shutdown.py) |
+| services | [test_gemini_service.py](services/test_gemini_service.py) |
+| services | [test_genai_client.py](services/test_genai_client.py) |
+| services | [test_llm_value_validation.py](services/test_llm_value_validation.py) |
+| services | [test_memory_service.py](services/test_memory_service.py) |
+| services | [test_ng_word_service.py](services/test_ng_word_service.py) |
+| services | [test_reminder_service.py](services/test_reminder_service.py) |
+| services | [test_service_thread_cancellation.py](services/test_service_thread_cancellation.py) |
+| services | [test_stats_service.py](services/test_stats_service.py) |
+| views | [test_database_interactions.py](views/test_database_interactions.py) |
+| views | [test_ng_reload_failure.py](views/test_ng_reload_failure.py) |
+| views | [test_remaining_io.py](views/test_remaining_io.py) |
+| views | [test_reminder_view.py](views/test_reminder_view.py) |
+| views | [test_settings_view.py](views/test_settings_view.py) |
+| views | [test_stats_delivery.py](views/test_stats_delivery.py) |
+| views | [test_stats_pagination.py](views/test_stats_pagination.py) |
+| views | [test_summary_view.py](views/test_summary_view.py) |
+| views | [test_view_parts.py](views/test_view_parts.py) |
+| utils | [test_graph_fonts.py](utils/test_graph_fonts.py) |
+| utils | [test_image_attachments.py](utils/test_image_attachments.py) |
+| utils | [test_json_extraction.py](utils/test_json_extraction.py) |
+| utils | [test_lifecycle_helpers.py](utils/test_lifecycle_helpers.py) |
+| utils | [test_shared_helpers.py](utils/test_shared_helpers.py) |
+| utils | [test_storage.py](utils/test_storage.py) |
+| utils | [test_welcome_message.py](utils/test_welcome_message.py) |
+| deploy | [test_migrate_config_to_env.py](deploy/test_migrate_config_to_env.py) |
+| integration | [test_event_loop_io.py](integration/test_event_loop_io.py) |
+| integration | [test_package_layout.py](integration/test_package_layout.py) |
+| integration | [test_sdk_migration.py](integration/test_sdk_migration.py) |
+
+管理コンソールのテストは独立した依存環境で実行するため、この一覧には含めない。[貢献ガイド](../CONTRIBUTING.md#管理コンソールをローカルで確認する)を参照。
+
 ## サービスと音声の同期処理の確認（#90・#91）
 
 `services/test_service_thread_cancellation.py` は、リマインダー5か所・文書キュー5か所・記念日1か所・フィードバック4か所・音声2か所の実スレッドを待機させ、繰り返しキャンセルしても同期処理の終了まで呼出元が待つことを確認する。一時 DB の登録を中断した場合も、トランザクション完了後にキャンセルを伝え、後続の読み取りと DB の終了ができることを確認する。
@@ -62,7 +143,7 @@ python -B tests/core/test_bot_reply_settings.py -v
 | #85 | `core/test_command_blacklist.py` | 3コマンドをDM・サーバー・管理者の有無にかかわらず副作用の前に拒否。解除後の実行、パネル作成後のブロック、サブパネルへの遷移・ハブへの復帰後にも判定を維持する |
 | #86 | `views/test_stats_pagination.py` | 集計前のdefer、4001文字を2000・2000・1文字に分割、全followupの本人限定、画像の維持と送信失敗時の回収、管理者以外・DM・サービス無効時の拒否、集計中の権限喪失、集計失敗時の案内 |
 
-#80の「音声テストが無い」という前提と異なり、`services/test_voice_dsp.py`・`services/test_voice_session.py` と調整定数のテストは既に存在した。重複する検証は保ち、未確認だった分岐を新しい `audio/` で補った。音声本体と依存ライブラリは変更していない。
+#80の「音声テストが無い」という前提と異なり、`audio/test_voice_dsp.py`・`audio/test_voice_session.py` と調整定数のテストは既に存在した。重複する検証は保ち、未確認だった分岐を新しい `audio/` で補った。音声本体と依存ライブラリは変更していない。
 
 2026-10-17、追加30件を修正前のソースへ適用し、subTestを含め14失敗・5エラーを確認した。音声の21件は修正前から成功し、既存動作を保護する。ブロック拒否・パネルへの判定の引き継ぎ・統計の分割・応答保留・集計後の権限確認を修正した。既存のコマンドテストは、ブラックリストの代替オブジェクトと架空ユーザーIDを補い、従来の接続・終了の検証を維持している。
 
@@ -115,7 +196,7 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 | Issue | テスト | 確認内容 |
 | --- | --- | --- |
-| #67 | `services/test_voice_dsp` | `nan`・`inf`・数値でない値を既定値へ落とす。`bit_crush` の「加工が必要か」の判定と実際の加工が、`"0"`・`-1`・`0.5`・`nan`・`1`・`"6"` などで一致する。周波数・ゲイン・Q が非有限でも出力が NaN にならない。同梱の `flat` と `robotic` の判定は変わらない |
+| #67 | `audio/test_voice_dsp` | `nan`・`inf`・数値でない値を既定値へ落とす。`bit_crush` の「加工が必要か」の判定と実際の加工が、`"0"`・`-1`・`0.5`・`nan`・`1`・`"6"` などで一致する。周波数・ゲイン・Q が非有限でも出力が NaN にならない。同梱の `flat` と `robotic` の判定は変わらない |
 | #67 | `core/test_join_command` | 同じチャンネルへ接続中なら切り直さずに案内する。別のチャンネル・切れた接続は切断してから `VOICE_CONNECT_TIMEOUT_SECONDS` 付きで接続する。初回の接続も同じ待ち時間を渡す |
 | #68 | `deploy/test_migrate_config_to_env` | 移行後に案内する確認コマンドの import が、現在の `src/` から読み込める（`load_settings` は呼ばず、実際の `.env` を読まない） |
 | #68 | `core/test_database.LegacyDataEdgeCaseTests` | 引き継ぎ先が空なら未割当の `pending_log` を削除し、`pending_distinct_user_ids` も空の ID を返さない。引き継ぎ先があれば従来どおり振り直す。旧 `pending_log.txt` は引き継ぎ先が無ければ取り込まず、どちらでもバックアップに残る。壊れた・最上位が object でない・`tasks` が配列でない旧 JSON は元の名前のまま残り、正常な旧 JSON は従来どおり取り込んで改名する。`close` は実行中の操作を待ってから閉じ、2回呼んでもよい |
@@ -124,7 +205,7 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 既存の `services/test_autonomous_start_races.py` は、`/join` が接続の待ち時間を渡すようになったため、`connect` の代わりに使う補助関数がキーワード引数を受け取れるように直した（確かめている内容は変えていない）。
 
-2026-10-16、Windows・Python 3.13で修正前の `src/`・`deploy/` に対して追加19件を実行し、15件が失敗またはエラーになった。同梱の音色の判定・DB を渡さない終了・引き継ぎ先がある場合の振り直し・正常な旧 JSON の取り込みの4件は修正前から成功し、変わらないことを確かめた。修正後は全件成功し、全390テストが省略なしで成功した。依存関係・全ソースの構文・Python 3.10文法・メッセージ分割・`compileall`・構成図のXMLも確認した。合成中の切断で再生しないこと（#67 の1点目）は #51 の修正で対応済みで、既存の `services/test_voice_session.py` が確かめている。Linux・Python 3.10での実行と、実際のDiscord・ボイス接続・音声合成での再現は未確認。
+2026-10-16、Windows・Python 3.13で修正前の `src/`・`deploy/` に対して追加19件を実行し、15件が失敗またはエラーになった。同梱の音色の判定・DB を渡さない終了・引き継ぎ先がある場合の振り直し・正常な旧 JSON の取り込みの4件は修正前から成功し、変わらないことを確かめた。修正後は全件成功し、全390テストが省略なしで成功した。依存関係・全ソースの構文・Python 3.10文法・メッセージ分割・`compileall`・構成図のXMLも確認した。合成中の切断で再生しないこと（#67 の1点目）は #51 の修正で対応済みで、既存の `audio/test_voice_session.py` が確かめている。Linux・Python 3.10での実行と、実際のDiscord・ボイス接続・音声合成での再現は未確認。
 
 ## リマインダーの通知範囲・受信時の関門・会話統計の確認（#64〜#66）
 
@@ -172,7 +253,7 @@ Windows・Python 3.13.3で既存321件と追加24件の全345テストが省略�
 
 | Issue | 回帰テストと確認内容 |
 | --- | --- |
-| #51 | `services/test_autonomous_speech.py`・`services/test_voice_session.py`：投稿待機中の終了・配信差し替え・移動・切断後は読み上げない。キュー・合成の待機後も古い音声を破棄し、通常返信は処理する。第一声・独り言・コメントで開始時のペルソナ・モデル・検索設定を維持 |
+| #51 | `services/test_autonomous_speech.py`・`audio/test_voice_session.py`：投稿待機中の終了・配信差し替え・移動・切断後は読み上げない。キュー・合成の待機後も古い音声を破棄し、通常返信は処理する。第一声・独り言・コメントで開始時のペルソナ・モデル・検索設定を維持 |
 | #52 | `services/test_autonomous_start_cancellation.py`：ボイス状態待機・発言者への変更中にキャンセルしても、所有枠と開始時の接続を解放。後片付け中の繰り返しキャンセル、削除エラー、枠・接続差し替え、借りた枠も検証 |
 | #53 | `core/test_profile_absorption.py`：引継ぎ先のない旧形式や空のユーザー記憶は警告して原本を保持。ユーザー別取り込み・旧形式の互換性、DB書込失敗・原子的置換失敗後の再試行を一時DB・JSONで検証 |
 

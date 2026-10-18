@@ -226,6 +226,13 @@ class DeployCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rc.deploy_pip_install_command("/srv/bot", ".venv/bin/python; id")
 
+    def test_deploy_log_round_trip_preserves_commit_hash_and_subject(self):
+        command = rc.deploy_log_command("/srv/bot", "a" * 40, "b" * 40)
+        self.assertIn("%h%x1f%s", command)
+        self.assertEqual(rc.parse_commit_list("abc1234\x1ffix: 架空の修正"), [{"hash": "abc1234", "subject": "fix: 架空の修正"}])
+        with self.assertRaises(ValueError):
+            rc.parse_commit_list("abc1234\x1f")
+
     def test_paths_are_quoted(self) -> None:
         self.assertTrue(rc.deploy_state_command("/home/u/my bot").startswith("cd '/home/u/my bot' && "))
         self.assertEqual(

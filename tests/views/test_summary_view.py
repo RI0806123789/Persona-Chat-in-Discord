@@ -118,7 +118,7 @@ class SummaryGenerationTests(unittest.IsolatedAsyncioTestCase):
                 gemini = Mock(generate=AsyncMock(return_value=("架空の要約", None, [])))
                 with patch.object(summary_view, "fetch_messages_since", AsyncMock(side_effect=history)), patch.object(
                     summary_view, "build_summary_source_text", return_value="架空の発言",
-                ), patch.object(summary_view, "load_prompt_template", side_effect=prompt) as loader, patch.object(
+                ), patch.object(summary_view, "load_persona_template", AsyncMock(side_effect=prompt)) as loader, patch.object(
                     summary_view, "screen_bot_response", AsyncMock(side_effect=lambda text, *args, **kwargs: text),
                 ):
                     async def summarize():
@@ -127,17 +127,17 @@ class SummaryGenerationTests(unittest.IsolatedAsyncioTestCase):
                             gemini=gemini, moderator=None, ng_filter=None, usage=Mock(),
                         )
                     self.assertTrue((await summarize())[0])
-                    self.assertEqual(loader.call_args.args[0].name, "prompt_default.txt")
+                    self.assertEqual(Path(loader.call_args.args[0]).name, "prompt_default.txt")
                     self.assertEqual(gemini.generate.await_args.args[1], "old-model")
                     self.assertTrue((await summarize())[0])
-                    self.assertEqual(loader.call_args.args[0].name, "prompt_maid.txt")
+                    self.assertEqual(Path(loader.call_args.args[0]).name, "prompt_maid.txt")
                     self.assertEqual(gemini.generate.await_args.args[1], "new-model")
 
     async def test_empty_summary_after_tag_and_heading_removal_is_rejected(self):
         for text in (" \n\t", "  \n[V:+1, A:+1]", "### \n[V:0, A:0]"):
             with self.subTest(text=text), patch.object(summary_view, "fetch_messages_since", AsyncMock(return_value=[object()])), patch.object(
                 summary_view, "build_summary_source_text", return_value="架空の発言",
-            ), patch.object(summary_view, "load_prompt_template", return_value="架空のペルソナ"), patch.object(
+            ), patch.object(summary_view, "load_persona_template", AsyncMock(return_value="架空のペルソナ")), patch.object(
                 summary_view, "screen_bot_response", AsyncMock(),
             ) as screen:
                 result, _ = await summary_view.generate_channel_summary(

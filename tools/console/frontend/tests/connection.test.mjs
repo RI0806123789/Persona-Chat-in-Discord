@@ -15,6 +15,7 @@ function compile(source, modules) {
 const source = async (name) => (await readFile(new URL(`../src/${name}`, import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const scopes = compile(await source("requestScope.ts"), {});
 const appSource = await source("App.tsx");
+const controllerSource = await source("controllers.ts");
 const dataSource = await source("pages/DataPage.tsx");
 const privacySource = await source("privacy.ts");
 
@@ -51,7 +52,7 @@ function renderer() {
     createContext: (value) => ({ value }),
     useContext: (context) => context.value,
   };
-  return { hooks, render: (component, props) => { index = 0; return component(props); },
+  return { hooks, unmount: () => state.forEach((slot) => slot?.cleanup?.()), render: (component, props) => { index = 0; return component(props); },
     commit: () => { effects.splice(0).forEach((effect) => effect()); } };
 }
 
@@ -73,7 +74,8 @@ function consoleHarness(api) {
     "./profiles": { unsetFieldsOf: () => [] },
     "./theme/theme": { SEED_OPTIONS: [{ id: "test", hex: "#123456" }] },
   };
-  const exposed = "return {applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
+  modules["./controllers"] = compile(controllerSource, modules);
+  const exposed = "return {busyAction, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
   const instrumented = appSource.replace("function Console() {", "export function Console() {")
     .replace("  return (\n    <PrivacyContext.Provider", `  ${exposed}\n  return (\n    <PrivacyContext.Provider`);
   assert.ok(instrumented.includes(exposed));
@@ -107,7 +109,7 @@ test("切断完了後に古い状態・インサイト・デプロイの成功�
 test("切り替え前に予約したサービス操作後のタイマーは新しい接続で取得しない", async () => {
   const timers = [];
   const original = globalThis.window;
-  globalThis.window = { setTimeout: (callback) => timers.push(callback) };
+  globalThis.window = { setTimeout: (callback) => timers.push(callback), clearTimeout: () => {} };
   try {
     let statusCalls = 0;
     const api = { service: async () => ({ ok: true, message: "架空の完了" }), operations: async () => ({ operations: [] }),
@@ -232,4 +234,89 @@ test("ログが途切れたときのツールチップにも伏せ字を適用�
     const node = component({ stream: { status, paused: false, message: "FICTIONAL_HOST の接続が切れました" } });
     assert.equal(node.props.title, "MASKED の接続が切れました");
   }
+});
+
+
+test("デプロイ確認は接続先と接続時刻を送信し、古いダイアログは操作しない", async () => {
+  const targets = [];
+  const harness = consoleHarness({ startDeploy: async (target) => { targets.push(target); return {deploy: null, running: true}; } });
+  harness.render().applyConnection(connection("A"));
+  harness.render().requestDeploy();
+  const first = harness.render().confirm;
+  first.onConfirm();
+  await Promise.resolve();
+  assert.deepEqual(targets, [{profile_id: "A", connected_at: 1}]);
+  harness.render().applyConnection(connection("B"));
+  first.onConfirm();
+  await Promise.resolve();
+  assert.equal(targets.length, 1);
+});
+
+test("接続変更とアンマウントでサービス操作後のタイマーを解除する", () => {
+  const original = globalThis.window;
+  const pending = new Map();
+  let id = 0;
+  globalThis.window = {setTimeout: (callback) => {pending.set(++id, callback); return id;}, clearTimeout: (key) => pending.delete(key)};
+  try {
+    const runtime = renderer();
+    const controllers = compile(controllerSource, {react: runtime.hooks, "./requestScope": scopes});
+    const current = runtime.render(controllers.useConnectionScope);
+    runtime.commit();
+    current.requestScope.current.schedule(() => assert.fail("古いタイマー"), 2500);
+    assert.equal(pending.size, 1);
+    current.requestScope.current.invalidate();
+    assert.equal(pending.size, 0);
+    current.requestScope.current.schedule(() => assert.fail("破棄済み画面"), 2500);
+    runtime.unmount();
+    assert.equal(pending.size, 0);
+  } finally { globalThis.window = original; }
+});
+
+test("デプロイ完了時には自動更新OFFでもインサイトを強制更新する", async () => {
+  let count = 0;
+  const forces = [];
+  const harness = consoleHarness({
+    deploy: async () => ({deploy: {profile_id: "A", status: ++count === 1 ? "running" : "succeeded"}, running: count === 1}),
+    status: async () => ({fetched_at: 1}), insights: async (force) => {forces.push(force); return {data: {}, fetched_at: 1};},
+  });
+  harness.render().applyConnection(connection("A"));
+  await harness.render().refreshDeploy();
+  await harness.render().refreshDeploy();
+  await Promise.resolve();
+  assert.deepEqual(forces, [true]);
+});
+
+
+test("開始前のデプロイGETは開始POSTより遅れても実行中表示を戻さない", async () => {
+  const old = deferred(), started = deferred();
+  const harness = consoleHarness({deploy: () => old.promise, startDeploy: () => started.promise});
+  harness.render().applyConnection(connection("A"));
+  const pending = harness.render().refreshDeploy();
+  const posting = harness.render().runDeploy({profile_id: "A", connected_at: 1});
+  started.resolve({deploy: {profile_id: "A", status: "running"}, running: true});
+  await posting;
+  old.resolve({deploy: null, running: false});
+  await pending;
+  assert.equal(harness.render().deploy.status, "running");
+});
+
+
+test("接続前のサービス操作の完了は新接続の実行中状態を解除しない", async () => {
+  const old = deferred(), fresh = deferred();
+  let calls = 0;
+  const harness = consoleHarness({service: () => (++calls === 1 ? old.promise : fresh.promise),
+    operations: async () => ({operations: []}), status: async () => ({fetched_at: 1}), insights: async () => ({data: {}, fetched_at: 1})});
+  harness.render().applyConnection(connection("A"));
+  const first = harness.render().runAction("restart", {profile_id: "A", connected_at: 1});
+  assert.equal(harness.render().busyAction, "restart");
+  harness.render().applyConnection(connection("B"));
+  assert.equal(harness.render().busyAction, null);
+  const second = harness.render().runAction("stop", {profile_id: "B", connected_at: 1});
+  old.resolve({ok: true, message: "古い完了"});
+  await first;
+  assert.equal(harness.render().busyAction, "stop");
+  // 新操作のfinallyはタイマーを作るので、破棄済み世代にして回収する。
+  harness.render().applyConnection(connection(null));
+  fresh.resolve({ok: true, message: "新しい完了"});
+  await second;
 });

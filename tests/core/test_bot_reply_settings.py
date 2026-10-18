@@ -75,7 +75,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.feedback = SimpleNamespace(track_reply=Mock())
         self.voice = AsyncMock()
-        self.loader = Mock(side_effect=lambda path: f"ペルソナ: {path.as_posix()}")
+        self.loader = AsyncMock(side_effect=lambda path: f"ペルソナ: {Path(path).as_posix()}")
         self.namespace = {
             "discord": discord, "state": self.state,
             "client": SimpleNamespace(user=SimpleNamespace(id=99)),
@@ -103,7 +103,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             "feedback": self.feedback, "play_tts_response": self.voice,
             "load_image_attachments": AsyncMock(side_effect=images),
             "fetch_channel_history_text": AsyncMock(return_value=""),
-            "load_prompt_template": self.loader, "resolve_prompt_path": Path,
+            "load_persona_template": self.loader,
             "send_long_reply": AsyncMock(side_effect=send), "spawn": start,
             "clean_message_content": clean_message_content,
             "is_supported_message_channel": is_supported_message_channel,
@@ -172,7 +172,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                     return (None if case == "empty" else "架空の回答"), None, []
 
                 with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=images)), patch.object(
-                    message_handler, "load_prompt_template", side_effect=FileNotFoundError if case == "prompt" else None,
+                    message_handler, "load_persona_template", side_effect=FileNotFoundError if case == "prompt" else None,
                     return_value="架空のペルソナ",
                 ), patch.object(message_handler, "fetch_channel_history_text", AsyncMock(
                     side_effect=RuntimeError("架空の履歴失敗") if case == "history" else None, return_value="",

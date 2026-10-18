@@ -60,9 +60,9 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.service._process_attachment = AsyncMock(side_effect=attachment)
         self.attachment = attachment
         self.sent = AsyncMock()
-        self.loader = Mock(return_value="架空のペルソナ")
+        self.loader = AsyncMock(return_value="架空のペルソナ")
         for name, replacement in (
-            ("load_prompt_template", self.loader), ("fetch_channel_history_text", AsyncMock(return_value="")),
+            ("load_persona_template", self.loader), ("fetch_channel_history_text", AsyncMock(return_value="")),
             ("send_long_reply", self.sent), ("spawn", lambda coro, **kwargs: coro.close()),
         ):
             patcher = patch.object(document_service, name, replacement)
@@ -133,7 +133,7 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.service._process_attachment.side_effect = change
         await self.service._process_task(self.task)
         self.assertEqual(self.models, ["old-model"] * 4)
-        self.assertEqual(self.loader.call_args.args[0].name, "prompt_default.txt")
+        self.loader.assert_awaited_once_with("../prompts/prompt_default.txt")
         self.assertEqual(self.gemini.generate.await_args.args[1], "old-model")
         self.assertTrue(self.gemini.generate.await_args.kwargs["grounding"])
 

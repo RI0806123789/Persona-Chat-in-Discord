@@ -105,12 +105,16 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
             rc.journal_command("bot", lines=1, follow=True, use_sudo=False), label="ログ追跡"
         )
         try:
-            received = []
-            async with asyncio.timeout(5):
+            async def receive_entries():
+                received = []
                 async for line in process.stdout:
                     received.append(rc.parse_journal_line(line))
                     if len(received) >= 3:  # 過去1件 + 新着2件
-                        break
+                        return received
+                return received
+
+            # Python 3.10にもあるwait_forで、同じ待機上限を保つ。
+            received = await asyncio.wait_for(receive_entries(), timeout=5)
             self.assertEqual(len(received), 3)
         finally:
             process.close()
@@ -185,9 +189,11 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.session.connect(self.profile)
         for conn in list(self.bot.connections):
             conn.close()  # サーバー側から切る
-        async with asyncio.timeout(5):
+        async def wait_for_disconnect():
             while self.session.connected:
                 await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(wait_for_disconnect(), timeout=5)
         self.assertIn("切れました", self.session.last_error)
 
 

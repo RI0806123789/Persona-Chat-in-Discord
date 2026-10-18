@@ -67,7 +67,7 @@ export const api = {
   dbTable: (table: string, offset: number, limit: number) =>
     request<DbTablePage>(`/api/db/tables/${encodeURIComponent(table)}?offset=${offset}&limit=${limit}`),
   deploy: () => request<DeployResponse>("/api/deploy"),
-  startDeploy: () => post<DeployResponse>("/api/deploy"),
+  startDeploy: (target: { profile_id: string; connected_at: number }) => post<DeployResponse>("/api/deploy", target),
   insights: (refresh = false) => request<InsightsResponse>(`/api/insights${refresh ? "?refresh=true" : ""}`),
 };
 

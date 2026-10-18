@@ -17,8 +17,6 @@ def _load_words_from_file(file_path: Path) -> list[str]:
     BOM (U+FEFF) は strip() でも消えないため、残すと1行目のコメントがNGワードとして
     登録されたり、1行目のNGワードが検知できなくなったりする。
     """
-    if not file_path.exists():
-        return []
     try:
         lines = file_path.read_text(encoding="utf-8-sig").splitlines()
         return [
@@ -26,9 +24,12 @@ def _load_words_from_file(file_path: Path) -> list[str]:
             for line in lines
             if line.strip() and not line.strip().startswith("#")
         ]
+    except FileNotFoundError:
+        return []
     except Exception as error:
         print(f"NGワード読み込みエラー ({file_path.name}): {error}")
-        return []
+        # 読込失敗を空の成功結果へ変えず、再読込元に従来の判定を維持させる。
+        raise
 
 
 def load_ng_words() -> list[str]:

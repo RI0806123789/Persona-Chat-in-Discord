@@ -35,7 +35,7 @@ from persona_bot.utils.storage import (
     write_json_file,
 )
 
-# projects.json のユーザー別スキーマ識別子。この値が無ければ旧・全体共有形式とみなす。
+# projects.json のユーザー別スキーマ識別子。users 辞書がある場合は識別子欠落時も保護する。
 _PROJECTS_SCHEMA = "per_user_v1"
 
 # 記憶参照が明らかに不要な短い定型発言（あいさつ・相槌など）。ルーターの LLM 呼び出しを
@@ -93,14 +93,18 @@ class MemoryService:
             data = default_projects_memory()
 
         if data.get("_schema") != _PROJECTS_SCHEMA:
-            migrated = default_projects_memory()
-            # 旧・全体共有形式の中身を owner の記憶として引き継ぐ。
-            # 値がすべて空（初期シードのみ）の場合は引き継がない。
-            legacy = {k: v for k, v in data.items() if k not in ("_schema", "users")}
-            has_content = any(value for value in legacy.values())
-            if has_content and LEGACY_MEMORY_OWNER_ID:
-                migrated["users"][LEGACY_MEMORY_OWNER_ID] = legacy
-            data = migrated
+            if isinstance(data.get("users"), dict):
+                # 手編集などで識別子だけ欠けても、既存ユーザーの記憶を捨てない。
+                data["_schema"] = _PROJECTS_SCHEMA
+            else:
+                migrated = default_projects_memory()
+                # 旧・全体共有形式の中身を owner の記憶として引き継ぐ。
+                # 値がすべて空（初期シードのみ）の場合は引き継がない。
+                legacy = {k: v for k, v in data.items() if k not in ("_schema", "users")}
+                has_content = any(value for value in legacy.values())
+                if has_content and LEGACY_MEMORY_OWNER_ID:
+                    migrated["users"][LEGACY_MEMORY_OWNER_ID] = legacy
+                data = migrated
             write_json_file(PROJECTS_MEMORY_PATH, data)
             print("記憶: projects.json をユーザー別構造へ移行しました。")
 
@@ -130,15 +134,20 @@ class MemoryService:
         if category == "profile":
             context = json.dumps(self._db.profile_load(user_id), ensure_ascii=False, indent=2)
         elif category == "projects":
-            context = json.dumps(projects, ensure_ascii=False, indent=2)
+            context = json.dumps(
+                {key: value for key, value in projects.items() if key != "document_summaries"},
+                ensure_ascii=False, indent=2,
+            )
         summaries = projects.get("document_summaries", [])
         lines = []
         if isinstance(summaries, list) and limit > 0:
             for summary in summaries[-limit:]:
                 if not isinstance(summary, dict):
                     continue
-                name = str(summary.get("document_name", "unknown"))
-                text = str(summary.get("summary", "")).strip()
+                raw_name = summary.get("document_name")
+                name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else "unknown"
+                raw_text = summary.get("summary")
+                text = raw_text.strip() if isinstance(raw_text, str) else ""
                 if text:
                     lines.append(f"- {name}: {text}")
         return context, "\n".join(lines)
@@ -217,7 +226,7 @@ class MemoryService:
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
     async def flush_if_needed(self, force: bool = False) -> None:
-        if self.flush_lock.locked():
+        if not force and self.flush_lock.locked():
             return
 
         # ロックの役割分担:
@@ -229,8 +238,7 @@ class MemoryService:
         # 取得順序は必ず flush_lock → io_lock（逆順で取る箇所を作らないこと）。
         async with self.flush_lock:
             async with self.io_lock:
-                await run_in_thread(self.ensure_storage)
-                user_ids = await run_in_thread(self._db.pending_distinct_user_ids)
+                user_ids = await run_in_thread(self._pending_user_ids)
             if not user_ids:
                 return
 
@@ -250,6 +258,15 @@ class MemoryService:
                     continue
                 processed += 1
                 await self._flush_user(str(user_id), entries)
+
+    def _pending_user_ids(self) -> list[str]:
+        """同じ io_lock 内の初期化と取得を、1回のワーカー呼出で完了する。"""
+        self.ensure_storage()
+        return self._db.pending_distinct_user_ids()
+
+    def _load_memory_snapshot(self, user_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """プロフィールとプロジェクトを同じ io_lock 内でまとめて読み込む。"""
+        return self._db.profile_load(user_id), self._load_projects_wrapper()
 
     async def _flush_user(self, user_id: str, entries: list[dict[str, Any]]) -> None:
         """1 ユーザー分の pending_log を profile / projects へ圧縮統合する。
@@ -276,8 +293,7 @@ class MemoryService:
         max_entry_id = self._max_entry_id(entries)
 
         async with self.io_lock:
-            profile_snapshot = await run_in_thread(self._db.profile_load, user_id)
-            wrapper = await run_in_thread(self._load_projects_wrapper)
+            profile_snapshot, wrapper = await run_in_thread(self._load_memory_snapshot, user_id)
         projects_snapshot = {
             key: value
             for key, value in self._user_projects(wrapper, user_id).items()

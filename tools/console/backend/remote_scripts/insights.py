@@ -203,6 +203,8 @@ def describe_settings(row):
 def read_token():
     token = os.environ.get("TOKEN_DISCORD")
     env_path = BOT_DIR / ".env"
+    if token and token.startswith("YOUR_"):
+        token = None
     if not token:
         try:
             lines = env_path.read_text(encoding="utf-8-sig").splitlines()
@@ -213,7 +215,9 @@ def read_token():
             if separator and key.strip() == "TOKEN_DISCORD":
                 try:
                     words = shlex.split(value, comments=True)
-                    token = words[0] if len(words) == 1 else None
+                    candidate = words[0] if len(words) == 1 else ""
+                    if candidate and not candidate.startswith("YOUR_"):
+                        token = candidate
                 except ValueError:
                     note(".env の TOKEN_DISCORD の引用符を確認してください。")
     return token or None
@@ -221,6 +225,10 @@ def read_token():
 
 class DiscordError(Exception):
     pass
+
+
+class DiscordRateLimit(DiscordError):
+    """全サーバーの追加取得を止める利用制限。"""
 
 
 def discord_get(path, token):
@@ -238,7 +246,7 @@ def discord_get(path, token):
         if error.code == 401:
             raise DiscordError("トークンが無効です（401）。") from None
         if error.code == 429:
-            raise DiscordError("Discord API の利用制限中です（429）。少し待ってから更新してください。") from None
+            raise DiscordRateLimit("Discord API の利用制限中です（429）。少し待ってから更新してください。") from None
         raise DiscordError(f"Discord API がエラーを返しました（{error.code}）。") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise DiscordError("Discord API に接続できませんでした。接続先の状態を確認してください。") from None
@@ -268,8 +276,9 @@ def collect_discord(settings_rows):
         if not isinstance(me, dict) or not isinstance(guilds, list):
             raise DiscordError("Discord API の応答を読み取れませんでした。")
         summaries = []
-        voice_error = None
+        rate_error = None
         for guild in guilds:
+            voice_error = rate_error
             guild_id = int(guild["id"])
             voice_channel = None
             if voice_error is None:
@@ -280,9 +289,11 @@ def collect_discord(settings_rows):
                         voice_channel = (channel or {}).get("name") or "（名前を取得できないチャンネル）"
                 except DiscordError as error:
                     voice_error = str(error)
+                    if isinstance(error, DiscordRateLimit):
+                        rate_error = voice_error
                     note(f"ボイス状態を取得できませんでした。{voice_error}")
             summaries.append({
-                "name": guild.get("name"),
+                "name": guild.get("name") if isinstance(guild.get("name"), str) else "名前不明のサーバー",
                 "members": guild.get("approximate_member_count"),
                 "online": guild.get("approximate_presence_count"),
                 "voice_channel": voice_channel,

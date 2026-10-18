@@ -55,7 +55,7 @@ from persona_bot.services.autonomous_metrics import (
     updated_activity_samples,
 )
 from persona_bot.services import autonomous_stage
-from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
+from persona_bot.core.background import spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
@@ -76,6 +76,7 @@ from persona_bot.config.constants import (
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
 from persona_bot.utils.discord_helpers import (
     fetch_channel_history_text,
+    channel_display_name,
     close_image_attachments,
     load_image_attachments,
     send_long_message,
@@ -83,7 +84,7 @@ from persona_bot.utils.discord_helpers import (
 )
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.ng_word_service import NgWordFilter
-from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
+from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import (
     build_autonomous_monologue_prompt,
     build_autonomous_opening_prompt,
@@ -244,7 +245,7 @@ class AutonomousService:
                 if not comment_text:
                     return None
 
-                persona_prompt = await run_in_thread(self._load_persona, response_settings)
+                persona_prompt = await self._load_persona(response_settings)
                 if persona_prompt is None:
                     return None
 
@@ -467,8 +468,7 @@ class AutonomousService:
     ) -> None:
         """チャンネルを1つ選んで接続し、配信を開始する。
 
-        失敗した経路では必ず `_record_start_failure` を通すこと。ゲージは失敗しても
-        満タンのままなので、記録しないと次の見回り（1分後）で同じ失敗を繰り返す。
+        接続異常では再試行を抑止する。利用者の停止・無効化による中断は失敗にしない。
         """
         channel = autonomous_stage.pick_channel(guild)
         if channel is None:
@@ -478,20 +478,38 @@ class AutonomousService:
             return
 
         is_stage = isinstance(channel, discord.StageChannel)
+        voice_client = None
+
+        def create_voice_client(client, target_channel):
+            # connect()が戻る前にキャンセルされても、この試行が作った接続だけを片付ける。
+            nonlocal voice_client
+            voice_client = discord.VoiceClient(client, target_channel)
+            return voice_client
+
         try:
-            voice_client = await channel.connect(timeout=AUTONOMOUS_CONNECT_TIMEOUT_SECONDS)
-        # Forbidden は HTTPException の派生クラスなので必ず先に捕まえる。
-        except discord.Forbidden:
-            print(f"自律行動: {channel.name} への接続を拒否されました（権限不足）。")
-            self._record_start_failure(guild_settings)
-            return
-        except asyncio.TimeoutError:
-            print(f"自律行動: {channel.name} への接続がタイムアウトしました。")
-            self._record_start_failure(guild_settings)
-            return
+            voice_client = await channel.connect(
+                timeout=AUTONOMOUS_CONNECT_TIMEOUT_SECONDS, cls=create_voice_client,
+            )
+        except asyncio.CancelledError:
+            if voice_client is not None:
+                await wait_for_cleanup(
+                    autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
+                    label="自律行動の接続キャンセルの切断",
+                )
+            raise
         except Exception as error:
-            print(f"自律行動: {channel.name} への接続に失敗しました（{type(error).__name__}: {error}）。")
-            self._record_start_failure(guild_settings)
+            if isinstance(error, discord.Forbidden):
+                print(f"自律行動: {channel.name} への接続を拒否されました（権限不足）。")
+            elif isinstance(error, asyncio.TimeoutError):
+                print(f"自律行動: {channel.name} への接続がタイムアウトしました。")
+            else:
+                print(f"自律行動: {channel.name} への接続に失敗しました（{type(error).__name__}: {error}）。")
+            if voice_client is not None:
+                await wait_for_cleanup(
+                    autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
+                    label="自律行動の接続失敗の切断",
+                )
+            self._record_interrupted_start(guild_settings, attempt)
             return
 
         # 接続待機中の停止・無効化・静音時間への突入や、接続の差し替えを取り直す。
@@ -524,7 +542,7 @@ class AutonomousService:
                         autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
                         label="自律行動の開始失敗の切断",
                     )
-                self._record_start_failure(guild_settings)
+                self._record_interrupted_start(guild_settings, attempt)
                 return
 
         now = datetime.now(timezone.utc)
@@ -705,7 +723,7 @@ class AutonomousService:
         try:
             body = AUTONOMOUS_OPENING_NOTICE
             speech = ""
-            persona_prompt = await run_in_thread(self._load_persona, response_settings)
+            persona_prompt = await self._load_persona(response_settings)
             if persona_prompt is not None:
                 history_text = await fetch_channel_history_text(
                     channel, guild_settings.channel_reset_points.get(channel.id),
@@ -715,7 +733,7 @@ class AutonomousService:
                     persona_prompt, getattr(channel, "name", ""), history_text
                 )
                 generated = await self._generate(
-                    full_prompt, response_settings, label="第一声", detail=self._channel_label(channel)
+                    full_prompt, response_settings, label="第一声", detail=channel_display_name(channel)
                 )
                 speech = self._screen_speech(generated, "自律行動の第一声")
                 if speech:
@@ -748,7 +766,7 @@ class AutonomousService:
             channel = self._client.get_channel(session.channel_id)
             if channel is None:
                 return
-            persona_prompt = await run_in_thread(self._load_persona, response_settings)
+            persona_prompt = await self._load_persona(response_settings)
             if persona_prompt is None:
                 return
 
@@ -761,7 +779,7 @@ class AutonomousService:
             )
             # 独り言に調べ物は要らないためグラウンディングは使わない（既定の False）。
             generated = await self._generate(
-                full_prompt, response_settings, label="独り言", detail=self._channel_label(channel)
+                full_prompt, response_settings, label="独り言", detail=channel_display_name(channel)
             )
             speech = self._screen_speech(generated, "自律行動の独り言")
             if not speech:
@@ -848,14 +866,10 @@ class AutonomousService:
         self._usage.log_snapshot(f"自律行動/{label}", detail, "自動実行", full_prompt, response_text, usage_info)
         return response_text
 
-    def _load_persona(self, response_settings: ResponseSettings) -> str | None:
+    async def _load_persona(self, response_settings: ResponseSettings) -> str | None:
         """そのサーバーで選ばれているペルソナのプロンプトを読む（無ければ None）。"""
         try:
-            return load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
+            return await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
             print(f"自律行動: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return None
-
-    @staticmethod
-    def _channel_label(channel: Any) -> str:
-        return getattr(channel, "name", None) or f"channel {getattr(channel, 'id', '不明')}"

@@ -249,6 +249,7 @@ class DeployRunner:
 
     async def _head(self, step: Step) -> str:
         result = await self._run(step, rc.deploy_state_command(self.profile.bot_dir), label="今のコミット", quiet=True)
+        self._check(step, "現在のコミットの取得", result.exit_status == 0, failure="現在のコミットを取得できませんでした。")
         return rc.check_commit(rc.parse_lines(result.stdout, 2)[1])
 
     # ------------------------------------------------------------ デプロイのステップ
@@ -535,7 +536,7 @@ class DeployManager:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, session: SshSession, profile: Profile, **runner_options) -> DeployRecord:
+    def start(self, session: SshSession, profile: Profile, *, on_finished: Callable[[], None] | None = None, **runner_options) -> DeployRecord:
         if self.running:
             raise RuntimeError("デプロイを実行中です。終わるまで待ってください。")
         record = new_record(next(self._ids), profile)
@@ -543,6 +544,8 @@ class DeployManager:
         runner = DeployRunner(session, profile, record, **runner_options)
         # タスクへの強い参照を持ち続ける（捨てると実行途中で回収されうる）
         self._task = asyncio.get_running_loop().create_task(runner.run())
+        if on_finished is not None:
+            self._task.add_done_callback(lambda _task: on_finished())
         return record
 
     async def wait(self) -> DeployRecord | None:

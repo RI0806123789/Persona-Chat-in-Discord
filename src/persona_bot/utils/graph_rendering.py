@@ -1,5 +1,6 @@
 """全グラフの日本語フォント設定とmatplotlib操作の直列化を共有する。"""
 
+import io
 from functools import wraps
 import threading
 
@@ -27,3 +28,19 @@ def serialized_plot(function):
         with _PLOT_LOCK:
             return function(*args, **kwargs)
     return render
+
+
+def save_figure_to_buffer(figure, **savefig_options) -> io.BytesIO:
+    """PNGの所有権を呼出元へ渡し、失敗時のバッファとFigureを回収する。"""
+    from matplotlib import pyplot as plt
+
+    buffer = io.BytesIO()
+    try:
+        figure.savefig(buffer, format="png", **savefig_options)
+        buffer.seek(0)
+        return buffer
+    except BaseException:
+        buffer.close()
+        raise
+    finally:
+        plt.close(figure)

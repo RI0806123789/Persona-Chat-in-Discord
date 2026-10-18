@@ -49,6 +49,7 @@ import discord
 from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.choices import MODEL_DISPLAY_NAMES, PERSONA_DISPLAY_NAMES
 from persona_bot.config.constants import (
+    DM_SETTINGS_GUILD_KEY,
     FEEDBACK_ENABLED,
     FEEDBACK_MAX_STORED_ROWS,
     FEEDBACK_REACTION_BAD,
@@ -151,7 +152,7 @@ class FeedbackService:
 
         channel_id = int(sent.channel.id)
         self._tracked[sent.id] = _TrackedReply(
-            guild_id=sent.guild.id if sent.guild is not None else 0,
+            guild_id=sent.guild.id if sent.guild is not None else DM_SETTINGS_GUILD_KEY,
             channel_id=channel_id,
             target_user_id=str(target_user_id),
             model_name=str(model_name),

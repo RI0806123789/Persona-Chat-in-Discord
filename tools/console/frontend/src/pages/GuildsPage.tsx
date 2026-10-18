@@ -59,10 +59,10 @@ export function GuildsPage({
         <section key={`${guild.name}-${index}`} className="m3-card m3-card-filled guild-card span-6">
           <header className="guild-head">
             <span className="guild-avatar" aria-hidden="true">
-              {privacy.enabled ? "•" : Array.from(guild.name)[0]}
+              {privacy.enabled ? "•" : Array.from(typeof guild.name === "string" ? guild.name : "不明")[0]}
             </span>
             <div className="guild-title">
-              <h2 className="title-large">{privacy.mask(guild.name)}</h2>
+              <h2 className="title-large">{privacy.mask(typeof guild.name === "string" ? guild.name : "名前不明のサーバー")}</h2>
               <div className="chips">
                 <Chip icon="group">{guild.members ?? "—"} 人</Chip>
                 <Chip icon="person">オンライン {guild.online ?? "—"}</Chip>

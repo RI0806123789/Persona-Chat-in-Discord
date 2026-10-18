@@ -61,7 +61,7 @@ python -m pip check
 全Pythonソースの構文を、モジュールを起動せずに確認します。このコマンドは `.env`、実際のDB、Discord、Geminiを使わず、コンパイル結果もファイルへ保存しません。
 
 ```bash
-python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')) + sorted(p for p in Path('tools/console/backend').rglob('*.py') if '.venv' not in p.parts) + [Path('tools/console/dev_launcher.py')]; [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 ```
 
 ローカル処理の例として、Discord向けのメッセージ分割を確認できます。
@@ -81,6 +81,23 @@ python -B -m unittest discover -s tests -v
 APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `persona_bot.core.message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
 
 [回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.10／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
+
+## 管理コンソールをローカルで確認する
+
+ボットとは別の仮想環境と既存の固定済み依存を使う。以下の`python`は`tools/console/backend/.venv`のものに置き換える（未作成なら同ディレクトリで`python -m venv .venv`）。`.env`・`profiles.json`や実サーバーは不要で、SSHはループバックの模擬サーバー、DBは一時ディレクトリを使う。
+
+```bash
+cd tools/console/backend
+python -m pip install -r requirements.txt
+python -m pip check
+python -B -m unittest discover -s tests -v
+cd ../frontend
+npm ci
+npm test
+npm run build
+```
+
+WindowsでPowerShellの実行ポリシーにより`npm`が使えない場合は`npm.cmd`を使う。`npm run build`はTypeScript検証も含む。ルートの`tests`とバックエンドの`tests`はimport名が異なる前提のため、上記のように作業ディレクトリを分けて実行する。`tests.yml`でバックエンドはWindows/Linux・Python 3.10/3.13、画面はWindows/Linux・Node.js 24を検証する。
 
 ## Discord・Geminiを使う確認
 

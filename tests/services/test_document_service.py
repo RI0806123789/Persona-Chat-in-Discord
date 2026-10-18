@@ -173,6 +173,38 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
             await self.process()
         self.assert_no_files()
 
+    async def test_repeated_cancellation_waits_for_remote_cleanup_before_local_removal(self) -> None:
+        summarizing, deleting, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def summarize(*args):
+            summarizing.set()
+            await asyncio.Event().wait()
+
+        async def delete(*args):
+            deleting.set()
+            await release.wait()
+
+        self.gemini.summarize_document.side_effect = summarize
+        self.gemini.delete_file.side_effect = delete
+        task = spawn(self.process(), label="文書削除中の再キャンセルの確認")
+        try:
+            await asyncio.wait_for(summarizing.wait(), 2)
+            task.cancel()
+            await asyncio.wait_for(deleting.wait(), 2)
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+                self.assertEqual(len(list(self.root.iterdir())), 1)
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+        self.gemini.delete_file.assert_awaited_once_with(self.uploaded)
+        self.assert_no_files()
+
     async def test_pdf_validation_cancellation_waits_for_stream_to_close_before_removal(self) -> None:
         self.attachment.filename = "fictional.pdf"
         entered = asyncio.Event()
@@ -243,7 +275,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         for name, value in (
             ("send_long_reply", self.sent),
             ("fetch_channel_history_text", AsyncMock(return_value="架空の履歴")),
-            ("load_prompt_template", Mock(return_value="架空のペルソナ")),
+            ("load_persona_template", AsyncMock(return_value="架空のペルソナ")),
             ("spawn", start),
         ):
             replacement = patch.object(document_service, name, value)

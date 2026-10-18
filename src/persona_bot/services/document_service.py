@@ -9,7 +9,7 @@ import discord
 
 from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import BotState
-from persona_bot.core.background import run_in_thread, spawn
+from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_WORKER_IDLE_SECONDS,
@@ -32,7 +32,7 @@ from persona_bot.utils.discord_helpers import (
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.memory_service import MemoryService
 from persona_bot.services.ng_word_service import NgWordFilter
-from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
+from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
 from persona_bot.utils.usage_graph import UsageTracker
 
@@ -61,6 +61,29 @@ class DocumentService:
         self._db = db
         self._ng_filter = ng_filter
         self._moderator = moderator
+        self._worker: asyncio.Task[Any] | None = None
+        self._stopping = False
+
+    def start_worker(self) -> None:
+        """終了時に回収できるよう、このサービスのワーカーだけを保持する。"""
+        if not self._stopping and (self._worker is None or self._worker.done()):
+            self._worker = spawn(self.run_worker(), label="文書処理ワーカー")
+
+    async def stop_worker(self) -> None:
+        """Gemini・Discord・DBが有効な間に、中断とファイル回収を完了する。"""
+        self._stopping = True
+        await wait_for_cleanup(self._stop_worker(), label="文書ワーカーの終了")
+
+    async def _stop_worker(self) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._worker = None
 
     async def enqueue_from_message(
         self,
@@ -68,7 +91,9 @@ class DocumentService:
         question: str,
         attachments: Sequence[discord.Attachment],
     ) -> str:
-        task_id = f"{message.channel.id}-{message.id}-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        task_id = f"{message.channel.id}-{message.id}-{int(now.timestamp() * 1000)}"
         await self._enqueue(
             {
                 "task_id": task_id,
@@ -78,8 +103,8 @@ class DocumentService:
                 "author_id": message.author.id,
                 "question": question,
                 "attachment_count": len(attachments),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": now_iso,
+                "updated_at": now_iso,
             }
         )
         return task_id
@@ -90,7 +115,7 @@ class DocumentService:
         except Exception as error:
             print(f"文書ワーカー: 中断タスクの復旧に失敗しました: {error}")
 
-        while True:
+        while not self._stopping:
             # キューの読み書きで予期しない例外（一時的な DB ロック等）が
             # 発生してもワーカーが停止しないよう、ループ全体を保護してリトライする。
             try:
@@ -162,7 +187,7 @@ class DocumentService:
                 await self._process_attachment(attachment, author_id, response_settings.model_name)
 
             prompt_file = response_settings.prompt_file
-            prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(prompt_file)))
+            prompt = await load_persona_template(prompt_file)
             memory_category = await self._memory.route_category(question)
             memory_context, document_context = await self._memory.build_contexts(
                 memory_category, author_id, limit=max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments)),
@@ -215,6 +240,9 @@ class DocumentService:
 
             await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
         except Exception as error:
+            if self._stopping:
+                # 終了中の中断は processing のまま残し、次回起動時に復旧する。
+                return
             print(f"文書タスク処理エラー: {error}")
             try:
                 await self._update_task(
@@ -277,7 +305,9 @@ class DocumentService:
         finally:
             try:
                 if uploaded_file is not None:
-                    await self._gemini.delete_file(uploaded_file)
+                    await wait_for_cleanup(
+                        self._gemini.delete_file(uploaded_file), label="文書アップロードの削除",
+                    )
             finally:
                 # アップロード先の削除が失敗しても、ローカルの回収を実行する。
                 if temp_path is not None:

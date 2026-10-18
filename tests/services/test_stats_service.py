@@ -258,6 +258,38 @@ class StatsAnalysisTests(unittest.IsolatedAsyncioTestCase):
             buffer.close()
         return caption, [name for name, _ in images]
 
+    async def test_incomplete_analysis_is_not_cached_and_next_request_retries(self) -> None:
+        for defect in ("topics", "big_five"):
+            with self.subTest(defect=defect):
+                self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+                valid = deepcopy(self.analysis)
+                self.analysis[defect] = [] if defect == "topics" else {key: 0 for key in stats_service.BIG_FIVE_LABELS}
+                self.assertIsNone(await self.service.ensure_analysis("user-0"))
+                self.assertIsNone(self.db.stats_load_all()["user-0"]["analysis"])
+                self.analysis = valid
+                result = await self.service.ensure_analysis("user-0")
+                self.assertEqual(result["personality"], valid["personality"])
+
+    async def test_previously_cached_empty_analysis_retries_inside_ttl(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+        self.service.cache["user-0"]["analysis"] = {
+            "topics": [], "big_five": {}, "personality": "",
+            "sample_count": STATS_PERSONALITY_MIN_SAMPLES,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        result = await self.service.ensure_analysis("user-0")
+        self.gemini.generate.assert_awaited_once()
+        self.assertEqual(result["topics"], self.analysis["topics"])
+
+    async def test_deleting_stats_erases_persisted_display_name_and_preserves_opt_out(self) -> None:
+        self.seed(STATS_PERSONALITY_MIN_SAMPLES)
+        self.service.cache["user-0"]["opt_out"] = True
+        self.assertTrue(await self.service.clear_user_data("user-0"))
+        self.assertEqual(self.service.display_name("user-0"), "user-0")
+        saved = self.db.stats_load_all()["user-0"]
+        self.assertEqual(saved["user_name"], "")
+        self.assertTrue(saved["opt_out"])
+
     async def test_analysis_skips_unrelated_json_and_keeps_cache_when_fields_are_missing(self) -> None:
         self.seed(STATS_PERSONALITY_MIN_SAMPLES)
         self.gemini.generate.side_effect = None

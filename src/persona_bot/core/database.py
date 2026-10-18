@@ -1222,11 +1222,6 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def pending_clear(self, user_id: str) -> None:
-        """指定ユーザーの一時ログだけを削除する（他ユーザーの分は残す）。"""
-        with self._lock, self._conn:
-            self._conn.execute("DELETE FROM pending_log WHERE user_id = ?", (str(user_id),))
-
     def pending_clear_upto(self, user_id: str, max_id: int) -> None:
         """指定ユーザーの一時ログのうち、id が max_id 以下の行だけを削除する。
 

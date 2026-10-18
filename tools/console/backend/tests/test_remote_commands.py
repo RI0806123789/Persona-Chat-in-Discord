@@ -16,6 +16,12 @@ class CommandBuildTest(unittest.TestCase):
             {"hash": "abc1234", "subject": "題名"}, {"hash": "def5678", "subject": "fix: 架空の修正"},
         ])
 
+    def test_commit_list_rejects_invalid_hash_and_missing_subject(self):
+        for line in ("nothexg\x1f件名", "abc12\x1f短すぎる", "a" * 41 + "\x1f長すぎる", "abc1234", "abc1234\x1f ", "abc1234\x1f件名\x1f別項目"):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                rc.parse_commit_list(line)
+        self.assertEqual(rc.parse_commit_list("A" * 40 + "\x1ffix: 空白を  維持"), [{"hash": "A" * 40, "subject": "fix: 空白を  維持"}])
+
     def test_service_control_allows_only_whitelisted_actions(self):
         self.assertEqual(rc.service_control_command("bot", "restart"), "sudo -n systemctl restart bot")
         with self.assertRaises(ValueError):

@@ -67,12 +67,12 @@ python -B -m unittest discover -s tests -v
 python -B -m unittest tests.core.test_bot_reply_settings -v
 python -B -m unittest discover -s tests -k test_last_slot_accepts_only_one_concurrent_request
 # src/ と deploy/ の全 .py の構文確認（モジュールは起動しない）
-python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')); [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
+python -B -c "from pathlib import Path; paths = sorted(Path('src').rglob('*.py')) + sorted(Path('deploy').glob('*.py')) + sorted(p for p in Path('tools/console/backend').rglob('*.py') if '.venv' not in p.parts) + [Path('tools/console/dev_launcher.py')]; [compile(p.read_text(encoding='utf-8-sig'), str(p), 'exec') for p in paths]; print('構文確認: OK')"
 # 個別モジュールの動作確認の例（src を import パスに足す）
 python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.discord_helpers import split_message; assert [len(p) for p in split_message('あ' * 4001)] == [2000, 2000, 1]; print('メッセージ分割: OK')"
 ```
 
-テストは `tests/` 内で用途別に配置する。構成と個別実行の手順は [テストの案内](tests/README.md#フォルダ構成と個別実行) を参照する。CI は上記に加えて `python -m compileall -q src deploy tests` で `tests/` の構文も確かめ、`PYTHONIOENCODING=utf-8`・`MPLBACKEND=Agg` を設定する。Linux のジョブだけ `REQUIRE_JAPANESE_GRAPH_FONT=1` で日本語フォントの未導入を失敗にする（未指定の環境では字形テストを省略する）。
+テストは `tests/` 内で用途別に配置する。構成と個別実行の手順は [テストの案内](tests/README.md#フォルダ構成と個別実行) を参照する。CI は上記に加えて `python -m compileall -q src deploy tests tools/console/backend tools/console/dev_launcher.py` で `tests/` の構文も確かめ、`PYTHONIOENCODING=utf-8`・`MPLBACKEND=Agg` を設定する。Linux のジョブだけ `REQUIRE_JAPANESE_GRAPH_FONT=1` で日本語フォントの未導入を失敗にする（未指定の環境では字形テストを省略する）。
 
 確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`persona_bot.core.message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要。`tests/helpers/message_handler_helpers.make_message_handler` が、渡さなかった依存を `Mock` で埋めて組み立てる）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
 
@@ -121,9 +121,24 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## 開発者用ダッシュボード (`tools/console/`)
 
+```text
+tools/console/
+├── backend/             # API・SSH・デプロイ（ボットとは別の仮想環境）
+│   ├── remote_scripts/  # insights・DB件数・テーブル読取を標準入力で遠隔実行
+│   └── tests/           # 模擬SSH・一時DB・API境界の回帰
+├── frontend/
+│   ├── src/             # React画面・controllers.tsの接続/操作フック
+│   └── tests/           # Node.js標準テスト
+└── dev_launcher.py      # 手元の開発用起動
+```
+
+`.github/workflows/tests.yml` はボットに加え、管理コンソールのバックエンド（Windows/Linux・Python 3.10/3.13）とフロントエンド（Windows/Linux・Node.js 24）を別ジョブで検証する。手元の再現コマンドは `CONTRIBUTING.md` の管理コンソール節を参照。依存は既存の固定版を各環境へ入れ、本番の接続先・秘密情報・実DBは使わない。
+
+デプロイ開始でも確認時の`profile_id`・`connected_at`を照合し、不一致は409。成功したサービス操作とデプロイ終了でインサイトキャッシュを失効させ、取得中の古い結果も再キャッシュしない。`db_summary.py` は件数のみを読み取り専用で取得し、日別評価は既存複合索引の期間検索と日本時間の日付条件を併用して旧日時形式も扱う。ログ転送の終了処理は再キャンセル時もSSHプロセス・転送タスクを回収する。
+
 接続変更とデプロイ開始はAPIの共通ロックで順序を揃え、デプロイ中の接続・切断を409で拒否する。終了時は`DeployManager.wait`でキャンセルが繰り返されても処理・巻き戻しの終了を待ってから切断し、起動ログ取得の失敗は待機で隠さず即座に扱う。画面は`requestScope.ts`で接続変更開始・接続先変更と取得順序を照合し、古い応答や予約済みタイマーを捨てる。伏せ字にはホーム所有者とホーム部分・接続先ラベルも含め、通知の見出しとログのツールチップにも適用する。
 
-SSH 経由でボットを見守り、サービス操作・デプロイを行う開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` と CI には含めない。セットアップ・起動・設計は `tools/console/README.md` にある。
+SSH 経由でボットを見守り、サービス操作・デプロイを行う開発者用の画面（React + TypeScript の画面と、FastAPI + asyncssh のバックエンド）。ボットとは依存関係も起動も分けており、ボットの `requirements.txt` とは別に管理し、CIでは専用ジョブを使う。セットアップ・起動・設計は `tools/console/README.md` にある。
 
 - **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
 - **実行できるコマンドは `backend/remote_commands.py` のホワイトリストだけ。** 画面から届いた文字列をコマンドに埋め込まない。ホスト鍵の検証を切らない（`known_hosts=None` にしない）。127.0.0.1 だけで待ち受け、専用ヘッダー・Host・Origin を確かめる。
@@ -185,7 +200,7 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 - **ユーザー別記憶への移行（バージョン3）**: 導入前は単一ユーザーのテスト運用のため記憶を「全体共有の1スペース」で持っていた。移行時、旧・全体共有データ（`profile` 行・`pending_log` の未割当行・`projects.json` の中身）は失わないよう `LEGACY_MEMORY_OWNER_ID`（`constants.py`。旧・唯一の実利用者の Discord ユーザーID）の記憶として引き継ぐ。SQL では担えない「旧行を owner へ割り当てる」後始末は `_migrate_legacy_profile_rows`（冪等。スキーマ移行本体とは別トランザクション）が行う。引き継ぎ元が不要になれば `LEGACY_MEMORY_OWNER_ID` を `""` にしてよい。`""` のときは旧データを破棄する — 旧 `profile` 行に加え、`pending_log` の未割当行（`user_id = ''`）も起動時に削除し、旧 `pending_log.txt` は取り込まない（ファイルは `.imported.bak` として残る）。残すと `user_id=''` の「誰でもない利用者」として記憶圧縮の対象に数えられ、誰も読まない記憶のために Gemini を呼び続ける（`pending_distinct_user_ids` も念のため空の `user_id` を返さない）。
 - **旧 JSON からの取り込み**: 初回起動時、旧ファイル（`affinity.json`/`user_stats.json`/`queue.json`/`pending_log.txt`）が残っていれば DB へ取り込み、`<元の名前>.imported.bak` に改名する（バックアップ兼二重取り込み防止）。JSON として読めない・最上位が object でない（`queue.json` は `tasks` が配列でない）ファイルは `_load_legacy_json_object` が例外にするので、取り込まず改名もせずに残して警告し、次回起動時に再試行する。**`_json_loads_or` で `{}` 扱いに戻さないこと** — 戻すと、取り込めなかったファイルが「取り込み済み」として改名され、誰も気づけない。
 - **profile.json は手書き追加用の受け皿**: 毎起動時、`profile.json` に中身があれば `profile` テーブルへマージ（同名キーはファイル側が勝つ）し、取り込めた場合だけ `write_json_file` で原子的に `{}` に戻す。ユーザー別記憶に対応するため形式は `{ユーザーID: {キー: 値, ...}, ...}`（値が dict でない旧・全体共有形式は owner へ取り込む後方互換あり）。JSON として読めない場合や、旧形式の owner が未設定・全ユーザーの内容が空などで1件も取り込めない場合は、ファイルを残して警告する。DB保存やリセットの失敗時も原本を保持し、次回起動時に再試行する（手書きミスやI/O障害でデータを失わない）。
-- **並行処理**: 各サービスが `run_in_thread`（＝別スレッド）から呼ぶため、接続は `check_same_thread=False` + 内部の `threading.Lock` で直列化。書き込みはトランザクションで原子的（旧 JSON 方式と違い、書き込み途中のクラッシュでデータが壊れない）。`close()` も同じロックを取り、実行中の読み書きが終わってから閉じる（何度呼んでもよい）。終了時は `PersonaClient.close()` が Discord → Gemini → DB の順に閉じる（DB を最後にするのは、終了処理中の保存が使うため）。
+- **並行処理**: 各サービスが `run_in_thread`（＝別スレッド）から呼ぶため、接続は `check_same_thread=False` + 内部の `threading.Lock` で直列化。書き込みはトランザクションで原子的（旧 JSON 方式と違い、書き込み途中のクラッシュでデータが壊れない）。`close()` も同じロックを取り、実行中の読み書きが終わってから閉じる（何度呼んでもよい）。終了時は `PersonaClient.close()` が文書ワーカー停止・遠隔ファイル回収を待ってから Discord → Gemini → DB の順に閉じる（DB を最後にするのは、終了処理中の保存が使うため）。
 
 ### JSONファイルの保存 (`storage.py`)
 
@@ -355,7 +370,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
   - **月次は `recurrence_anchor`（初回時刻）を固定**したまま `calendar.monthrange` で末日へ丸める（`timedelta(days=30)` は使わない）。アンカーを毎回更新すると 1/31→2/28→**3/28** とずれる。正しくは 1/31→2/28→3/31。
   - 日時の加算は `REMINDER_TIMEZONE` のローカル時刻で行ってから UTC へ戻す（DST のあるタイムゾーンへ変えても壊れないため）。許容値・表示名・追い付き上限は `constants.py` の `REMINDER_RECURRENCE_*` に集約する。
 - **時刻の扱い**: 保存は UTC の ISO 8601 で**秒精度に統一**する（期限判定を文字列比較で行うため、桁数が混ざると比較が壊れる）。表示だけ `REMINDER_TIMEZONE` に変換する（`_format_local`）。日時の書式に `strftime` の `%-m` / `%#m` は使わないこと（プラットフォーム依存）。
-- **パネルの文字数**: 一覧はヘッダー・注記・改行を含め `REMINDER_PANEL_MAX_LENGTH` 以内に収め、入りきらない行は「…ほか N 件」と表示する。省略は本文だけに適用し、通常の上限20件すべてを取り消し用セレクトに残す。セレクトの `label` / `description` は `reminder_view._to_option_text` で改行・連続空白を半角空白1つにまとめてから切り詰める（本文は会話から登録されるため改行を含みうる。改行入りの選択肢は Discord に拒否され、パネルごと開けなくなる）。
+- **パネルの文字数**: 一覧はヘッダー・注記・改行を含め `REMINDER_PANEL_MAX_LENGTH` 以内に収め、入りきらない行は「…ほか N 件」と表示する。省略は本文だけに適用し、通常の上限20件すべてを取り消し用セレクトに残す。セレクトの `label` / `description` は `view_parts.select_option_text` で改行・連続空白を半角空白1つにまとめてから切り詰める（本文は会話から登録されるため改行を含みうる。改行入りの選択肢は Discord に拒否され、パネルごと開けなくなる）。
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
@@ -386,6 +401,8 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 利用トークンとランキングの画像送信は `view_parts.send_graph_ephemeral` に集約する。defer後は `followup=True` を渡し、本人限定で送る。画像バッファの所有権も渡し、成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じる。Bot応答・自発会話・自律配信・リマインダーの出力マスクは `NgWordFilter.mask_with_log` を使い、文脈別のログと後続のモデレーションを維持する。
 
 ### グラフ描画と同期I/Oの待機
+
+ペルソナの非同期読込は `config.paths.load_persona_template` に集約し、パス解決も読込もワーカーへ渡す。文面組立専用の `prompting.py` は引き続きサービスをimportしない。PNG変換は `graph_rendering.save_figure_to_buffer` がFigureを必ず閉じ、成功時のバッファだけ呼出元へ渡す。
 
 `load_image_attachments` が正常に返した画像は呼出元が所有し、通常チャットと自律コメントの両方で直後からの`try/finally`と`close_image_attachments`により回収する。画像取得の途中で中断した場合は取得側が回収する。画像の`close`属性が呼出可能でない場合は飛ばし、解放の失敗が他の画像の回収やキャンセル伝播を妨げないようにする。
 

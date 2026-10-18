@@ -225,6 +225,18 @@ class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(source["uri"] for source in result[2]))
                 self.assertLessEqual(len(result[2]), gemini_service.MAX_GROUNDING_SOURCES)
 
+    async def test_grounding_skips_invalid_and_duplicate_chunks_before_applying_limit(self) -> None:
+        chunks = [SimpleNamespace(web=None), SimpleNamespace(web=SimpleNamespace(uri="  "))]
+        for index in range(7):
+            web = SimpleNamespace(uri=f" https://example.com/{index} ", title=f" 資料{index} ")
+            chunks.extend([SimpleNamespace(web=web), SimpleNamespace(web=web)])
+        self.response.candidates[0].grounding_metadata = SimpleNamespace(grounding_chunks=chunks)
+        result = await self.service.generate("質問", "selected-model", timeout=30, grounding=True)
+        self.assertEqual(result[2], [
+            {"title": f"資料{index}", "uri": f"https://example.com/{index}"}
+            for index in range(gemini_service.MAX_GROUNDING_SOURCES)
+        ])
+
 
 class GeminiDocumentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -277,7 +289,8 @@ class GeminiDocumentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["config"].http_options.timeout, int(gemini_service.DOCUMENT_SUMMARY_TIMEOUT_SECONDS * 1000))
 
     async def test_invalid_or_empty_summary_raises(self) -> None:
-        for text in ("JSONではない", "{}", '{"summary":" "}'):
+        for text in ("JSONではない", "{}", '{"summary":" "}', '{"summary":null}',
+                     '{"summary":42}', '{"summary":true}', '{"summary":[]}', '{"summary":{}}'):
             with self.subTest(text=text):
                 self.generate.return_value = SimpleNamespace(text=text, candidates=[])
                 with self.assertRaises(ValueError):

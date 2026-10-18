@@ -103,24 +103,7 @@ async def prepare_stage(guild: discord.Guild, channel: discord.StageChannel) -> 
         )
 
     try:
-        # connect() 直後は自分のボイス状態がまだキャッシュに乗っておらず、
-        # Member.edit(suppress=False) が channel_id を載せられずに失敗しうる。
-        # 見えるまで少しだけ待ってから呼ぶ。
-        member = guild.me
-        for _ in range(AUTONOMOUS_VOICE_STATE_RETRIES):
-            if member is not None and member.voice is not None and member.voice.channel is not None:
-                break
-            await asyncio.sleep(AUTONOMOUS_VOICE_STATE_WAIT_SECONDS)
-            member = guild.me
-        # 待っても見えなかった場合はここで諦める。そのまま edit すると
-        # channel_id を載せられないリクエストになり、API 側のエラーメッセージが
-        # 「権限不足」などに化けて原因が追えなくなる。
-        if member is None or member.voice is None or member.voice.channel is None:
-            raise RuntimeError(
-                "ボイス状態を取得できず、ステージの発言者になれませんでした"
-                f"（{AUTONOMOUS_VOICE_STATE_RETRIES} 回待機）。"
-            )
-        await member.edit(suppress=False)
+        await enable_stage_speaker(guild, channel)
     except (Exception, asyncio.CancelledError):
         # 枠を開いた後で発言者になれなかった場合、そのまま抜けると「会話相手
         # 募集中…」の看板を出したステージが誰も居ないまま開きっぱなしになる。
@@ -132,6 +115,24 @@ async def prepare_stage(guild: discord.Guild, channel: discord.StageChannel) -> 
         raise
 
     return created_instance.id if created_instance is not None else None
+
+
+async def enable_stage_speaker(guild: discord.Guild, channel: discord.StageChannel) -> None:
+    """接続先のボイス状態を待ち、そのステージでだけ観客から発言者へ昇格する。"""
+    member = guild.me
+    for _ in range(AUTONOMOUS_VOICE_STATE_RETRIES):
+        if (member is not None and member.voice is not None
+                and getattr(member.voice.channel, "id", None) == channel.id):
+            break
+        await asyncio.sleep(AUTONOMOUS_VOICE_STATE_WAIT_SECONDS)
+        member = guild.me
+    if (member is None or member.voice is None
+            or getattr(member.voice.channel, "id", None) != channel.id):
+        raise RuntimeError(
+            "接続先のボイス状態を取得できず、ステージの発言者になれませんでした"
+            f"（{AUTONOMOUS_VOICE_STATE_RETRIES} 回待機）。"
+        )
+    await member.edit(suppress=False)
 
 
 async def _rollback_created_stage(channel: discord.StageChannel, created_instance: discord.StageInstance) -> None:

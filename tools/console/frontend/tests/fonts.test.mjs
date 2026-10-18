@@ -1,7 +1,6 @@
 // 依存フォルダを共有する開発環境でも、アイコンと本文のフォントを配信できることを確認する。
 import assert from "node:assert/strict";
 import { copyFile, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -9,7 +8,8 @@ import { createServer } from "vite";
 
 test("共有した node_modules からアイコン・本文フォントを配信する", async (t) => {
   const frontend = dirname(dirname(fileURLToPath(import.meta.url)));
-  const temporary = await mkdtemp(join(tmpdir(), "console-fonts-"));
+  // Windows CIではTEMPと作業フォルダのドライブが異なるため、同じ側に検証用ルートを作る。
+  const temporary = await mkdtemp(join(dirname(frontend), ".console-fonts-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const fixture = join(temporary, "frontend");
   await mkdir(fixture);

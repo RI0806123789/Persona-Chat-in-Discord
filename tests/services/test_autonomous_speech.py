@@ -57,11 +57,13 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(log_snapshot=Mock()),
         )
         self.loader = Mock(return_value="架空のペルソナ")
+        loader_patch = patch("persona_bot.config.paths.load_prompt_template", self.loader)
+        loader_patch.start()
+        self.addCleanup(loader_patch.stop)
         self.history = AsyncMock(return_value="架空の履歴")
         self.sent = AsyncMock()
         self.spoken = AsyncMock()
         for name, replacement in (
-            ("load_prompt_template", self.loader),
             ("fetch_channel_history_text", self.history),
             ("load_image_attachments", AsyncMock(return_value=[])),
             ("send_long_message", self.sent),

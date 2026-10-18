@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from persona_bot.core.background import run_in_thread
-from persona_bot.utils.graph_rendering import graph_font_context, serialized_plot
+from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to_buffer, serialized_plot
 from persona_bot.config.constants import MAX_USAGE_HISTORY
 
 
@@ -76,14 +76,4 @@ class UsageTracker:
             axis.legend()
             axis.grid(True)
 
-            buffer = io.BytesIO()
-            try:
-                figure.savefig(buffer, format="png")
-                buffer.seek(0)
-                return buffer
-            except BaseException:
-                buffer.close()
-                raise
-            finally:
-                plt.close(figure)
-
+            return save_figure_to_buffer(figure)

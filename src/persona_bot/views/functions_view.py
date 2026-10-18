@@ -125,7 +125,14 @@ class NgReloadButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await run_in_thread(hub.ng_filter.reload)
+        try:
+            await run_in_thread(hub.ng_filter.reload)
+        except (OSError, UnicodeError):
+            await interaction.followup.send(
+                "⚠️ NGワードリストの再読み込みに失敗しました。従来の設定を保持しています。"
+                "ファイルの読み取り権限と文字コードを確認してください。", ephemeral=True,
+            )
+            return
         # ハブは残したまま、結果を新しいエフェメラルメッセージとして送る
         await interaction.followup.send(
             f"✅ NGワードリストを再読み込みしました。（{hub.ng_filter.word_count}件）", ephemeral=True

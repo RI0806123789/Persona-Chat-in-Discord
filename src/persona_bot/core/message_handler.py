@@ -20,7 +20,7 @@ from persona_bot.utils.discord_helpers import (
     fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
     close_image_attachments, is_supported_message_channel, load_image_attachments, send_long_reply,
 )
-from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
+from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
 from persona_bot.audio.voice import play_tts_response
 
@@ -87,6 +87,13 @@ class MessageHandler:
         # 退出まで左右されてしまう。
         if self.blacklist.is_blocked(message.author.id):
             return
+        # 返信も履歴取得もできないチャンネル種別は、NG判定やモデレーション（Gemini 呼び出し）に
+        # 進む前にここで打ち切る。後段に置くと、結局返信できない発言のために API を1回
+        # 無駄打ちし、違反警告の message.reply() も失敗してしまう。
+        channel = message.channel
+        if not is_supported_message_channel(channel):
+            return
+
         is_dm = isinstance(message.channel, discord.DMChannel)
         # DM はギルドに属さないため guild_id=None として「全DM共有」の設定スロットへ収束させる。
         guild_id = message.guild.id if message.guild is not None else None
@@ -114,13 +121,6 @@ class MessageHandler:
 
         question = clean_message_content(message, self.client.user)
         if not question and not message.attachments:
-            return
-
-        # 返信も履歴取得もできないチャンネル種別は、NG判定やモデレーション（Gemini 呼び出し）に
-        # 進む前にここで打ち切る。後段に置くと、結局返信できない発言のために API を1回
-        # 無駄打ちし、違反警告の message.reply() も失敗してしまう。
-        channel = message.channel
-        if not is_supported_message_channel(channel):
             return
 
         if question and self.ng_filter.contains_ng_word(question):
@@ -282,7 +282,7 @@ class MessageHandler:
                 memory_context, document_context = await self.memory.build_contexts(memory_category, user_id)
 
                 try:
-                    prompt = await run_in_thread(lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file)))
+                    prompt = await load_persona_template(response_settings.prompt_file)
                 except FileNotFoundError:
                     print(f"エラー: {response_settings.prompt_file} が見つかりません。")
                     await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")

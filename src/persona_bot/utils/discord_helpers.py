@@ -236,7 +236,7 @@ def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[st
 
         # split_pos の文字は区切り文字(改行またはスペース)なので次チャンクからは除外する
         chunks.append(text[:split_pos])
-        text = text[split_pos + 1:].lstrip("\n ")
+        text = text[split_pos + 1:]
 
     return chunks
 
@@ -330,19 +330,12 @@ def pick_announcement_channel(guild: discord.Guild) -> Any:
         # キャッシュ未取得などで自分自身の Member が引けないときは権限を判定できない。
         return None
 
-    def can_send(channel: Any) -> bool:
-        # 閲覧と送信の両方を確かめる（自発会話・自律行動の権限確認と同じ条件）。
-        # discord.py は閲覧できないチャンネルの send_messages も False にするが、
-        # その内部の挙動に頼らずに判定する。
-        permissions = channel.permissions_for(bot_member)
-        return bool(permissions.view_channel and permissions.send_messages)
-
     system_channel = guild.system_channel
-    if system_channel is not None and can_send(system_channel):
+    if system_channel is not None and can_bot_send_messages(system_channel, bot_member):
         return system_channel
 
     for channel in guild.text_channels:
-        if can_send(channel):
+        if can_bot_send_messages(channel, bot_member):
             return channel
     return None
 
@@ -444,3 +437,17 @@ def format_grounding_sources(sources: list[dict[str, str]]) -> str:
     links = "\n".join(lines)
     return f"\n\n🔍 **参考リンク:**\n{links}"
 
+
+
+def can_bot_send_messages(channel: Any, member: Any) -> bool:
+    """閲覧と、そのチャンネル種別に対応した送信権限を確認する。"""
+    if member is None:
+        return False
+    permissions = channel.permissions_for(member)
+    send = permissions.send_messages_in_threads if isinstance(channel, discord.Thread) else permissions.send_messages
+    return bool(permissions.view_channel and send)
+
+
+def channel_display_name(channel: Any) -> str:
+    """名前のないチャンネルも識別可能な表示名にする。"""
+    return getattr(channel, "name", None) or f"channel {channel.id}"

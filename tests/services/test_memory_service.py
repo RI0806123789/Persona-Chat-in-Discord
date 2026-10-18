@@ -39,6 +39,72 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.db.close)
         self.service = MemoryService(None, None, self.db)
 
+    async def test_existing_users_survive_missing_or_incorrect_schema_and_repeated_load(self) -> None:
+        for schema in (None, "誤った識別子"):
+            with self.subTest(schema=schema):
+                wrapper = {"users": {"test-user": {"計画": "架空の計画"}}, "メモ": "保持する値"}
+                if schema is not None:
+                    wrapper["_schema"] = schema
+                write_json_file(self.projects_path, wrapper)
+                result = self.service._load_projects_wrapper()
+                self.assertEqual(result["users"], wrapper["users"])
+                self.assertEqual(result["メモ"], "保持する値")
+                self.assertEqual(self.service._load_projects_wrapper(), result)
+                self.assertEqual(load_json_file(self.projects_path, {}), result)
+
+    async def test_projects_context_excludes_document_summaries_and_invalid_text(self) -> None:
+        wrapper = default_projects_memory()
+        wrapper["users"] = {"test-user": {
+            "計画": "架空の計画",
+            "document_summaries": [
+                {"document_name": "old.txt", "summary": "古い要約"},
+                {"document_name": "invalid.txt", "summary": None},
+                {"document_name": None, "summary": "有効な要約"},
+                {"document_name": "invalid.txt", "summary": {"無効": "要約"}},
+            ],
+        }}
+        write_json_file(self.projects_path, wrapper)
+        context, documents = await self.service.build_contexts("projects", "test-user", limit=3)
+        self.assertEqual(json.loads(context), {"計画": "架空の計画"})
+        self.assertEqual(documents, "- unknown: 有効な要約")
+
+    async def test_force_flush_waits_for_ordinary_flush_and_processes_new_entries(self) -> None:
+        await self.service.append_pending_log("test-user", "最初の架空の質問", "架空の回答")
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def compact(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+            return {}, {}
+
+        self.service._compact_memory = AsyncMock(side_effect=compact)
+        with patch.object(self.service, "_is_flush_required", return_value=True):
+            ordinary = spawn(self.service.flush_if_needed(), label="通常フラッシュの確認")
+            forced = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                await self.service.append_pending_log("test-user", "追加の架空の質問", "架空の回答")
+                forced = spawn(self.service.flush_if_needed(force=True), label="強制フラッシュの確認")
+                await asyncio.sleep(0)
+                self.assertFalse(forced.done())
+                # 通常の見回りだけは重複させず、すぐに終了する。
+                await asyncio.wait_for(self.service.flush_if_needed(), 1)
+                release.set()
+                await asyncio.wait_for(asyncio.gather(ordinary, forced), 3)
+            finally:
+                release.set()
+                tasks = [task for task in (ordinary, forced) if task is not None]
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertEqual(calls, 2)
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
+
     async def check_additions(
         self, initial_count: int, addition_count: int, *, llm_summaries: list | None = None,
     ) -> None:

@@ -25,7 +25,7 @@ from persona_bot.config.constants import (
     STATS_TOPIC_COUNT,
 )
 from persona_bot.core.background import run_in_thread
-from persona_bot.utils.graph_rendering import graph_font_context, serialized_plot
+from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to_buffer, serialized_plot
 from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_stats_analysis_prompt
 from persona_bot.utils.storage import extract_json_object
@@ -258,6 +258,7 @@ class StatsService:
             if entry is None:
                 return True
             now_iso = datetime.now(timezone.utc).isoformat()
+            entry["user_name"] = ""
             entry["total_count"] = 0
             entry["hourly"] = [0] * STATS_HOURLY_BUCKETS
             entry["recent_samples"] = []
@@ -340,7 +341,8 @@ class StatsService:
             samples = list(entry.get("recent_samples") or [])
             if not samples:
                 return cached
-            if (not force and cached and self._is_fresh(cached.get("computed_at"))
+            if (not force and cached and self._analysis_usable(cached, len(samples))
+                    and self._is_fresh(cached.get("computed_at"))
                     and not self._lacks_personality(cached, len(samples))):
                 return cached
             version = self._analysis_versions.get(user_id, 0)
@@ -378,6 +380,9 @@ class StatsService:
                 "sample_count": len(samples),
                 "computed_at": datetime.now(timezone.utc).isoformat(),
             }
+            if not self._analysis_usable(analysis, len(samples)):
+                print("会話統計: 話題または性格値が不足したため解析結果を保存しません。")
+                analysis = None
         async with self._save_lock:
             entry = self.cache.get(user_id)
             if entry is None:
@@ -393,20 +398,15 @@ class StatsService:
                 return previous
         return analysis
 
-    # ---- グラフ生成 -------------------------------------------------------
-
     @staticmethod
-    def _save_figure(figure: "plt.Figure") -> io.BytesIO:
-        buffer = io.BytesIO()
-        try:
-            figure.savefig(buffer, format="png", bbox_inches="tight")
-            buffer.seek(0)
-            return buffer
-        except BaseException:
-            buffer.close()
-            raise
-        finally:
-            plt.close(figure)
+    def _analysis_usable(analysis: dict, sample_count: int) -> bool:
+        """失敗表示になる空の解析を、TTLの有効なキャッシュとして扱わない。"""
+        return bool(normalize_topics(analysis.get("topics"))) and (
+            sample_count < STATS_PERSONALITY_MIN_SAMPLES
+            or any(normalize_big_five(analysis.get("big_five")).values())
+        )
+
+    # ---- グラフ生成 -------------------------------------------------------
 
     @serialized_plot
     def build_hourly_graph(self, entry: dict) -> io.BytesIO:
@@ -423,7 +423,7 @@ class StatsService:
             axis.set_ylabel("発言回数")
             axis.set_title("よく話す時間帯")
             axis.grid(True, axis="y", alpha=0.3)
-            return self._save_figure(figure)
+            return save_figure_to_buffer(figure, bbox_inches="tight")
 
     @serialized_plot
     def build_topic_graph(self, topics: list[dict]) -> io.BytesIO | None:
@@ -443,7 +443,7 @@ class StatsService:
             axis.set_xlabel("重要度")
             axis.set_title("よく話す話題")
             axis.grid(True, axis="x", alpha=0.3)
-            return self._save_figure(figure)
+            return save_figure_to_buffer(figure, bbox_inches="tight")
 
     @serialized_plot
     def build_bigfive_radar(self, big_five: dict) -> io.BytesIO | None:
@@ -466,7 +466,7 @@ class StatsService:
             axis.set_xticklabels(labels)
             axis.set_ylim(0, 100)
             axis.set_title("性格推定（ビッグファイブ）", pad=20)
-            return self._save_figure(figure)
+            return save_figure_to_buffer(figure, bbox_inches="tight")
 
     async def build_ranking_graph(self, top_n: int = STATS_RANKING_TOP_N) -> io.BytesIO | None:
         """発言回数のユーザー別ランキング横棒グラフ（管理者用の全体比較）。
@@ -505,7 +505,7 @@ class StatsService:
             axis.set_xlabel("発言回数")
             axis.set_title("発言回数ランキング")
             axis.grid(True, axis="x", alpha=0.3)
-            return self._save_figure(figure)
+            return save_figure_to_buffer(figure, bbox_inches="tight")
 
     # ---- ダッシュボード組み立て ------------------------------------------
 

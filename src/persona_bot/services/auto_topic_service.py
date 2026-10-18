@@ -18,11 +18,16 @@ from persona_bot.config.constants import (
 from persona_bot.services.content_moderator import ContentModerator
 from persona_bot.core.background import run_in_thread
 from persona_bot.core.database import Database
-from persona_bot.utils.discord_helpers import fetch_channel_history_text, send_long_message
+from persona_bot.utils.discord_helpers import (
+    can_bot_send_messages,
+    channel_display_name,
+    fetch_channel_history_text,
+    send_long_message,
+)
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.memory_service import MemoryService
 from persona_bot.services.ng_word_service import NgWordFilter
-from persona_bot.config.paths import load_prompt_template, resolve_prompt_path
+from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_anniversary_prompt, build_auto_topic_prompt
 from persona_bot.utils.timeutil import resolve_timezone
 from persona_bot.utils.usage_graph import UsageTracker
@@ -160,9 +165,7 @@ class AutoTopicService:
 
         response_settings = guild_settings.snapshot_response()
         try:
-            persona_prompt = await run_in_thread(
-                lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
-            )
+            persona_prompt = await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
             print(f"自発的な会話: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return False
@@ -201,7 +204,7 @@ class AutoTopicService:
             return done
         response_text = screened
 
-        channel_label = getattr(channel, "name", None) or f"channel {channel.id}"
+        channel_label = channel_display_name(channel)
         self._usage.log_snapshot(
             "自発的な会話", f"{channel_label} への話題提供", "自動実行", full_prompt, response_text, usage_info
         )
@@ -220,10 +223,7 @@ class AutoTopicService:
         bot_member = guild.me if guild is not None else None
         if bot_member is None:
             return False
-        permissions = channel.permissions_for(bot_member)
-        can_send = (permissions.send_messages_in_threads if isinstance(channel, discord.Thread)
-                    else permissions.send_messages)
-        return permissions.view_channel and can_send
+        return can_bot_send_messages(channel, bot_member)
 
     async def _screen_auto_post(self, response_text: str, label: str) -> tuple[str | None, bool]:
         """ボットが自分から投稿するテキストへの共通の後処理。
@@ -374,6 +374,8 @@ class AutoTopicService:
         posted_key = f"{user_id}:{label}"
 
         for guild_id, guild_settings in list(self._state.guild_settings.items()):
+            if not guild_settings.auto_topic_enabled:
+                continue
             if guild_settings.anniversary_posted_dates.get(posted_key) == today_str:
                 continue  # このサーバーでは今日すでに投稿済み
             if not guild_settings.auto_topic_channels:
@@ -445,9 +447,7 @@ class AutoTopicService:
 
         response_settings = guild_settings.snapshot_response()
         try:
-            persona_prompt = await run_in_thread(
-                lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
-            )
+            persona_prompt = await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
             print(f"記念日: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
             return False
@@ -477,7 +477,7 @@ class AutoTopicService:
             return done
         response_text = screened
 
-        channel_label = getattr(channel, "name", None) or f"channel {channel.id}"
+        channel_label = channel_display_name(channel)
         self._usage.log_snapshot(
             "記念日のお祝い",
             f"{member.display_name} さんの{label}",
