@@ -31,6 +31,10 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 外部サービスはモック、DB・JSONは一時ディレクトリを使う。実際の設定・会話・記憶は読み込まない。メッセージ処理は `MessageHandler` を直接呼び、`bot.py` の起動処理やAST抽出は使わない。時刻集計の日本時間は標準ライブラリの固定オフセットで再現し、タイムゾーンDB欠落時のUTC代用も別途検証する。
 
+`utils/test_timeutil.py`は、別プロセスでOSのタイムゾーンDBを無効にし、依存の`tzdata`で`Asia/Tokyo`を解決できることを確認する。UTCから日本時間への9時間の変換と日付境界を検証し、WindowsだけでなくLinuxのCIでもOSのDBに依存した見逃しを防ぐ。
+
+Windows・Python 3.13・tzdata 2026.5で全555件が成功。145ファイルの構文・Python 3.10文法、XML・メッセージ分割・`pip check`も成功した。Linux／Python 3.10での実行と実サービス接続は未確認。
+
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
 ## Issue #112・#113・#116〜#121の確認
@@ -106,6 +110,7 @@ Windows・Python 3.13でボット552件、バックエンド133件、Node.js 24�
 | utils | [test_lifecycle_helpers.py](utils/test_lifecycle_helpers.py) |
 | utils | [test_shared_helpers.py](utils/test_shared_helpers.py) |
 | utils | [test_storage.py](utils/test_storage.py) |
+| utils | [test_timeutil.py](utils/test_timeutil.py) |
 | utils | [test_welcome_message.py](utils/test_welcome_message.py) |
 | deploy | [test_migrate_config_to_env.py](deploy/test_migrate_config_to_env.py) |
 | integration | [test_event_loop_io.py](integration/test_event_loop_io.py) |
