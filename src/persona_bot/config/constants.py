@@ -5,7 +5,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BASE_DIR.parent
 
 DEFAULT_PROMPT_FILE = "../prompts/prompt_default.txt"
-DEFAULT_MODEL_NAME = "gemini-3.1-flash-lite"
+# 選択肢（choices.MODEL_CHOICES）から外したモデルを保存していたサーバーは、起動時にこの既定値へ戻る。
+DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_RESPOND_MODE = "mention"
 
 # 設定はサーバー（ギルド）ごとに分離されるが、DM にはギルドIDが存在しない。
@@ -119,12 +120,14 @@ DOCUMENT_WORKER_IDLE_SECONDS = 5
 TEXT_VALIDATION_PREVIEW_BYTES = 4096
 QUEUE_MAX_FINISHED_TASKS = 50
 MAX_GROUNDING_SOURCES = 5
+# 検索用のサブモデル。Gemini 3 以降の検索は無料枠に含まれないため、無料枠では
+# 選択モデルの検索が 429 で断られ、このモデル（Gemini 2.5 の検索枠）で検索する。
 GROUNDING_MODEL_NAME = "gemini-2.5-flash"
 # timeout未指定時の検索付き生成全体の期限（秒）。SDKの生成全段で共有する。
 GROUNDING_REQUEST_TIMEOUT_SECONDS = 60.0
-# 検索ツール非対応を示す4xxの場合だけ、GROUNDING_MODEL_NAMEで再試行するか。
+# 検索ツール非対応を示す4xx、または検索付きの試行の利用枠超過（429）の場合に、GROUNDING_MODEL_NAMEで再試行するか。
 # True: 選択モデル検索 → サブモデル検索 → 選択モデル検索なしの順で試す。
-# False: サブモデルを省いて検索なしへ進む。期限切れ・5xx・認証・利用枠エラーは再試行しない。
+# False: サブモデルを省いて検索なしへ進む。期限切れ・5xx・認証と、検索なしの生成の利用枠エラーは再試行しない。
 GROUNDING_SUBMODEL_RETRY_ENABLED = True
 
 # UsageTracker が保持するトークン履歴の上限（リングバッファ）

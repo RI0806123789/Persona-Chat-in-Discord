@@ -72,6 +72,15 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
         self.assertEqual(settings.current_prompt_file, constants.DEFAULT_PROMPT_FILE)
         self.assertEqual(settings.current_model_name, choices.MODEL_CHOICES[0].value)
 
+    def test_former_default_model_moves_to_current_default(self) -> None:
+        # 既定を Gemini 3.5 Flash Lite へ変える前の既定を保存したサーバーも、次の起動で新しい既定へ移る。
+        self.assertIn(constants.DEFAULT_MODEL_NAME, [choice.value for choice in choices.MODEL_CHOICES])
+        settings = GuildSettings(current_model_name="previous")
+        with patch("builtins.print"):
+            settings.apply_persisted({"model_name": "gemini-3.1-flash-lite"})
+        self.assertEqual(settings.current_model_name, "gemini-3.5-flash-lite")
+        self.assertEqual(settings.current_model_name, constants.DEFAULT_MODEL_NAME)
+
 
 class GuildSettingsPersistOrderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

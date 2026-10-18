@@ -42,6 +42,15 @@ def _grounding_is_unsupported(status_code: Any, message: str) -> bool:
     ))
 
 
+def _grounding_quota_exhausted(status_code: Any) -> bool:
+    """検索付きの試行が利用枠（429）で断られたか。
+
+    検索の利用枠はモデルの世代ごとに別に数えられ、Gemini 3 以降の検索は無料枠に含まれない。
+    そのため選択モデルで断られても、検索用のサブモデルや検索なしの生成は通りうる。
+    """
+    return status_code == 429
+
+
 class GeminiService:
     """共有クライアントを使い、呼び出し元が選んだモデルで非同期生成する。"""
 
@@ -102,10 +111,14 @@ class GeminiService:
             except asyncio.TimeoutError:
                 raise
             except Exception as error:
-                if use_grounding and _grounding_is_unsupported(getattr(error, "code", None), str(error)):
+                status_code = getattr(error, "code", None)
+                if use_grounding and _grounding_is_unsupported(status_code, str(error)):
                     print("検索ツールが非対応のため、残り時間内で代替の生成を試します。")
                     continue
-                # 通信・認証・利用枠・サーバー障害では追加のAPI呼び出しを行わない。
+                if use_grounding and _grounding_quota_exhausted(status_code):
+                    print(f"検索の利用枠を超えたため（モデル: {effective_model}）、残り時間内で代替の生成を試します。")
+                    continue
+                # 通信・認証・サーバー障害と、検索なしの生成の利用枠超過では追加のAPI呼び出しを行わない。
                 print(f"Gemini生成エラー: {error}")
                 return None, None, []
         return None, None, []

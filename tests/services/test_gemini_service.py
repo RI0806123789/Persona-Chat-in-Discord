@@ -127,15 +127,48 @@ class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
                                  (None, None, []))
                 self.sdk_request.assert_awaited_once()
 
-    async def test_server_auth_quota_and_unrelated_bad_requests_do_not_retry(self) -> None:
+    async def test_server_auth_and_unrelated_bad_requests_do_not_retry(self) -> None:
         for code, message in ((500, "障害"), (503, "障害"), (401, "認証失敗"), (403, "権限なし"),
-                              (429, "利用枠不足"), (400, "Invalid input text"), (404, "model not found")):
+                              (400, "Invalid input text"), (404, "model not found")):
             with self.subTest(code=code):
                 self.sdk_request.reset_mock()
                 self.sdk_request.side_effect = api_error(code, message)
                 self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30, grounding=True),
                                  (None, None, []))
                 self.sdk_request.assert_awaited_once()
+
+    async def test_search_quota_uses_grounding_submodel(self) -> None:
+        # 無料枠の Gemini 3 以降は検索が 429 になるため、検索用のサブモデルの枠で検索する。
+        self.sdk_request.side_effect = [api_error(429, "架空の利用枠超過"), self.response]
+        result = await self.service.generate("質問", "selected-model", timeout=30, grounding=True)
+        self.assertEqual(result[0], "架空の応答")
+        self.assertEqual(self.models(), ["selected-model", gemini_service.GROUNDING_MODEL_NAME])
+        self.assertEqual(self.search_flags(), [True, True])
+
+    async def test_search_quota_on_both_models_answers_without_search(self) -> None:
+        self.sdk_request.side_effect = [api_error(429, "架空の利用枠超過"), api_error(429, "架空の利用枠超過"),
+                                        self.response]
+        result = await self.service.generate("質問", "selected-model", timeout=30, grounding=True)
+        self.assertEqual(result, ("架空の応答", self.response.usage_metadata, []))
+        self.assertEqual(self.models(), ["selected-model", gemini_service.GROUNDING_MODEL_NAME, "selected-model"])
+        self.assertEqual(self.search_flags(), [True, True, False])
+
+    async def test_quota_without_search_is_not_retried(self) -> None:
+        self.sdk_request.side_effect = api_error(429, "架空の利用枠超過")
+        self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30, grounding=True),
+                         (None, None, []))
+        self.assertEqual(self.search_flags(), [True, True, False])
+        self.sdk_request.reset_mock()
+        self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30), (None, None, []))
+        self.sdk_request.assert_awaited_once()
+
+    async def test_search_quota_without_submodel_answers_without_search(self) -> None:
+        self.sdk_request.side_effect = [api_error(429, "架空の利用枠超過"), self.response]
+        with patch.object(gemini_service, "GROUNDING_SUBMODEL_RETRY_ENABLED", False):
+            result = await self.service.generate("質問", "selected-model", timeout=30, grounding=True)
+        self.assertEqual(result[0], "架空の応答")
+        self.assertEqual(self.models(), ["selected-model", "selected-model"])
+        self.assertEqual(self.search_flags(), [True, False])
 
     async def test_submodel_failure_does_not_start_plain_fallback(self) -> None:
         self.sdk_request.side_effect = [unsupported_search(), api_error(503, "架空の障害")]
@@ -381,6 +414,28 @@ class GeminiSdkTransportTests(unittest.IsolatedAsyncioTestCase):
                     "selected-model:generateContent",
                 ])
                 self.assertEqual([bool(body.get("tools")) for _, body in requests], [True, True, False])
+            finally:
+                await client.aio.aclose()
+                client.close()
+
+    async def test_real_sdk_search_quota_error_uses_grounding_submodel(self) -> None:
+        requests = []
+
+        async def handle(request):
+            requests.append(request.url.path.split("/")[-1])
+            if len(requests) == 1:
+                # 無料枠の Gemini 3 以降で検索を使ったときと同じ形の応答（文言は架空）。
+                return httpx.Response(429, json={"error": {"code": 429, "message": "架空の利用枠超過",
+                                                           "status": "RESOURCE_EXHAUSTED"}})
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "架空の応答"}]}}]})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http_client:
+            client = self.sdk_client(http_client)
+            try:
+                result = await GeminiService(client).generate("架空の質問", "selected-model", timeout=10, grounding=True)
+                self.assertEqual(result[0], "架空の応答")
+                self.assertEqual(requests, ["selected-model:generateContent",
+                                            f"{gemini_service.GROUNDING_MODEL_NAME}:generateContent"])
             finally:
                 await client.aio.aclose()
                 client.close()
