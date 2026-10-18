@@ -258,7 +258,7 @@ def _load_legacy_json_object(path: Path) -> dict[str, Any]:
     .imported.bak へ改名され、データを取り込めなかったことに誰も気づけない。
     例外にすれば _import_legacy_files が元のファイルを残して警告し、次回起動時に再試行する。
     """
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError(f"最上位が object ではありません（{type(data).__name__}）")
     return data
@@ -409,10 +409,10 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", AFFINITY_NEUTRAL),
-                        entry.get("valence", AFFINITY_NEUTRAL),
-                        entry.get("arousal", AFFINITY_NEUTRAL),
-                        entry.get("last_interaction", 0.0),
+                        entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
+                        entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
+                        entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
+                        entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
                     ),
                 )
 
@@ -470,7 +470,7 @@ class Database:
 
     def _import_pending_log_txt(self, path: Path) -> None:
         """旧 pending_log.txt（[時刻] User: … / [時刻] Bot: … 形式）を行単位で復元する。"""
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         if not text.strip():
             return
         entries: list[dict[str, str]] = []
@@ -523,7 +523,7 @@ class Database:
         if not path.exists():
             return
         try:
-            raw_text = path.read_text(encoding="utf-8").strip()
+            raw_text = path.read_text(encoding="utf-8-sig").strip()
             if not raw_text or raw_text == "{}":
                 return
             data = json.loads(raw_text)
@@ -594,12 +594,31 @@ class Database:
         他ユーザーの行には一切触れない（WHERE user_id で対象を限定する）。
         """
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM profile WHERE user_id = ?", (str(user_id),))
-            for key, value in profile.items():
-                self._conn.execute(
-                    "INSERT INTO profile (user_id, key, value) VALUES (?, ?, ?)",
-                    (str(user_id), str(key), json.dumps(value, ensure_ascii=False)),
-                )
+            self._profile_replace_all(user_id, profile)
+
+    def _profile_replace_all(self, user_id: str, profile: dict[str, Any]) -> None:
+        """呼出元がDBロックとトランザクションを保持した状態で置き換える。"""
+        self._conn.execute("DELETE FROM profile WHERE user_id = ?", (str(user_id),))
+        for key, value in profile.items():
+            self._conn.execute(
+                "INSERT INTO profile (user_id, key, value) VALUES (?, ?, ?)",
+                (str(user_id), str(key), json.dumps(value, ensure_ascii=False)),
+            )
+
+    def save_compacted_memory(
+        self, user_id: str, profile: dict[str, Any], max_id: int, save_projects: Callable[[], None],
+    ) -> None:
+        """圧縮結果と対象ログの削除をまとめ、JSON保存の失敗時もDBを戻す。
+
+        save_projects は同期のファイル保存だけを行い、DBメソッドを呼ばないこと。
+        """
+        with self._lock, self._conn:
+            self._profile_replace_all(user_id, profile)
+            self._conn.execute(
+                "DELETE FROM pending_log WHERE user_id = ? AND id <= ?",
+                (str(user_id), int(max_id)),
+            )
+            save_projects()
 
     # ---- guild_settings（サーバーごとの設定） ---------------------------------
 
@@ -1003,10 +1022,10 @@ class Database:
                 " arousal=excluded.arousal, last_interaction=excluded.last_interaction",
                 (
                     str(user_id),
-                    entry.get("affinity", AFFINITY_NEUTRAL),
-                    entry.get("valence", AFFINITY_NEUTRAL),
-                    entry.get("arousal", AFFINITY_NEUTRAL),
-                    entry.get("last_interaction", 0.0),
+                    entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
+                    entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
+                    entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
+                    entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
                 ),
             )
 
@@ -1021,10 +1040,10 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        entry.get("affinity", AFFINITY_NEUTRAL),
-                        entry.get("valence", AFFINITY_NEUTRAL),
-                        entry.get("arousal", AFFINITY_NEUTRAL),
-                        entry.get("last_interaction", 0.0),
+                        entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
+                        entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
+                        entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
+                        entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
                     ),
                 )
 

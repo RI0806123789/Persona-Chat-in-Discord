@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import re
 from datetime import datetime, timezone
@@ -316,15 +317,34 @@ class MemoryService:
             )
             return
 
-        self._compact_fail_count[user_id] = 0
         async with self.io_lock:
-            await run_in_thread(self._db.profile_replace_all, user_id, profile_data)
-            # projects.json はこのユーザーのスライスだけ差し替える（他ユーザーの分は保持）。
-            # 圧縮前のスナップショットではなく読み直すのは、待っている間に別経路
-            # （文書要約の保存）が同じファイルを更新している可能性があるため。
-            wrapper = await run_in_thread(self._load_projects_wrapper)
-            await run_in_thread(self._save_compacted_projects, wrapper, user_id, projects_data)
-            await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
+            await run_in_thread(self._save_compacted_memory, user_id, profile_data, projects_data, max_entry_id)
+
+    def _save_compacted_memory(
+        self, user_id: str, profile_data: dict[str, Any], projects_data: dict[str, Any], max_entry_id: int,
+    ) -> None:
+        """io_lock の下で全保存を完了し、途中のキャンセルでは分断しない。"""
+        # 最新の文書要約と他ユーザーの記憶を引き継ぐ。DB確定失敗時の復元用にも残す。
+        wrapper = self._load_projects_wrapper()
+        original = copy.deepcopy(wrapper)
+        projects_saved = False
+
+        def save_projects() -> None:
+            nonlocal projects_saved
+            self._save_compacted_projects(wrapper, user_id, projects_data)
+            projects_saved = True
+
+        try:
+            self._db.save_compacted_memory(user_id, profile_data, max_entry_id, save_projects)
+        except Exception:
+            if projects_saved:
+                try:
+                    write_json_file(PROJECTS_MEMORY_PATH, original)
+                except Exception as error:
+                    print(f"記憶圧縮: JSONの復元に失敗しました: {type(error).__name__}")
+            raise
+        # キャンセルを伝播する前も、全保存が成功した場合だけリセットする。
+        self._compact_fail_count[user_id] = 0
 
     def _save_compacted_projects(
         self, wrapper: dict[str, Any], user_id: str, projects_data: dict[str, Any],

@@ -80,6 +80,7 @@ async def generate_channel_summary(
         is_summary=True  → text は要約本体（ヘッダー付き）。表示範囲に応じて出し分ける。
         is_summary=False → text は通知・エラーメッセージ（パネルにそのまま表示する）。
     """
+    response_settings = guild_settings.snapshot_response()
     after_time = datetime.now(timezone.utc) - timedelta(hours=period.value)
 
     # --- 履歴取得 ---
@@ -106,11 +107,11 @@ async def generate_channel_summary(
     # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
         persona_prompt = await run_in_thread(
-            lambda: load_prompt_template(resolve_prompt_path(guild_settings.current_prompt_file))
+            lambda: load_prompt_template(resolve_prompt_path(response_settings.prompt_file))
         )
     except FileNotFoundError:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
-        print(f"要約: プロンプトファイル({guild_settings.current_prompt_file})が見つかりません。口調なしで続行します。")
+        print(f"要約: プロンプトファイル({response_settings.prompt_file})が見つかりません。口調なしで続行します。")
         persona_prompt = ""
 
     full_prompt = build_summary_prompt(persona_prompt, period.name, source_text)
@@ -119,7 +120,7 @@ async def generate_channel_summary(
     # グラウンディングは既存テキストの要約に不要なため無効。
     response_text, usage_info, _sources = await gemini.generate(
         full_prompt,
-        guild_settings.current_model_name,
+        response_settings.model_name,
         images=None,
         timeout=SUMMARY_TIMEOUT_SECONDS,
         grounding=False,
@@ -132,6 +133,8 @@ async def generate_channel_summary(
     response_text = strip_affinity_tag(response_text)
     # Markdown 見出し記号を除去してプレーンテキスト化（#### 等が Discord で見づらいため）
     response_text = re.sub(_MD_HEADING_PATTERN, "", response_text).strip()
+    if not response_text:
+        return False, "⚠️ 要約の生成結果が空でした。時間をおいて再度お試しください。"
 
     # Bot自身の応答としてNGワードマスク＋AIモデレーションを適用する（既存パイプラインと同様）
     response_text = await screen_bot_response(

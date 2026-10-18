@@ -26,6 +26,14 @@ class ImageAttachmentTests(unittest.IsolatedAsyncioTestCase):
             size=len(data) if size is None else size, read=AsyncMock(return_value=data),
         )
 
+    def test_cleanup_skips_noncallable_close_and_continues_after_failure(self):
+        first = Mock(close=Mock(side_effect=OSError("架空の解放失敗")))
+        last = Image.new("RGB", (2, 2))
+        discord_helpers.close_image_attachments([first, object(), SimpleNamespace(close=None), last])
+        first.close.assert_called_once()
+        with self.assertRaises(ValueError):
+            last.getpixel((0, 0))
+
     async def test_declared_oversize_is_not_downloaded(self):
         attachment = self.attachment(size=discord_helpers.MAX_IMAGE_SIZE_BYTES + 1)
         self.assertEqual(await discord_helpers.load_image_attachments([attachment]), [])

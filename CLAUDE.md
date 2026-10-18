@@ -190,6 +190,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 ### 記憶システム (`memory_service.py`)
 
+圧縮結果は `io_lock` の下で `_save_compacted_memory` を1回の `run_in_thread` に渡し、繰り返しのキャンセルでも全保存の終了を待つ。`Database.save_compacted_memory` はプロフィール置換と対象ログ削除を同じトランザクションで行い、その確定前に同期コールバックで最新の文書要約を引き継いだJSONを保存する。コールバックからDBメソッドを呼ぶと再入不可のロックで停止するため、ファイル保存だけを行う。JSON保存失敗時はDBをロールバックし、DB確定失敗時は元のJSONの復元を試みる。失敗回数は全保存の成功後に戻す。プロセス強制終了や復元も失敗する障害に対する、DBとファイルをまたぐ完全な原子性は保証しない。
+
 `build_contexts` は非同期の記憶取得入口。`io_lock` の下でワーカーへ処理を渡し、通常記憶と文書記憶を同じスナップショットから組み立てる。`projects.json` は1回の取得につき1回だけ読む。ファイルを手書きした場合も次回の取得で反映し、永続的なキャッシュは持たない。個別取得の `build_context` / `build_document_memory_context` もawaitする。文書要約保存・圧縮時のJSON読込と書込・プロンプトの主経路の読込もイベントループへ同期I/Oを持ち込まない。
 
 カテゴリでルーティングされる長期記憶。**すべて `user_id` でユーザー別に分離される。** DB の `profile`/`pending_log` テーブルと、`projects.json`（`memory/` 配下の JSON。`users[user_id]` にユーザーごとのスライスを持つ）で構成される:
@@ -199,6 +201,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 - **文書要約は圧縮の対象外**: `projects.json` の `document_summaries` は圧縮プロンプトへ**渡さない**（プロンプトが「不要な古い情報は削除」と指示するため、渡すと LLM の判断ひとつで要約が消えたり別のキーへ書き換えられたりして戻せない）。保存時（`_save_compacted_projects`）は、書き込み直前に読み直した最新の一覧をそのまま引き継ぎ、LLM の出力に同名のキーがあっても捨てる。圧縮を待つ間に `store_document_summary` が追記した分も、この読み直しで自然に残る。要約の件数管理（`DOCUMENT_SUMMARY_LIMIT`）は `store_document_summary` だけが担う。
 
 ### 文書パイプライン (`document_service.py`)
+
+ダウンロード後も実バイト数の上限を検証する。旧キューで投稿者IDが未設定（`0`を含む）なら取得したメッセージの投稿者を使い、要約保存・記憶取得・会話ログ追記を同じユーザーへ揃える。回答後の記憶追記と完了状態保存は個別に保護し、保存失敗を`failed`への変更や二重のエラー返信へ変えない。回答前の失敗状態保存が失敗しても、利用者への失敗通知は試みる。
 
 文書の取得後、最初の添付処理より前に `snapshot_response()` を取得し、全添付の要約・プロンプト読込・最終生成で共用する。`build_contexts` の文書件数は `max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments))` とし、同時添付が既定件数を超えても先頭の要約を落とさない。PDFは `with temp_path.open("rb")` のストリームを `PdfReader` へ渡し、検証の例外時も閉じる。検証ワーカーは `run_in_thread` で終了まで待ってからキャンセルを伝播し、Windowsで削除前にハンドルを解放する。終了タスクの状態保存と古いタスクの掃除は別に扱い、掃除の例外はログだけに留める（完了済みタスクを失敗へ戻したり、回答後にエラーを二重返信しない）。
 
@@ -225,6 +229,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 **感情タグを扱うコードはこのモジュールに集約すること。** `[V:X, A:Y]` の正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置く（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）。`extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。読み上げ用の `strip_speech_tags(text)` はこれを再利用し、`_SPEECH_EMOTION_TAG_PATTERN` で感情名（happy / sad / angry / neutral / excited / calm / surprised / scared）と arousal / valence / affinity の数値タグも除去する。一般の角括弧付き本文は保持する。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
+
+`_play_pcm` は再生待ちのキャンセル時にも`stop()`を試し、音声ソースの`cleanup()`と所有するPCMバッファの`close()`を終えてからキャンセルを伝播する。`PCMAudio.cleanup()`だけでは入力ストリームは閉じないため、バッファの回収も維持する。
 
 `play_tts_response(message, response_text, prompt_file)` は、**ボットがボイスチャンネルに接続している間だけ**（`/join` で呼ばれたときと、自律行動で自分から入っているとき）AI の返信を読み上げる。未接続・DM・整形後に本文が残らない場合は黙って何もしない（no-op）。チャット本体は読み上げの成否に影響されないフェイルオープン設計。`prompt_file` は `MessageHandler` が今回の応答に使った `ResponseSettings.prompt_file` を渡す（サービス層に `BotState` を読ませない規約どおり、値だけを渡す）。
 
@@ -375,6 +381,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 利用トークンとランキングの画像送信は `view_parts.send_graph_ephemeral` に集約する。defer後は `followup=True` を渡し、本人限定で送る。画像バッファの所有権も渡し、成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じる。Bot応答・自発会話・自律配信・リマインダーの出力マスクは `NgWordFilter.mask_with_log` を使い、文脈別のログと後続のモデレーションを維持する。
 
 ### グラフ描画と同期I/Oの待機
+
+`load_image_attachments` が正常に返した画像は呼出元が所有し、通常チャットと自律コメントの両方で直後からの`try/finally`と`close_image_attachments`により回収する。画像取得の途中で中断した場合は取得側が回収する。画像の`close`属性が呼出可能でない場合は飛ばし、解放の失敗が他の画像の回収やキャンセル伝播を妨げないようにする。
 
 自発会話・記念日・自律配信・会話要約のペルソナ読込も `run_in_thread` で待つ。設定確定の存在確認とNGワード再読込はDiscordへ応答をdeferしてからワーカーで行う。NGワードは単語と正規表現を準備してからスナップショットを差し替え、読込途中の状態を公開しない。画像は `MAX_IMAGE_SIZE_BYTES` を取得前と取得後に確認し、デコードとRGB変換をワーカーへ渡す。中断時は取得済み画像も回収する。
 

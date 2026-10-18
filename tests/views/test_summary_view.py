@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -91,6 +91,61 @@ class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
         self.generate.return_value = (False, "架空の案内")
         await self.button.callback(self.interaction)
         self.assertEqual(self.last_panel(), "架空の案内")
+
+
+class SummaryGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_persona_and_model_are_kept_across_history_and_prompt_waits(self):
+        for stage in ("history", "prompt"):
+            with self.subTest(stage=stage):
+                settings = GuildSettings()
+                settings.current_prompt_file = "../prompts/prompt_default.txt"
+                settings.current_model_name = "old-model"
+
+                def change():
+                    settings.current_prompt_file = "../prompts/prompt_maid.txt"
+                    settings.current_model_name = "new-model"
+
+                async def history(*args):
+                    if stage == "history":
+                        change()
+                    return [object()]
+
+                def prompt(path):
+                    if stage == "prompt":
+                        change()
+                    return "架空のペルソナ"
+
+                gemini = Mock(generate=AsyncMock(return_value=("架空の要約", None, [])))
+                with patch.object(summary_view, "fetch_messages_since", AsyncMock(side_effect=history)), patch.object(
+                    summary_view, "build_summary_source_text", return_value="架空の発言",
+                ), patch.object(summary_view, "load_prompt_template", side_effect=prompt) as loader, patch.object(
+                    summary_view, "screen_bot_response", AsyncMock(side_effect=lambda text, *args, **kwargs: text),
+                ):
+                    async def summarize():
+                        return await summary_view.generate_channel_summary(
+                            object(), object(), SimpleNamespace(value=1, name="1時間"), guild_settings=settings,
+                            gemini=gemini, moderator=None, ng_filter=None, usage=Mock(),
+                        )
+                    self.assertTrue((await summarize())[0])
+                    self.assertEqual(loader.call_args.args[0].name, "prompt_default.txt")
+                    self.assertEqual(gemini.generate.await_args.args[1], "old-model")
+                    self.assertTrue((await summarize())[0])
+                    self.assertEqual(loader.call_args.args[0].name, "prompt_maid.txt")
+                    self.assertEqual(gemini.generate.await_args.args[1], "new-model")
+
+    async def test_empty_summary_after_tag_and_heading_removal_is_rejected(self):
+        for text in (" \n\t", "  \n[V:+1, A:+1]", "### \n[V:0, A:0]"):
+            with self.subTest(text=text), patch.object(summary_view, "fetch_messages_since", AsyncMock(return_value=[object()])), patch.object(
+                summary_view, "build_summary_source_text", return_value="架空の発言",
+            ), patch.object(summary_view, "load_prompt_template", return_value="架空のペルソナ"), patch.object(
+                summary_view, "screen_bot_response", AsyncMock(),
+            ) as screen:
+                result, _ = await summary_view.generate_channel_summary(
+                    object(), object(), SimpleNamespace(value=1, name="1時間"), guild_settings=GuildSettings(),
+                    gemini=Mock(generate=AsyncMock(return_value=(text, None, []))), moderator=None, ng_filter=None, usage=Mock(),
+                )
+                self.assertFalse(result)
+                screen.assert_not_awaited()
 
 
 if __name__ == "__main__":

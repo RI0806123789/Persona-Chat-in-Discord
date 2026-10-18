@@ -193,9 +193,19 @@ async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> l
         return image_objects
     except BaseException:
         # 中断時に受取先がなくなる画像も回収する。処理中の画像はrun_in_threadが回収する。
-        for image in image_objects:
-            image.close()
+        close_image_attachments(image_objects)
         raise
+
+
+def close_image_attachments(images: Sequence[Any]) -> None:
+    """呼出元が所有する画像をすべて回収し、元の例外やキャンセルを保つ。"""
+    for image in images:
+        try:
+            close = getattr(image, "close", None)
+            if callable(close):
+                close()
+        except Exception as error:
+            print(f"画像の解放に失敗しました: {type(error).__name__}")
 
 
 def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[str]:

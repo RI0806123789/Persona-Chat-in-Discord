@@ -76,6 +76,7 @@ from persona_bot.config.constants import (
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
 from persona_bot.utils.discord_helpers import (
     fetch_channel_history_text,
+    close_image_attachments,
     load_image_attachments,
     send_long_message,
     send_long_reply,
@@ -232,65 +233,68 @@ class AutonomousService:
             response_settings = guild_settings.snapshot_response()
         channel = message.channel
         async with channel.typing():
-            persona_prompt = await run_in_thread(self._load_persona, response_settings)
-            if persona_prompt is None:
-                return None
-
             # 本文が無く画像だけのコメントは、そのまま渡すと「空のコメントへの返事」を
             # 生成してしまう。通常のチャット経路と同じように、代わりの文を置いたうえで
             # 画像そのものもモデルへ渡す（配信中だけ画像を見なくなるのを避ける）。
             images = await load_image_attachments(message.attachments)
-            comment_text = question.strip()
-            if not comment_text and images:
-                comment_text = AUTONOMOUS_IMAGE_ONLY_COMMENT
-            if not comment_text:
-                return None
+            try:
+                comment_text = question.strip()
+                if not comment_text and images:
+                    comment_text = AUTONOMOUS_IMAGE_ONLY_COMMENT
+                if not comment_text:
+                    return None
 
-            history_text = await fetch_channel_history_text(
-                channel, guild_settings.channel_reset_points.get(channel.id),
-                self._client.user, AUTONOMOUS_HISTORY_LIMIT,
-            )
-            full_prompt = build_autonomous_reply_prompt(
-                persona_prompt,
-                message.author.display_name,
-                comment_text,
-                history_text,
-            )
-            # コメントは人からの問いかけなので、通常のチャットと同じく
-            # そのサーバーの Google 検索設定に従う（独り言と違って調べ物がありうる）。
-            response_text = await self._generate(
-                full_prompt,
-                response_settings,
-                label="コメント応答",
-                detail=f"{message.author.display_name} さんのコメント（画像{len(images)}枚）",
-                grounding=response_settings.grounding_enabled,
-                images=images or None,
-            )
-            if not response_text:
-                return None
+                persona_prompt = await run_in_thread(self._load_persona, response_settings)
+                if persona_prompt is None:
+                    return None
 
-            response_text = strip_affinity_tag(response_text)
-            if not response_text.strip():
-                print("自律行動: コメント応答が感情タグのみだったため見送ります。")
-                return None
+                history_text = await fetch_channel_history_text(
+                    channel, guild_settings.channel_reset_points.get(channel.id),
+                    self._client.user, AUTONOMOUS_HISTORY_LIMIT,
+                )
+                full_prompt = build_autonomous_reply_prompt(
+                    persona_prompt,
+                    message.author.display_name,
+                    comment_text,
+                    history_text,
+                )
+                # コメントは人からの問いかけなので、通常のチャットと同じく
+                # そのサーバーの Google 検索設定に従う（独り言と違って調べ物がありうる）。
+                response_text = await self._generate(
+                    full_prompt,
+                    response_settings,
+                    label="コメント応答",
+                    detail=f"{message.author.display_name} さんのコメント（画像{len(images)}枚）",
+                    grounding=response_settings.grounding_enabled,
+                    images=images or None,
+                )
+                if not response_text:
+                    return None
 
-            # 「ユーザーからのインプットに対しては今まで通りフィルターを使う」（idea.md）
-            # ため、自発発言と違いここでは AI モデレーションまで通す。
-            response_text = await screen_bot_response(
-                response_text, self._ng_filter, self._moderator, log_label="自律行動のコメント応答"
-            )
+                response_text = strip_affinity_tag(response_text)
+                if not response_text.strip():
+                    print("自律行動: コメント応答が感情タグのみだったため見送ります。")
+                    return None
 
-            # 生成を待っている間に配信が終わっている（/leave など）ことがある。
-            # 終わった配信の「配信者としての応答」を後から投稿しないよう、
-            # 独り言・第一声と同じく送信の直前で確かめる。
-            if not self._is_current_session(guild_settings, session):
-                print("自律行動: 応答の生成中に配信が終了したため、この応答は見送ります。")
-                return None
+                # 「ユーザーからのインプットに対しては今まで通りフィルターを使う」（idea.md）
+                # ため、自発発言と違いここでは AI モデレーションまで通す。
+                response_text = await screen_bot_response(
+                    response_text, self._ng_filter, self._moderator, log_label="自律行動のコメント応答"
+                )
 
-            await send_long_reply(message, response_text)
-            # 応答した直後に独り言が重なると会話がぶつかるため、発話時刻を更新しておく。
-            session.last_spoke_at = datetime.now(timezone.utc)
-            return response_text
+                # 生成を待っている間に配信が終わっている（/leave など）ことがある。
+                # 終わった配信の「配信者としての応答」を後から投稿しないよう、
+                # 独り言・第一声と同じく送信の直前で確かめる。
+                if not self._is_current_session(guild_settings, session):
+                    print("自律行動: 応答の生成中に配信が終了したため、この応答は見送ります。")
+                    return None
+
+                await send_long_reply(message, response_text)
+                # 応答した直後に独り言が重なると会話がぶつかるため、発話時刻を更新しておく。
+                session.last_spoke_at = datetime.now(timezone.utc)
+                return response_text
+            finally:
+                close_image_attachments(images)
 
     def _claim_comment_slot(self, session: AutonomousSession) -> bool:
         """入力AI判定の前に受付枠を確保し、同時に受付時刻を記録する。

@@ -146,7 +146,9 @@ class DocumentService:
                 raise ValueError("対応する文書添付が見つかりませんでした。")
 
             # 文書タスクは投稿者の記憶スペースに紐付けて処理する（ユーザー別記憶）。
-            author_id = str(task.get("author_id", "") or "")
+            author_id = str(task.get("author_id") or message.author.id)
+            if author_id == "0":
+                author_id = str(message.author.id)
             question = clean_message_content(message, self._client.user)
             if not question:
                 question = str(task.get("question", "")).strip() or "このドキュメントの要点を整理してください。"
@@ -212,23 +214,34 @@ class DocumentService:
                 reply_text += format_grounding_sources(grounding_sources)
 
             await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
-            await self._memory.append_pending_log(author_id, question, response_text)
-            spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
-
-            await self._update_task(task_id, status="completed", finished_at=datetime.now(timezone.utc).isoformat())
         except Exception as error:
             print(f"文書タスク処理エラー: {error}")
-            await self._update_task(
-                task_id,
-                status="failed",
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                error=str(error),
-            )
+            try:
+                await self._update_task(
+                    task_id,
+                    status="failed",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error=str(error),
+                )
+            except Exception as update_error:
+                print(f"文書タスク: 失敗状態の保存に失敗しました: {type(update_error).__name__}")
             if message is not None:
                 try:
                     await message.reply(f"エラーが発生しました。（文書処理に失敗しました）\n詳細: {error}")
                 except Exception as reply_error:
                     print(f"文書タスク失敗通知エラー: {reply_error}")
+            return
+
+        # 回答は送信済み。保存の失敗を処理失敗や二重のエラー返信へ変えない。
+        try:
+            await self._memory.append_pending_log(author_id, question, response_text)
+            spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
+        except Exception as error:
+            print(f"文書タスク: 回答後の記憶追記に失敗しました: {type(error).__name__}")
+        try:
+            await self._update_task(task_id, status="completed", finished_at=datetime.now(timezone.utc).isoformat())
+        except Exception as error:
+            print(f"文書タスク: 回答後の完了状態の保存に失敗しました: {type(error).__name__}")
 
     async def _fetch_message_from_task(self, task: dict[str, Any]) -> discord.Message:
         channel_id = int(task.get("channel_id", 0))
@@ -277,6 +290,8 @@ class DocumentService:
         try:
             temp_file.close()
             temp_bytes = await attachment.read()
+            if len(temp_bytes) > MAX_DOCUMENT_SIZE_BYTES:
+                raise ValueError(f"ファイルサイズが上限を超えています: {attachment.filename}")
             # 書き込み完了まで待ち、キャンセル時も回収後の再作成を防ぐ。
             await run_in_thread(temp_path.write_bytes, temp_bytes)
             downloaded = True

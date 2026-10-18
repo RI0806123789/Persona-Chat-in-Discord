@@ -233,9 +233,17 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
     play_seconds = len(pcm) / float(TTS_SAMPLE_RATE * TTS_CHANNELS * 2)
     timeout_seconds = play_seconds + TTS_PLAY_TIMEOUT_MARGIN_SECONDS
 
-    voice_client.play(discord.PCMAudio(io.BytesIO(pcm)), after=after_playing)
+    pcm_stream = io.BytesIO(pcm)
+    audio_source = discord.PCMAudio(pcm_stream)
     try:
+        voice_client.play(audio_source, after=after_playing)
         await asyncio.wait_for(finished.wait(), timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        try:
+            voice_client.stop()
+        except Exception as error:
+            print(f"TTS: キャンセル時の再生停止に失敗しました: {type(error).__name__}")
+        raise
     except asyncio.TimeoutError:
         # getattr の既定値付きで取るのは、切断済みだと guild プロパティの参照自体が
         # 失敗しうるため（ログのためにここで例外を出したくない）。
@@ -252,6 +260,14 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
             voice_client.stop()
         except Exception:
             pass
+    finally:
+        try:
+            audio_source.cleanup()
+        except Exception as error:
+            print(f"TTS: 音声ストリームの解放に失敗しました: {type(error).__name__}")
+        finally:
+            # PCMAudio.cleanup() は入力ストリームを閉じないため、所有する側で解放する。
+            pcm_stream.close()
 
 
 # ギルドIDごとの読み上げ待ちキュー。再生中に届いた返信を捨てずに順番に読むために持つ。

@@ -20,6 +20,11 @@ from zoneinfo import ZoneInfo
 WEEKDAY_NAMES_JA = ("月", "火", "水", "木", "金", "土", "日")
 
 
+def parse_iso_datetime(text: str) -> datetime:
+    """Python 3.10でもUTC末尾のZを解釈する。その他のISO形式は標準に従う。"""
+    return datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+
+
 def resolve_timezone(name: str, *, purpose: str = "") -> tzinfo:
     """タイムゾーン名を解決する。読み込めない環境では UTC を返す。
 

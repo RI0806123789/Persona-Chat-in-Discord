@@ -110,6 +110,23 @@ class AffinityPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     "affinity": 40, "valence": 40, "arousal": 40, "last_interaction": 0.0,
                 })
 
+    async def test_explicit_none_uses_defaults_and_zero_remains_zero_in_every_save_path(self) -> None:
+        import json
+
+        for value, expected in ((None, 40), (0, 0)):
+            with self.subTest(value=value):
+                entry = dict.fromkeys(("affinity", "valence", "arousal", "last_interaction"), value)
+                legacy = self.path.parent / "fictional-affinity.json"
+                legacy.write_text(json.dumps({"legacy-user": entry}), encoding="utf-8")
+                with patch.object(database, "AFFINITY_NEUTRAL", 40):
+                    self.db.affinity_save_all({"explicit-user": entry})
+                    self.db.affinity_upsert("new-user", entry)
+                    self.db._import_affinity_json(legacy)
+                for data in self.db.affinity_load_all().values():
+                    self.assertEqual(data, {
+                        "affinity": expected, "valence": expected, "arousal": expected, "last_interaction": 0.0,
+                    })
+
     async def test_missing_user_does_not_rewrite_existing_data(self) -> None:
         before = self.db.affinity_load_all()
         before_changes = self.db._conn.total_changes
@@ -194,6 +211,15 @@ class AffinityTuningTests(unittest.TestCase):
         )
         values.start()
         self.addCleanup(values.stop)
+
+    def test_clock_rollback_does_not_amplify_emotions(self) -> None:
+        data = {"affinity": 60, "valence": 70, "arousal": 25, "last_interaction": 1001.0}
+        self.assertEqual(self.service._apply_decay(data.copy()), data)
+
+    def test_new_user_reads_clock_only_once(self) -> None:
+        with patch.object(affinity_service.time, "time", side_effect=[1000.0]) as clock:
+            self.assertEqual(self.service.get_user_data("new-user")["last_interaction"], 1000.0)
+        clock.assert_called_once()
 
     def test_new_user_uses_configured_neutral_value(self) -> None:
         data = self.service.get_user_data("new-user")
