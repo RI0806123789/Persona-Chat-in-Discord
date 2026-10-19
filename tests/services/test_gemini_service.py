@@ -32,7 +32,9 @@ def unsupported_search() -> errors.APIError:
     return api_error(400, "google_search is not supported for this model")
 
 
-class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
+class GeminiRequestFixture(unittest.IsolatedAsyncioTestCase):
+    """SDKの生成要求だけを差し替え、模擬時計で生成全体の期限を確かめる。"""
+
     def setUp(self) -> None:
         block_network(self)
         self.now = 100.0
@@ -61,6 +63,8 @@ class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
     def search_flags(self) -> list[bool]:
         return [bool(call.kwargs["config"].tools) for call in self.sdk_request.call_args_list]
 
+
+class GeminiGenerationTests(GeminiRequestFixture):
     async def test_search_preserves_selected_model_sources_and_usage(self) -> None:
         self.response.candidates[0].grounding_metadata = types.GroundingMetadata(
             grounding_chunks=[types.GroundingChunk(web=types.GroundingChunkWeb(
@@ -272,6 +276,130 @@ class GeminiGenerationTests(unittest.IsolatedAsyncioTestCase):
             {"title": f"資料{index}", "uri": f"https://example.com/{index}"}
             for index in range(gemini_service.MAX_GROUNDING_SOURCES)
         ])
+
+
+# 検索の呼び出し・思考・最終回答が通常の text に連続した、架空の異常応答（Issue #167）。
+LEAKED_TEXT = (
+    'tool_code\nprint(google_search.search(queries=["架空の天気"]))\n\n'
+    "thought\n\nI should answer the fictional question in character.\n\n"
+    "架空の最終回答です。"
+)
+
+
+def leaked_response(text: str = LEAKED_TEXT) -> types.GenerateContentResponse:
+    return types.GenerateContentResponse(
+        candidates=[types.Candidate(
+            finish_reason=types.FinishReason.STOP,
+            content=types.Content(role="model", parts=[types.Part(text=text)]),
+            grounding_metadata=types.GroundingMetadata(grounding_chunks=[types.GroundingChunk(
+                web=types.GroundingChunkWeb(title="破棄される架空の資料", uri="https://example.com/discarded"),
+            )]),
+        )],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(total_token_count=99),
+    )
+
+
+class GeminiInternalTextTests(GeminiRequestFixture):
+    """通常の text へ混入した内部形式を、回数と期限を制限して再生成する。"""
+
+    async def test_internal_text_is_regenerated_with_same_model_and_search(self) -> None:
+        self.response.candidates[0].grounding_metadata = types.GroundingMetadata(grounding_chunks=[
+            types.GroundingChunk(web=types.GroundingChunkWeb(title="架空の資料", uri="https://example.com/source")),
+        ])
+
+        async def generate(**kwargs):
+            self.now += 8
+            return leaked_response() if self.sdk_request.await_count == 1 else self.response
+
+        self.sdk_request.side_effect = generate
+        result = await self.service.generate("架空の質問", "selected-model", timeout=30, grounding=True)
+        # 破棄した応答の本文・参考リンク・利用量は返さない。
+        self.assertEqual(result, ("架空の応答", self.response.usage_metadata,
+                                  [{"title": "架空の資料", "uri": "https://example.com/source"}]))
+        self.assertEqual(self.models(), ["selected-model", "selected-model"])
+        self.assertEqual(self.search_flags(), [True, True])
+        # 再生成も生成全体の期限を共有する。
+        self.assertEqual(self.timeouts_ms(), [30000, 22000])
+
+    async def test_internal_text_from_search_submodel_after_quota_is_regenerated(self) -> None:
+        self.sdk_request.side_effect = [api_error(429, "架空の利用枠超過"), leaked_response(), self.response]
+        result = await self.service.generate("質問", "selected-model", timeout=30, grounding=True)
+        self.assertEqual(result[0], "架空の応答")
+        self.assertEqual(self.models(), ["selected-model", gemini_service.GROUNDING_MODEL_NAME,
+                                         gemini_service.GROUNDING_MODEL_NAME])
+        self.assertEqual(self.search_flags(), [True, True, True])
+
+    async def test_internal_text_without_search_is_regenerated(self) -> None:
+        self.sdk_request.side_effect = [leaked_response(), self.response]
+        self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30),
+                         ("架空の応答", self.response.usage_metadata, []))
+        self.assertEqual(self.models(), ["selected-model", "selected-model"])
+        self.assertEqual(self.search_flags(), [False, False])
+
+    async def test_repeated_internal_text_returns_failure_without_more_requests(self) -> None:
+        only_internal = 'tool_code\nprint(google_search.search(queries=["架空の語"]))'
+        for grounding, first in ((True, LEAKED_TEXT), (False, only_internal)):
+            with self.subTest(grounding=grounding):
+                self.sdk_request.reset_mock()
+                self.sdk_request.side_effect = [leaked_response(first), leaked_response(), self.response]
+                self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30, grounding=grounding),
+                                 (None, None, []))
+                # 初回＋再生成の上限（既定1回）だけで打ち切り、検索なしへの退避も行わない。
+                self.assertEqual(self.sdk_request.await_count, 1 + gemini_service.GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS)
+                self.assertEqual(self.search_flags(), [grounding] * 2)
+
+    async def test_regeneration_limit_follows_constant(self) -> None:
+        for limit, expected in ((0, (None, None, [])), (2, ("架空の応答", self.response.usage_metadata, []))):
+            with self.subTest(limit=limit):
+                self.sdk_request.reset_mock()
+                self.sdk_request.side_effect = [leaked_response(), leaked_response(), self.response]
+                with patch.object(gemini_service, "GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS", limit):
+                    self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30), expected)
+                self.assertEqual(self.sdk_request.await_count, limit + 1)
+
+    async def test_regeneration_does_not_start_after_budget_is_spent(self) -> None:
+        async def generate(**kwargs):
+            self.now += 30
+            return leaked_response()
+
+        self.sdk_request.side_effect = generate
+        self.assertEqual(await self.service.generate("質問", "selected-model", timeout=30, grounding=True),
+                         (None, None, []))
+        self.sdk_request.assert_awaited_once()
+
+    async def test_diagnostic_log_omits_reply_prompt_and_search_terms(self) -> None:
+        self.sdk_request.side_effect = [leaked_response(), leaked_response()]
+        with patch("builtins.print") as printed:
+            await self.service.generate("架空の秘密の質問", "selected-model", timeout=30, grounding=True)
+        logs = "\n".join(" ".join(map(str, call.args)) for call in printed.call_args_list)
+        self.assertIn("内部形式が混入した応答を破棄しました（モデル: selected-model、検索: 有効、終了理由: STOP、パート: text×1）", logs)
+        self.assertIn("再生成の上限に達したため", logs)
+        for secret in ("架空の秘密の質問", "架空の天気", "I should answer", "架空の最終回答", "example.com"):
+            self.assertNotIn(secret, logs)
+
+    async def test_normal_words_code_examples_and_structured_thoughts_are_not_regenerated(self) -> None:
+        normal = "I thought about it.\n```python\nprint('架空の出力')\n```\n`tool_code` は架空の語だよ。"
+        structured = types.GenerateContentResponse(candidates=[types.Candidate(
+            finish_reason=types.FinishReason.STOP,
+            content=types.Content(role="model", parts=[
+                types.Part(text=LEAKED_TEXT, thought=True), types.Part(text="架空の公開回答"),
+            ]),
+        )])
+        for response, expected in ((leaked_response(normal), normal), (structured, "架空の公開回答")):
+            with self.subTest(expected=expected):
+                self.sdk_request.reset_mock()
+                self.sdk_request.side_effect = [response]
+                result = await self.service.generate("質問", "selected-model", timeout=30)
+                self.assertEqual(result[0], expected)
+                self.sdk_request.assert_awaited_once()
+
+    async def test_affinity_tag_survives_regeneration(self) -> None:
+        tagged = types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(parts=[
+            types.Part(text="架空の応答です。[V:+5, A:-3]"),
+        ]))])
+        self.sdk_request.side_effect = [leaked_response(LEAKED_TEXT + "[V:+1, A:+1]"), tagged]
+        result = await self.service.generate("質問", "selected-model", timeout=30)
+        self.assertEqual(result[0], "架空の応答です。[V:+5, A:-3]")
 
 
 class GeminiDocumentTests(unittest.IsolatedAsyncioTestCase):

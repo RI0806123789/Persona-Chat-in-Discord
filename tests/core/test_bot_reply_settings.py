@@ -1,4 +1,7 @@
-"""設定変更を挟んでも、生成・評価・読み上げで同じ応答設定を使うことを検証する。"""
+"""設定変更を挟んでも、生成・評価・読み上げで同じ応答設定を使うことを検証する。
+
+実際の GeminiService を通した場合に、本文へ混入した内部形式が送信・記憶・読み上げへ流れないことも確かめる。
+"""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -13,17 +16,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
+from google.genai import errors, types
 from persona_bot.services.affinity_service import extract_affinity_changes
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import spawn
 from tests.helpers.message_handler_helpers import make_message_handler
-from persona_bot.config.constants import GEMINI_RESPONSE_TIMEOUT_SECONDS, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES
+from persona_bot.config.constants import (
+    GEMINI_RESPONSE_TIMEOUT_SECONDS, GROUNDING_MODEL_NAME, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES,
+)
 from persona_bot.services.content_moderator import screen_bot_response
+from persona_bot.services.gemini_service import GeminiService
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, format_grounding_sources,
     is_supported_document_attachment, is_supported_message_channel,
 )
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
+
+# 検索の呼び出し・思考・最終回答が通常の text に連続した、架空の異常応答（Issue #167）。
+LEAKED_TEXT = (
+    'tool_code\nprint(google_search.search(queries=["架空の天気"]))\n\n'
+    "thought\n\nI should answer the fictional question in character.\n\n"
+    "架空の最終回答です。"
+)
+
+
+def sdk_text_response(text: str, uri: str | None = None) -> types.GenerateContentResponse:
+    metadata = None
+    if uri is not None:
+        metadata = types.GroundingMetadata(grounding_chunks=[
+            types.GroundingChunk(web=types.GroundingChunkWeb(title="架空の資料", uri=uri)),
+        ])
+    return types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason=types.FinishReason.STOP, grounding_metadata=metadata,
+        content=types.Content(role="model", parts=[types.Part(text=text)]),
+    )])
 
 
 class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
@@ -254,6 +280,77 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             self.message, self.response, settings.prompt_file, is_valid=ANY,
         )
         self.assertEqual(settings.prompt_file, "../prompts/prompt_default.txt")
+
+    def use_real_gemini(self, *responses) -> AsyncMock:
+        """SDKの生成要求だけを差し替え、実際の GeminiService で検索の退避と本文の検証を通す。"""
+        sdk_request = AsyncMock(side_effect=list(responses))
+        self.handler.gemini = GeminiService(SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(
+            generate_content=sdk_request,
+        ))))
+        self.stage = None
+        self.settings.current_model_name = "gemini-3.5-flash-lite"
+        return sdk_request
+
+    def assert_only_final_answer_flows(self, answer: str) -> str:
+        send = self.namespace["send_long_reply"]
+        send.assert_awaited_once()
+        sent_text = send.await_args.args[1]
+        self.assertTrue(sent_text.startswith(answer))
+        for marker in ("tool_code", "google_search", "thought", "I should answer", "架空の天気"):
+            self.assertNotIn(marker, sent_text)
+        # NGワードのマスクとモデレーションにも、検証後の本文だけが渡る。
+        masked = [call.args[0] for call in self.namespace["ng_filter"].mask_with_log.call_args_list]
+        self.assertEqual(masked, [answer])
+        self.assertEqual(self.namespace["memory"].append_pending_log.await_args.args[2], answer)
+        self.assertEqual(self.namespace["usage"].log_snapshot.call_args.args[4], answer)
+        self.voice.assert_awaited_once_with(self.message, answer, "../prompts/prompt_default.txt")
+        self.feedback.track_reply.assert_called_once()
+        return sent_text
+
+    async def test_internal_text_after_search_quota_is_regenerated_before_reply(self) -> None:
+        sdk_request = self.use_real_gemini(
+            errors.ClientError(429, {"error": {"message": "架空の利用枠超過"}}),
+            sdk_text_response(LEAKED_TEXT, uri="https://example.com/discarded"),
+            sdk_text_response("架空の最終回答です。", uri="https://example.com/source"),
+        )
+        await self.on_message(self.message)
+        self.assertEqual([call.kwargs["model"] for call in sdk_request.call_args_list],
+                         ["gemini-3.5-flash-lite", GROUNDING_MODEL_NAME, GROUNDING_MODEL_NAME])
+        self.assertEqual([bool(call.kwargs["config"].tools) for call in sdk_request.call_args_list], [True, True, True])
+        sent_text = self.assert_only_final_answer_flows("架空の最終回答です。")
+        # 参考リンクは採用した応答のものだけを送信用の本文へ添える。
+        self.assertIn("https://example.com/source", sent_text)
+        self.assertNotIn("https://example.com/discarded", sent_text)
+
+    async def test_internal_text_without_search_is_regenerated_before_reply(self) -> None:
+        sdk_request = self.use_real_gemini(
+            sdk_text_response(LEAKED_TEXT), sdk_text_response("架空の最終回答です。"),
+        )
+        self.settings.grounding_enabled = False
+        await self.on_message(self.message)
+        self.assertEqual([call.kwargs["model"] for call in sdk_request.call_args_list],
+                         ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite"])
+        self.assertEqual([bool(call.kwargs["config"].tools) for call in sdk_request.call_args_list], [False, False])
+        self.assert_only_final_answer_flows("架空の最終回答です。")
+
+    async def test_repeated_internal_text_is_not_sent_remembered_or_spoken(self) -> None:
+        sdk_request = self.use_real_gemini(
+            sdk_text_response(LEAKED_TEXT),
+            sdk_text_response('tool_code\nprint(google_search.search(queries=["架空の語"]))'),
+            sdk_text_response("使われない架空の応答"),
+        )
+        self.settings.grounding_enabled = False
+        await self.on_message(self.message)
+        self.assertEqual(sdk_request.await_count, 2)
+        # 定型の失敗案内だけを返し、内部形式は送信・記憶・ログ・読み上げのどこへも渡さない。
+        self.message.reply.assert_awaited_once()
+        self.assertNotIn("tool_code", self.message.reply.await_args.args[0])
+        self.namespace["send_long_reply"].assert_not_awaited()
+        self.namespace["ng_filter"].mask_with_log.assert_not_called()
+        self.namespace["memory"].append_pending_log.assert_not_awaited()
+        self.namespace["usage"].log_snapshot.assert_not_called()
+        self.voice.assert_not_awaited()
+        self.feedback.track_reply.assert_not_called()
 
 
 if __name__ == "__main__":

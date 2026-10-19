@@ -9,6 +9,7 @@ from google.genai import types
 from persona_bot.config.constants import (
     DOCUMENT_SUMMARY_TIMEOUT_SECONDS,
     DOCUMENT_UPLOAD_TIMEOUT_SECONDS,
+    GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS,
     GROUNDING_MODEL_NAME,
     GROUNDING_REQUEST_TIMEOUT_SECONDS,
     GROUNDING_SUBMODEL_RETRY_ENABLED,
@@ -16,7 +17,12 @@ from persona_bot.config.constants import (
 )
 from persona_bot.services.genai_client import generate_content
 from persona_bot.services.prompting import build_document_summary_prompt
-from persona_bot.utils.storage import extract_json_object, safe_response_text
+from persona_bot.utils.storage import (
+    contains_internal_response_text,
+    describe_response_parts,
+    extract_json_object,
+    safe_response_text,
+)
 
 
 def _remaining_timeout(deadline: float | None) -> float | None:
@@ -96,7 +102,10 @@ class GeminiService:
                 attempts.append((GROUNDING_MODEL_NAME, True))
             attempts.append((model_name, False))
 
-        for effective_model, use_grounding in attempts:
+        regenerations_left = GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS
+        index = 0
+        while index < len(attempts):
+            effective_model, use_grounding = attempts[index]
             remaining = _remaining_timeout(deadline)
             try:
                 options: dict[str, Any] = {}
@@ -106,17 +115,33 @@ class GeminiService:
                 response = await generate_content(
                     self._client, model=effective_model, contents=contents, timeout=remaining, **options,
                 )
+                text = safe_response_text(response)
+                if text is not None and contains_internal_response_text(text):
+                    # Discord・読み上げ・会話記憶・ログへ内部形式を流さないよう、ここで応答ごと捨てる。
+                    # 診断には本文・プロンプト・検索語を含めず、モデルと応答の構造だけを残す。
+                    print(
+                        f"Gemini生成: 内部形式が混入した応答を破棄しました（モデル: {effective_model}、"
+                        f"検索: {'有効' if use_grounding else '無効'}、{describe_response_parts(response)}）。"
+                    )
+                    if regenerations_left <= 0:
+                        print("Gemini生成: 再生成の上限に達したため、応答を返しません。")
+                        return None, None, []
+                    regenerations_left -= 1
+                    # 同じ条件で生成し直す（index は進めない）。待ち時間は生成全体の残りから使う。
+                    continue
                 sources = self._grounding_sources(response) if use_grounding else []
-                return safe_response_text(response), getattr(response, "usage_metadata", None), sources
+                return text, getattr(response, "usage_metadata", None), sources
             except asyncio.TimeoutError:
                 raise
             except Exception as error:
                 status_code = getattr(error, "code", None)
                 if use_grounding and _grounding_is_unsupported(status_code, str(error)):
                     print("検索ツールが非対応のため、残り時間内で代替の生成を試します。")
+                    index += 1
                     continue
                 if use_grounding and _grounding_quota_exhausted(status_code):
                     print(f"検索の利用枠を超えたため（モデル: {effective_model}）、残り時間内で代替の生成を試します。")
+                    index += 1
                     continue
                 # 通信・認証・サーバー障害と、検索なしの生成の利用枠超過では追加のAPI呼び出しを行わない。
                 print(f"Gemini生成エラー: {error}")

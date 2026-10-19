@@ -142,3 +142,51 @@ def safe_response_text(response: Any) -> str | None:
     except (ValueError, IndexError, AttributeError):
         return None
 
+
+# SDK が thought=True やコード・関数呼び出しのパートとして返すものは response.text の時点で除かれる。
+# 以下は、それらが目印を失って通常の text として返ったときの見出し。行全体がこの見出しだけの行
+# （コードフェンスの開始記号つきを含む）に限り、文中に現れる同じ語には反応しない。
+_INTERNAL_TOOL_LINE_PATTERN = re.compile(r"^[ \t]*(?:`{3,}[ \t]*)?(?:tool_code|tool_outputs)[ \t]*\r?$", re.MULTILINE)
+# 見出しが欠けても、検索ツールの呼び出し文が行頭にあれば内部形式とみなす。
+_INTERNAL_SEARCH_CALL_PATTERN = re.compile(r"^[ \t]*print\([ \t]*google_search\.", re.MULTILINE)
+# 「thought」は一般の英文にも現れるため、本文の先頭行がこの語だけの場合に限る。
+_INTERNAL_THOUGHT_HEAD_PATTERN = re.compile(r"\A\s*(?:`{3,}[ \t]*)?thought[ \t]*\r?(?:\n|\Z)")
+# 原因の追跡用に数える応答パートの種類（SDK の Part の属性名）。
+_RESPONSE_PART_KINDS = (
+    "text", "executable_code", "code_execution_result", "function_call", "function_response",
+    "inline_data", "file_data",
+)
+
+
+def contains_internal_response_text(text: str) -> bool:
+    """検索ツールの呼び出しや思考の出力形式が、通常の本文へ紛れ込んでいるかを判定する。
+
+    思考と最終回答の境目は本文から確実に切り分けられないため、呼び出し側は削らずに応答ごと扱う。
+    一般の文章に現れる「thought」という語や、通常のコード例には反応しない。
+    """
+    return bool(
+        _INTERNAL_THOUGHT_HEAD_PATTERN.match(text)
+        or _INTERNAL_TOOL_LINE_PATTERN.search(text)
+        or _INTERNAL_SEARCH_CALL_PATTERN.search(text)
+    )
+
+
+def describe_response_parts(response: Any) -> str:
+    """原因の追跡用に、本文を含めず終了理由とパートの種類・件数だけを要約する。"""
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return "候補なし"
+    candidate = candidates[0]
+    reason = getattr(candidate, "finish_reason", None)
+    reason_name = getattr(reason, "name", None) or ("不明" if reason is None else str(reason))
+    counts: dict[str, int] = {}
+    for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
+        for kind in _RESPONSE_PART_KINDS:
+            if getattr(part, kind, None) is None:
+                continue
+            # 思考のパートも text を持つため、thought フラグで公開本文と分けて数える。
+            label = "thought" if kind == "text" and getattr(part, "thought", None) else kind
+            counts[label] = counts.get(label, 0) + 1
+    parts = "、".join(f"{label}×{count}" for label, count in counts.items()) or "なし"
+    return f"終了理由: {reason_name}、パート: {parts}"
+
