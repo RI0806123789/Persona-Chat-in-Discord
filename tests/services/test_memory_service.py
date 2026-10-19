@@ -52,6 +52,77 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.service._load_projects_wrapper(), result)
                 self.assertEqual(load_json_file(self.projects_path, {}), result)
 
+    async def check_user_failure_isolation(self, boundary):
+        wrapper = default_projects_memory()
+        wrapper["users"] = {"user-a": {"note": "元の計画"}, "user-b": {"note": "別の計画"}}
+        write_json_file(self.projects_path, wrapper)
+        for user_id in ("user-a", "user-b"):
+            self.db.profile_replace_all(user_id, {"note": "元のプロフィール"})
+            await self.service.append_pending_log(user_id, "架空の質問", "架空の応答")
+        entries = self.db.pending_fetch_entries("user-a")
+        self.service._compact_fail_count["user-a"] = 1
+        self.service._compact_memory = AsyncMock(return_value=({"note": "新しいプロフィール"}, {"note": "新しい計画"}))
+        target, name = {
+            "entries": (self.db, "pending_fetch_entries"),
+            "snapshot": (self.service, "_load_memory_snapshot"),
+            "save": (self.service, "_save_compacted_projects"),
+        }[boundary]
+        original = getattr(target, name)
+
+        def fail_first(*args):
+            user_id = args[1] if boundary == "save" else args[0]
+            if user_id == "user-a":
+                raise OSError("架空のユーザー固有の保存・読込失敗")
+            return original(*args)
+
+        with patch.object(target, name, side_effect=fail_first):
+            await self.service.flush_if_needed(force=True)
+        self.assertEqual(self.db.pending_fetch_entries("user-a"), entries)
+        self.assertEqual(self.db.profile_load("user-a"), {"note": "元のプロフィール"})
+        self.assertEqual(load_json_file(self.projects_path, {})["users"]["user-a"], {"note": "元の計画"})
+        self.assertEqual(self.service._compact_fail_count["user-a"], 1)
+        self.assertEqual(self.db.pending_fetch_entries("user-b"), [])
+        self.assertEqual(self.db.profile_load("user-b"), {"note": "新しいプロフィール"})
+        self.assertEqual(load_json_file(self.projects_path, {})["users"]["user-b"], {"note": "新しい計画"})
+        # 障害解消後には失敗したユーザーだけが再処理される。
+        await self.service.flush_if_needed(force=True)
+        self.assertEqual(self.db.pending_fetch_entries("user-a"), [])
+        self.assertEqual(self.service._compact_fail_count["user-a"], 0)
+
+    async def test_save_error_preserves_data_and_continues_with_next_user(self):
+        await self.check_user_failure_isolation("save")
+
+    async def test_snapshot_read_error_preserves_data_and_continues_with_next_user(self):
+        await self.check_user_failure_isolation("snapshot")
+
+    async def test_pending_read_error_preserves_data_and_continues_with_next_user(self):
+        await self.check_user_failure_isolation("entries")
+
+    async def test_shared_failure_and_user_attempt_limits_bound_each_run(self):
+        for index in range(7):
+            await self.service.append_pending_log(f"user-{index}", "架空の質問", "架空の応答")
+        original = [self.db.pending_fetch_entries(f"user-{index}") for index in range(7)]
+        with patch.object(self.service, "_flush_user", new=AsyncMock(side_effect=OSError("架空の共有障害"))) as flush:
+            await self.service.flush_if_needed(force=True)
+            self.assertEqual(flush.await_count, memory_service.MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS)
+        with patch.object(self.db, "pending_fetch_entries", side_effect=OSError("架空のDB障害")) as read, \
+                patch.object(memory_service, "MEMORY_FLUSH_MAX_USERS_PER_RUN", 2), \
+                patch.object(memory_service, "MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS", 10):
+            await self.service.flush_if_needed(force=True)
+            self.assertEqual(read.call_count, 2)
+        self.assertEqual([self.db.pending_fetch_entries(f"user-{index}") for index in range(7)], original)
+
+    async def test_flush_cancellation_propagates_and_preserves_all_pending(self):
+        for user_id in ("user-a", "user-b"):
+            await self.service.append_pending_log(user_id, "架空の質問", "架空の応答")
+        with patch.object(self.service, "_flush_user", new=AsyncMock(side_effect=asyncio.CancelledError)) as flush:
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.flush_if_needed(force=True)
+            flush.assert_awaited_once()
+        self.assertFalse(self.service.io_lock.locked())
+        self.assertFalse(self.service.flush_lock.locked())
+        self.assertEqual([len(self.db.pending_fetch_entries(user_id)) for user_id in ("user-a", "user-b")], [1, 1])
+
     async def test_projects_context_excludes_document_summaries_and_invalid_text(self) -> None:
         wrapper = default_projects_memory()
         wrapper["users"] = {"test-user": {

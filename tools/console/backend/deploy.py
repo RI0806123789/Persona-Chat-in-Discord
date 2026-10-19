@@ -299,13 +299,16 @@ class DeployRunner:
     async def _pull(self, step: Step) -> None:
         bot_dir, branch = self.profile.bot_dir, self.profile.deploy_branch
         before = self.record.before_commit or ""
-        result = await self._run(step, rc.deploy_merge_command(bot_dir, branch), label="git pull（早送り）", timeout=FETCH_TIMEOUT)
+        # 送信後は応答が失われても、遠隔側だけ更新されている可能性がある。
+        self._code_changed = True
+        try:
+            result = await self._run(step, rc.deploy_merge_command(bot_dir, branch), label="git pull（早送り）", timeout=FETCH_TIMEOUT)
+        except SshError:
+            await self._check_pull_result(step, before)
+            raise
         if result.exit_status != 0:
             # 失敗しても、途中まで進んでいたら巻き戻しが要るので、今のコミットを読み直して確かめる
-            try:
-                self._code_changed = await self._head(step) != before
-            except (SshError, ValueError):
-                self._code_changed = True  # 確かめられないときは、戻す側に倒す
+            await self._check_pull_result(step, before)
             raise StepFailed(f"{branch} を早送りで取り込めませんでした: {_last_line(result.stderr) or result.exit_status}")
         self._code_changed = True
         after = rc.check_commit(_last_line(result.stdout))
@@ -319,6 +322,19 @@ class DeployRunner:
         log = await self._run(step, rc.deploy_log_command(bot_dir, before, after), label="取り込んだコミット")
         self.record.commits = rc.parse_commit_list(log.stdout) if log.exit_status == 0 else []
         step.message = f"コミット {len(self.record.commits)} 件を取り込みました（{_short(before)} → {_short(after)}）。"
+
+    async def _check_pull_result(self, step: Step, before: str) -> None:
+        """通信失敗・非ゼロ終了のどちらでも、実際のHEADから変更を追跡する。"""
+        try:
+            head = await self._head(step)
+        except (SshError, ValueError, StepFailed):
+            # 状態不明を未変更と扱わず、既存の巻き戻しで復旧の可否を記録する。
+            self._code_changed = True
+            self._append_output(step, "取り込み後のコミットを確認できません。変更の有無は不明のため、巻き戻しを試みます。")
+        else:
+            self.record.after_commit = head
+            self._code_changed = head != before
+            self._append_output(step, f"取り込み結果を再確認しました（現在のコミット: {_short(head)}）。")
 
     async def _deps(self, step: Step) -> None:
         bot_dir = self.profile.bot_dir

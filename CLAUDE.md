@@ -152,6 +152,10 @@ SSH 経由でボットを見守り、サービス操作・デプロイを行う�
 - **動き:** CSS の `--spring-*` は `frontend/src/theme/motion.ts` がばねの物理計算から作り、最初の描画より前に書き込む（CSS に静的な値は無い）。跳ねない Standard が既定（利用者の好み）。ページ・テーマ・伏せ字の切り替えは `viewTransition.ts` の `withViewTransition` を通す（`<html>` の `data-view-transition` で CSS が動きを選ぶ）。ダイアログをボタンの位置から広げる `useEmergeFrom` は Web Animations で動かすため、その間は `data-emerge` で CSS の transition を止める（transition の方が優先されるので、止めないと動きが打ち消される）。閉じる動きを見せる開閉は `components/Collapse.tsx`（`usePresence` で縮み終わってから外す）を使う。
 - **確認:** `tools/console/backend` で `.venv\Scripts\python.exe -B -m unittest discover -s tests`、`tools/console/frontend` で `npm run build`（`tsc --noEmit && vite build`）。
 
+コンソールの専用ランチャーはバックエンドだけに標準入力パイプを渡し、`PERSONA_CONSOLE_MANAGED=1`を設定する。画面終了時はパイプを閉じ、`backend/managed_server.py`がuvicornへ正常終了を要求する。デプロイ完了・巻き戻しとSSH切断を最大60分待ち、期限超過時だけ強制終了してログと終了結果へ失敗を残す。通常の`app.py`単独起動は標準入力を終了通知として扱わない。
+
+デプロイの早送り送信後は、応答タイムアウトでも更新済みの可能性を保つ。実HEADを再取得し、元のコミットと一致した場合だけ未変更と扱う。確認不能時は状態不明を記録して巻き戻しを試み、復旧結果を表示する。
+
 ## アーキテクチャ
 
 全体像の図は `docs/フロー図.drawio`（draw.io 形式。起動フロー・メッセージ受信〜応答・`on_message` パイプライン・自律行動の 4 ページ）にある。図はコードを書き写したものなので、構成を変えたら図も直すこと。
@@ -223,6 +227,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 - **書き込み経路**: 各返信の後、Q/A を発言者の `user_id` 付きで非同期に `pending_log` テーブルへ追記する。
 - **コンパクション（圧縮）**: `flush_if_needed`（`MEMORY_MAINTENANCE_MINUTES` ごとのバックグラウンドループ。返信後にも便乗して発火する）は、`pending_log` を持つユーザーを列挙し、**ユーザーごとに個別に**圧縮する（他人の会話ログを同じ Gemini 呼び出しに混ぜない＝プライバシー保護）。各ユーザーは Q/A 件数のしきい値（`MEMORY_FLUSH_THRESHOLD_ENTRIES`）を超えるかボットがアイドルのときに、そのユーザーの `pending_log` を `profile` テーブル/`projects.json` の該当スライスへ圧縮統合する（他ユーザーのスライスには触れない）。1回のフラッシュで処理する人数は `MEMORY_FLUSH_MAX_USERS_PER_RUN` で上限を設け、一度に大量の API 呼び出しが走らないようにする（残りは次回の見回りで処理）。フェイルセーフ設計で、パース失敗時は pending ログを**保持**（リトライ）するが、3回連続失敗した場合 — またはセーフティフィルタによるブロック時 — は無限ループを避けるためそのユーザー分をクリアする。連続失敗回数はユーザー別に数え、ログをクリアしたとき（ブロック時も）は 0 に戻す（消したログの失敗を新しいログへ持ち越すと、一時エラー1回で上限に達して消えてしまう）。`io_lock` + `flush_lock` で保護されている。
 - **文書要約は圧縮の対象外**: `projects.json` の `document_summaries` は圧縮プロンプトへ**渡さない**（プロンプトが「不要な古い情報は削除」と指示するため、渡すと LLM の判断ひとつで要約が消えたり別のキーへ書き換えられたりして戻せない）。保存時（`_save_compacted_projects`）は、書き込み直前に読み直した最新の一覧をそのまま引き継ぎ、LLM の出力に同名のキーがあっても捨てる。圧縮を待つ間に `store_document_summary` が追記した分も、この読み直しで自然に残る。要約の件数管理（`DOCUMENT_SUMMARY_LIMIT`）は `store_document_summary` だけが担う。
+
+読込・保存の例外はユーザー単位で分離し、原データと生成失敗回数を保持して後続へ進む。読込失敗も処理人数の上限へ数え、連続する通常例外は`MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS`で巡回を打ち切る。キャンセルは伝播する。`flush_lock`→`io_lock`の取得順序と、保存時のDB・JSONの整合性は維持する。
 
 ### 文書パイプライン (`document_service.py`)
 

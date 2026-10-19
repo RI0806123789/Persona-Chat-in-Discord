@@ -16,6 +16,7 @@ from persona_bot.config.constants import (
     MEMORY_COMPACT_TIMEOUT_SECONDS,
     MEMORY_DIR,
     MEMORY_FLUSH_IDLE_SECONDS,
+    MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS,
     MEMORY_FLUSH_MAX_USERS_PER_RUN,
     MEMORY_FLUSH_THRESHOLD_ENTRIES,
     PROFILE_MEMORY_PATH,
@@ -246,18 +247,35 @@ class MemoryService:
             # 個別に圧縮する。1 回のフラッシュで処理する人数は上限で区切り、
             # 一度に大量の API 呼び出しが走らないようにする（残りは次回の見回りで処理）。
             processed = 0
+            consecutive_errors = 0
             for user_id in user_ids:
                 if processed >= MEMORY_FLUSH_MAX_USERS_PER_RUN:
                     break
-                async with self.io_lock:
-                    entries = await run_in_thread(self._db.pending_fetch_entries, str(user_id))
-                if not entries:
-                    continue
-                # _is_flush_required は同期の純粋判定なのでロックは要らない。
-                if not force and not self._is_flush_required(len(entries)):
-                    continue
-                processed += 1
-                await self._flush_user(str(user_id), entries)
+                counted = False
+                try:
+                    async with self.io_lock:
+                        entries = await run_in_thread(self._db.pending_fetch_entries, str(user_id))
+                    if not entries:
+                        consecutive_errors = 0
+                        continue
+                    # _is_flush_required は同期の純粋判定なのでロックは要らない。
+                    if not force and not self._is_flush_required(len(entries)):
+                        consecutive_errors = 0
+                        continue
+                    processed += 1
+                    counted = True
+                    await self._flush_user(str(user_id), entries)
+                except Exception as error:
+                    # 読込・保存の失敗を生成失敗回数へ加算せず、原データを残して再試行する。
+                    if not counted:
+                        processed += 1
+                    consecutive_errors += 1
+                    print(f"記憶圧縮: ユーザー処理に失敗しました (user_id={user_id}, {type(error).__name__})。ログを保持します。")
+                    if consecutive_errors >= MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS:
+                        print("記憶圧縮: 読込・保存の失敗が続いたため、この巡回を終了し、次回に再試行します。")
+                        break
+                else:
+                    consecutive_errors = 0
 
     def _pending_user_ids(self) -> list[str]:
         """同じ io_lock 内の初期化と取得を、1回のワーカー呼出で完了する。"""

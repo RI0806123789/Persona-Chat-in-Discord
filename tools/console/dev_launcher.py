@@ -23,6 +23,8 @@ FRONTEND_URL = "http://127.0.0.1:5173"
 STARTUP_TIMEOUT = 30
 WINDOW_TIMEOUT = 10
 POLL_INTERVAL = 0.2
+# 依存更新と巻き戻しの各900秒の待機も収まる猶予。超過時だけ強制終了する。
+BACKEND_SHUTDOWN_TIMEOUT = 3600
 _LIFETIME_RESOURCES = []
 
 
@@ -168,6 +170,34 @@ def stop_process(process: subprocess.Popen) -> None:
             process.wait(timeout=3)
 
 
+def stop_backend(process: subprocess.Popen, *, timeout: float = BACKEND_SHUTDOWN_TIMEOUT) -> bool:
+    """バックエンドへ正常終了を要求し、デプロイの完了・巻き戻しを待つ。"""
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            logging.exception("バックエンドへの終了通知パイプを閉じられませんでした。")
+    if process.poll() is not None:
+        return process.returncode == 0
+    logging.info("バックエンドの正常終了を待っています（最大 %s 秒）。", timeout)
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logging.error("バックエンドが %s 秒以内に正常終了しなかったため強制終了します。サーバーのデプロイ状態を確認してください。", timeout)
+        stop_process(process)
+        return False
+    if code != 0:
+        logging.error("バックエンドが終了コード %s で終了しました。サーバーのデプロイ状態を確認してください。", code)
+        return False
+    logging.info("バックエンドの正常終了が完了しました。")
+    return True
+
+
+def _stop_backend_checked(process: subprocess.Popen) -> None:
+    if not stop_backend(process):
+        raise RuntimeError("バックエンドを正常終了できませんでした。.run のログとサーバーのデプロイ状態を確認してください。")
+
+
 def run_console(root: Path, notify_ready) -> None:
     python = root / "backend/.venv/Scripts/python.exe"
     vite = root / "frontend/node_modules/vite/bin/vite.js"
@@ -178,7 +208,7 @@ def run_console(root: Path, notify_ready) -> None:
     for port in (8765, 5173):
         check_port_available(port)
     run = root / ".run"
-    environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", PERSONA_CONSOLE_MANAGED="1")
     commands = (
         ([str(python), "-B", "app.py"], root / "backend", "backend.log"),
         ([node, str(vite)], root / "frontend", "frontend.log"),
@@ -188,11 +218,12 @@ def run_console(root: Path, notify_ready) -> None:
         for command, directory, log_name in commands:
             log = resources.enter_context((run / log_name).open("wb"))
             process = subprocess.Popen(
-                command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
+                command, cwd=directory, env=environment,
+                stdin=subprocess.PIPE if log_name == "backend.log" else subprocess.DEVNULL,
                 stdout=log, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
-            resources.callback(stop_process, process)
+            resources.callback(_stop_backend_checked if log_name == "backend.log" else stop_process, process)
             services.append(process)
         wait_until_ready(services)
         # 普段のブラウザへ合流しない専用プロファイルで、画面の終了を追跡する。

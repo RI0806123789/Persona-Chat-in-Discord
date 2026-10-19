@@ -48,6 +48,8 @@ MEMORY_MAINTENANCE_MINUTES = 10
 # アクティブ人数分の呼び出しが一度に走らないよう上限で区切る（レート制限対策）。
 # 上限を超えた分は次回の見回りで順次処理される。
 MEMORY_FLUSH_MAX_USERS_PER_RUN = 5
+# 共有ストレージの障害が疑われる場合、同じ巡回での失敗を繰り返しすぎない。
+MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS = 3
 
 # 記憶ルーティングの分類カテゴリ（route_category とモデレーション統合判定の共通定義）。
 MEMORY_ROUTE_CATEGORIES = ("profile", "projects", "none")
