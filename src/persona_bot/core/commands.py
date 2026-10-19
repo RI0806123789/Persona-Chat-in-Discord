@@ -124,7 +124,15 @@ def register_commands(
                         and getattr(voice_client.channel, "id", None) == voice_channel.id):
                     await announce_voice_join(interaction, voice_channel, already_connected=True)
                     return
-                await voice_client.disconnect(force=True)
+                try:
+                    await voice_client.disconnect(force=True)
+                except Exception as error:
+                    print(f"接続切替エラー（既存接続の切断）: {type(error).__name__}")
+                    await interaction.followup.send(
+                        "⚠️ 既存のボイス接続を切断できなかったため、接続先を切り替えられませんでした。"
+                        "しばらく待ってからもう一度お試しください。"
+                    )
+                    return
 
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。

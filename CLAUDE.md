@@ -160,6 +160,12 @@ SSH 経由でボットを見守り、サービス操作・デプロイを行う�
 
 `bot.py` がコンポジションルート（合成の起点）。設定を読み込み、`genai_client.create_genai_client` で共有SDKクライアントを生成し、`Database`（`database.py`、後述）を最初に初期化してから（`PersonaClient` にも渡し、終了時に閉じさせるため Discord クライアントより先に作る）、各サービスのインスタンスを1つずつ生成して、DI フレームワークを使わず手作業で相互に注入する。共有される可変ランタイム状態はすべて単一の `BotState` データクラス（`app_state.py`）にまとめられ、必要なサービスに渡される。**ただしペルソナ・モデル・応答モードなど「サーバーごとに変わる設定」は `BotState` 直下ではなく `GuildSettings` に入っている**（「ギルド単位の設定」の項を参照）。`register_commands`（`commands.py`）がスラッシュコマンドを `CommandTree` に登録する。`on_ready` でコマンドを同期し、各種の見回りループ（`memory_maintenance_loop` / `auto_topic_loop` / `autonomous_loop` / `anniversary_loop` / `reminder_loop` / `feedback_prune_loop`。いずれも `background.make_guarded_loop` で作る）を開始し、文書ワーカーのコルーチンを起動する。ループの二重起動は `BotState` の `*_background_started` フラグで防ぐ（`on_ready` は再接続のたびに発火するため）。
 
+### 背景処理と終了 (`background.py`, `bot_client.py`)
+
+`PersonaClient.background_tasks`（`TaskOwner`）がボット単位の所有者。`PersonaClient.start` とDiscordイベントからコンテキストを引き継ぎ、その配下の `spawn` を自動登録する。単独で起動する処理は `spawn(..., owner=client.background_tasks)` または `with client.background_tasks.scope()` で所有者を明示する。管理外の処理や別の所有者のタスクは終了対象に含めない。周期処理は `make_guarded_loop(..., owner=client.background_tasks)` で登録する。
+
+終了は一つのタスクを共有する。受付停止・周期処理のキャンセル後、所有するイベントと背景タスクを中断して終了を待つ。`run_in_thread` の同期ワーカーと `wait_for_cleanup` の後片付けは直接キャンセルせず、親タスクも完了まで待つ。終了タスク自身は所有集合から分離し、後片付けを通常の `spawn` で起動しないこと（停止後は新規受付を拒否する）。その後、文書ワーカー・自律配信の終了callbackを呼び、Discord → Gemini → DBの順に閉じる。`close` の重複・呼出元の繰り返しキャンセルでも終了処理は一度だけ実行する。
+
 ### ギルド単位の設定 (`app_state.py`)
 
 同じボットを複数の Discord サーバーへ招待しても設定が混ざらないよう、可変設定は**サーバー（ギルド）ごとに分離**されている。
@@ -254,14 +260,14 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 **元メッセージを持たないテキストは `speak_text(guild, text, prompt_file)` を使う。** `play_tts_response` はこれを `message.guild` 付きで呼ぶだけの薄い層で、実体（接続確認・整形・キュー投入）はすべて `speak_text` 側にある。自律行動の独り言のように「どの発言への返信でもない」読み上げはこちらを直接呼ぶこと（キュー・ワーカーを二重に実装しないため）。
 
-自律配信の第一声・独り言・コメント応答では、両入口の `is_valid` にセッションと接続先の照合関数を渡す。キューには本文・ボイスプロファイルと一緒にこの関数も保持し、投入前・合成前・再生直前に確認する。合成中にVoiceClientが差し替わった場合も再生しない。通常チャットの読み上げではこの判定を省略できる。
+自律配信の第一声・独り言・コメント応答では、両入口の `is_valid` にセッションと接続先の照合関数を渡す。キューには本文・ボイスプロファイルと一緒にこの関数も保持し、投入前・合成前・再生直前に確認する。通常チャットも含め、全依頼へ投入時のVoiceClientとチャンネルIDを記録し、合成前・再生直前に照合する。切断・接続差し替え・同じVoiceClientの移動後は旧依頼を捨てる。同一接続・同一チャンネルの再利用時はキューを保持し、ワーカー終了時は所有するキューだけを回収する。
 
 **音声エンジンは edge-tts（主）＋ gTTS（退避）の二段構え。** `_fetch_mp3` が主エンジンの **edge-tts**（Microsoft Edge の読み上げが使うニューラル音声。API キー不要）で合成し、例外または空応答なら **gTTS**（`lang=TTS_LANG`）へ退避する。edge-tts は公式に third-party 利用が認められた API ではなく過去に Microsoft 側の仕様変更で使えなくなった経緯があるため、**この退避経路を消さないこと**（消すと壊れた瞬間に読み上げ機能ごと止まる）。退避中は話者・高さ・速さを再現できずキャラ差が失われるが、音色（EQ）だけは掛かる。退避と復旧のログは `_edge_tts_failing` で**状態が変わったときだけ**出す（失敗が続く間、返信のたびにログが溢れないようにするため）。
 
 **FFmpeg には依存しない。** どちらのエンジンも返す mp3（24kHz モノラル）を **miniaudio**（C ライブラリを同梱した pip の binary wheel。exe 不要）で**メモリ上のまま** `TTS_SAMPLE_RATE`（48kHz）/ `TTS_CHANNELS`（ステレオ）/ 16bit の生 PCM へデコードし、`discord.PCMAudio` に渡す。Discord のボイス送信はこの形式をそのまま受け取れるため、変換用の外部プロセスも一時ファイルも要らない（CPU 1コア・メモリ 1GB 級の VPS で動かすための構成）。**`discord.FFmpegPCMAudio` を使う実装に戻さないこと** — 返信のたびに別プロセスが起動し、小メモリ環境では OOM の原因になる。
 
 - **非同期と別スレッドの使い分け**: `_synthesize_pcm` は **async 関数**。edge-tts は async ネイティブなのでイベントループ上でそのまま `await` する（通信待ちでループは塞がらない）。同期処理である gTTS の呼び出しと、デコード＋EQ の CPU 処理だけを `run_in_thread` へ逃がす。全体を `asyncio.wait_for(_synthesize_pcm(...), timeout=TTS_TIMEOUT_SECONDS)` で包むが、同期処理中のキャンセルはワーカー完了を待って伝える。**edge-tts を `asyncio.to_thread` の中で `asyncio.run()` して呼ばないこと** — イベントループが入れ子になり動作しない。
-- **読み上げキュー**: 再生中に届いた返信を捨てないよう、ギルドIDごとに `asyncio.Queue`（`maxsize=TTS_QUEUE_MAX`）を持つ。積むのは **`(テキスト, ボイスプロファイル, 任意の有効性判定)` の組**で、プロファイルは `play_tts_response` の時点で `resolve_profile` により確定させる（待っている間にペルソナを切り替えられても、積まれた分は依頼時のキャラクターの声で読み上げる。新規に合成する分から新プロファイルが反映されれば十分）。ワーカーは最初の依頼で起動し、キューが空になったら `_speech_queues` から自分を消して終了する（参加していないサーバー分のタスクを常駐させないため）。**キューが空だと判定してから登録を消すまでの間に `await` を挟まないこと** — 挟むとその隙に積まれた依頼が誰にも処理されず取り残される。キューが溢れた分は捨てる（古い返信を延々と喋り続けるより会話の現在地に追従する方が自然なため）。
+- **読み上げキュー**: 再生中に届いた返信を捨てないよう、ギルドIDごとに `asyncio.Queue`（`maxsize=TTS_QUEUE_MAX`）を持つ。積むのは **`_SpeechRequest`（テキスト・ボイスプロファイル・投入時の接続とチャンネルID・任意の有効性判定）**で、プロファイルは `speak_text` の時点で `resolve_profile` により確定させる（待っている間にペルソナを切り替えられても、積まれた分は依頼時のキャラクターの声で読み上げる。新規に合成する分から新プロファイルが反映されれば十分）。ワーカーは最初の依頼で起動し、キューが空になったら `_speech_queues` から自分を消して終了する（参加していないサーバー分のタスクを常駐させないため）。**キューが空だと判定してから登録を消すまでの間に `await` を挟まないこと** — 挟むとその隙に積まれた依頼が誰にも処理されず取り残される。キューが溢れた分は捨てる（古い返信を延々と喋り続けるより会話の現在地に追従する方が自然なため）。
 - **再生の完了待ち**: `voice_client.play()` の `after` コールバックは discord.py の**再生スレッド**から呼ばれる。イベントループ側のオブジェクト（`asyncio.Event`）へは必ず `loop.call_soon_threadsafe` 経由で触ること。
 - **接続は毎回見直す**: 読み上げ中に `/leave` されうるため、ワーカーはループのたびに `guild.voice_client` を取り直して接続状態を確認する。
 - **読み上げテキストの整形** (`build_speech_text`): `affinity_service.strip_speech_tags` で感情・親密度の内部タグを除去してから、URL・コードブロック・インラインコード・カスタム絵文字・メンション・Markdown 記号を除去し、`TTS_MAX_CHARS` を超える分は `TTS_TRUNCATION_NOTICE` を付けて打ち切る。特に **URL は音声エンジンが1文字ずつ読み上げて極端に長くなる**ため必ず除去する。通常チャット以外の入口にも備えて音声側でタグを除去し、タグだけならキューへ積まない。

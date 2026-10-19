@@ -23,6 +23,8 @@ asyncio のイベントループは実行中のタスクを**弱参照**でし�
 """
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable, Coroutine
 
 import discord
@@ -30,17 +32,99 @@ from discord.ext import tasks
 
 # 実行中タスクへの強参照。完了時にコールバックで取り除くため溜まり続けることはない。
 _background_tasks: set[asyncio.Task[Any]] = set()
+_current_owner: ContextVar["TaskOwner | None"] = ContextVar("background_owner", default=None)
 
 
-def spawn(coro: Coroutine[Any, Any, Any], *, label: str) -> asyncio.Task[Any]:
+@contextmanager
+def task_scope(owner: "TaskOwner | None"):
+    """子タスクへ引き継ぐ所有者を指定し、Noneなら管理対象から分離する。"""
+    token = _current_owner.set(owner)
+    try:
+        yield
+    finally:
+        _current_owner.reset(token)
+
+
+class TaskOwner:
+    """ボット単位で受付・周期処理・背景処理の寿命を管理する。"""
+
+    def __init__(self) -> None:
+        self.stopping = False
+        self._tasks: dict[asyncio.Task[Any], bool] = {}
+        self._loops: list[tasks.Loop[Any]] = []
+
+    def scope(self):
+        """この範囲と子タスクからの spawn に所有者を引き継ぐ。"""
+        return task_scope(self)
+
+    def release_current(self) -> None:
+        """終了を要求したタスク自身を、終了待機の対象から外す。"""
+        self._tasks.pop(asyncio.current_task(), None)
+
+    def add_loop(self, loop: tasks.Loop[Any]) -> None:
+        self._loops.append(loop)
+
+    def _track(self, task: asyncio.Task[Any], *, protected: bool = False) -> None:
+        self._tasks[task] = protected
+        task.add_done_callback(lambda finished: self._tasks.pop(finished, None))
+
+    async def run(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        """Discordイベント本体も受付停止と終了待機の対象にする。"""
+        if self.stopping:
+            coro.close()
+            raise asyncio.CancelledError
+        task = asyncio.current_task()
+        self._track(task)
+        try:
+            with self.scope():
+                return await coro
+        finally:
+            self._tasks.pop(task, None)
+
+    async def shutdown(self) -> None:
+        """通常処理を一度だけ中断し、同期ワーカーと後片付けは完了を待つ。"""
+        self.stopping = True
+        loop_tasks = set()
+        for loop in self._loops:
+            task = loop.get_task()
+            loop.cancel()
+            if task is not None:
+                loop_tasks.add(task)
+                if task not in self._tasks:
+                    self._track(task)
+        for task, protected in list(self._tasks.items()):
+            if not protected and task not in loop_tasks:
+                task.cancel()
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # 完了通知の実行順に依存せず、回収済みの参照を外す。
+            self._tasks = {task: protected for task, protected in self._tasks.items() if not task.done()}
+
+
+def spawn(
+    coro: Coroutine[Any, Any, Any], *, label: str,
+    owner: TaskOwner | None = None, _protected: bool = False,
+) -> asyncio.Task[Any]:
     """コルーチンをバックグラウンドで実行する。完了までタスクへの強参照を保つ。
 
     Args:
         coro: 実行するコルーチン。
         label: 失敗時のログに出す処理名（例: "会話統計の記録"）。
             どの処理が落ちたのか追えるよう、呼び出し側で必ず指定すること。
+        owner: 明示する所有者。省略時は呼出元のコンテキストを引き継ぐ。
+        _protected: 同期ワーカーと後片付け専用。通常の背景処理では指定しない。
     """
-    task = asyncio.create_task(coro)
+    owner = owner if owner is not None else _current_owner.get()
+    if owner is None:
+        task = asyncio.create_task(coro)
+    else:
+        with owner.scope():
+            task = asyncio.create_task(coro)
+        if owner.stopping and not _protected:
+            # 開始前に中断するので、渡されたコルーチンの本体は実行されない。
+            task.cancel()
+        else:
+            owner._track(task, protected=_protected)
     _background_tasks.add(task)
     task.add_done_callback(lambda finished: _on_task_done(finished, label))
     return task
@@ -67,7 +151,7 @@ async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any)
         except Exception as error:
             return None, error
 
-    worker = spawn(invoke(), label="同期I/O・描画処理")
+    worker = spawn(invoke(), label="同期I/O・描画処理", _protected=True)
     canceled = False
     while True:
         try:
@@ -95,7 +179,11 @@ async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any)
 
 async def wait_for_cleanup(coro: Coroutine[Any, Any, Any], *, label: str) -> Any:
     """後片付けを別タスクで完了させ、待機中のキャンセルは完了後に伝播する。"""
-    cleanup = spawn(coro, label=label)
+    return await wait_for_task(spawn(coro, label=label, _protected=True))
+
+
+async def wait_for_task(cleanup: asyncio.Task[Any]) -> Any:
+    """共有する終了タスクを、繰り返しのキャンセルから保護して待つ。"""
     canceled = False
     while True:
         try:
@@ -118,6 +206,7 @@ def make_guarded_loop(
     client: discord.Client,
     minutes: float | None = None,
     seconds: float | None = None,
+    owner: TaskOwner | None = None,
 ) -> tasks.Loop[Any]:
     """例外で止まらない定期実行ループ（tasks.Loop）を組み立てて返す。
 
@@ -141,6 +230,7 @@ def make_guarded_loop(
         client: 接続完了を待つ対象の Discord クライアント。
         minutes: 実行間隔（分）。`seconds` とはどちらか一方だけを指定する。
         seconds: 実行間隔（秒）。分未満の間隔で見回りたい場合に使う。
+        owner: 終了時に停止・待機する所有者。
 
     Returns:
         `tasks.Loop`。呼び出し側は `on_ready` などで `.start()` すること
@@ -157,13 +247,23 @@ def make_guarded_loop(
 
     @tasks.loop(**interval)
     async def guarded_loop() -> None:
+        if owner is not None and owner.stopping:
+            raise asyncio.CancelledError
         try:
-            await coro_factory()
+            if owner is None:
+                await coro_factory()
+            else:
+                with owner.scope():
+                    await coro_factory()
         except Exception as error:
             print(f"{label}: {error}")
 
     @guarded_loop.before_loop
     async def before_guarded_loop() -> None:
         await client.wait_until_ready()
+        if owner is not None and owner.stopping:
+            raise asyncio.CancelledError
 
+    if owner is not None:
+        owner.add_loop(guarded_loop)
     return guarded_loop

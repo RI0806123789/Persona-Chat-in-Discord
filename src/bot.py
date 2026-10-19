@@ -87,6 +87,7 @@ client.add_shutdown_callback(documents.stop_worker)
 stats = StatsService(database, gemini)
 auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
 autonomous = AutonomousService(client, state, gemini, moderator, ng_filter, usage)
+client.add_shutdown_callback(autonomous.stop_all_sessions)
 reminders = ReminderService(client, database, ng_filter)
 feedback = FeedbackService(client, database)
 # 集計パネル（会話統計 → 👍 フィードバック）は機能ハブ経由で生成されるため、
@@ -111,6 +112,7 @@ memory_maintenance_loop = make_guarded_loop(
     memory.flush_if_needed,
     label="バックグラウンド記憶処理エラー",
     client=client,
+    owner=client.background_tasks,
     minutes=MEMORY_MAINTENANCE_MINUTES,
 )
 
@@ -118,6 +120,7 @@ auto_topic_loop = make_guarded_loop(
     auto_topic.run_pending_checks,
     label="自発的な会話の見回りエラー",
     client=client,
+    owner=client.background_tasks,
     minutes=AUTO_TOPIC_CHECK_MINUTES,
 )
 
@@ -125,6 +128,7 @@ anniversary_loop = make_guarded_loop(
     auto_topic.run_anniversary_checks,
     label="記念日チェックエラー",
     client=client,
+    owner=client.background_tasks,
     minutes=ANNIVERSARY_CHECK_MINUTES,
 )
 
@@ -135,6 +139,7 @@ autonomous_loop = make_guarded_loop(
     autonomous.run_pending_checks,
     label="自律行動の見回りエラー",
     client=client,
+    owner=client.background_tasks,
     minutes=AUTONOMOUS_CHECK_MINUTES,
 )
 
@@ -143,6 +148,7 @@ reminder_loop = make_guarded_loop(
     reminders.run_due_checks,
     label="リマインダー確認エラー",
     client=client,
+    owner=client.background_tasks,
     seconds=REMINDER_CHECK_SECONDS,
 )
 
@@ -153,12 +159,15 @@ feedback_prune_loop = make_guarded_loop(
     feedback.prune_stored,
     label="フィードバック記録の整理エラー",
     client=client,
+    owner=client.background_tasks,
     minutes=FEEDBACK_PRUNE_MINUTES,
 )
 
 
 @client.event
 async def on_ready() -> None:
+    if client.background_tasks.stopping:
+        return
     print(f"ログイン成功: {client.user}")
     async with memory.io_lock:
         await run_in_thread(memory.ensure_storage)

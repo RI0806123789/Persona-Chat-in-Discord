@@ -618,6 +618,14 @@ class AutonomousService:
             f"次に試すのは約 {wait_minutes:.0f} 分後です。"
         )
 
+    async def stop_all_sessions(self) -> None:
+        """周期処理の終了後、所有するすべての配信枠と接続を回収する。"""
+        for guild_id in list(self._state.guild_settings):
+            try:
+                await self.stop_session(guild_id, reason="ボットの終了")
+            except Exception as error:
+                print(f"自律行動: 終了時の後片付けに失敗しました: {type(error).__name__}")
+
     async def stop_session(
         self,
         guild_id: int,
@@ -673,19 +681,13 @@ class AutonomousService:
         except asyncio.CancelledError:
             canceled = True
         finally:
-            cleanup = spawn(
-                autonomous_stage.finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
-                label="自律行動の終了後片付け",
-            )
-            while True:
-                try:
-                    await asyncio.shield(cleanup)
-                    break
-                except asyncio.CancelledError:
-                    if cleanup.cancelled():
-                        raise
-                    # キャンセルを繰り返されても、ステージ枠と元の接続を片付け終える。
-                    canceled = True
+            try:
+                await wait_for_cleanup(
+                    autonomous_stage.finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
+                    label="自律行動の終了後片付け",
+                )
+            except asyncio.CancelledError:
+                canceled = True
 
         print(f"自律行動: 配信を終了しました（guild={guild_id} / 理由: {reason}）。")
         if canceled:

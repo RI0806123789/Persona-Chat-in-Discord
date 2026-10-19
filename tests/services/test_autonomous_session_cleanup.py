@@ -87,6 +87,19 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.notice.assert_not_awaited()
         self.assert_cleared()
 
+    async def test_shutdown_closes_owned_stage_without_sending_notice(self) -> None:
+        await self.service.stop_all_sessions()
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        self.notice.assert_not_awaited()
+        self.assert_cleared()
+
+    async def test_shutdown_continues_with_other_guild_after_failure(self) -> None:
+        self.state.get_guild(2)
+        self.service.stop_session = AsyncMock(side_effect=[OSError("架空の終了失敗"), True])
+        await self.service.stop_all_sessions()
+        self.assertEqual([call.args[0] for call in self.service.stop_session.await_args_list], [1, 2])
+
     async def test_reconnect_during_stage_cleanup_is_also_disconnected(self) -> None:
         async def reconnected(**kwargs):
             self.voice.is_connected.return_value = True

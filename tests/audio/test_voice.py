@@ -132,6 +132,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = Mock(spec=discord.VoiceClient)
         self.client.is_connected.return_value = True
+        self.client.channel = SimpleNamespace(id=10)
         self.guild = SimpleNamespace(id=1, voice_client=self.client)
         self.workers = []
 
