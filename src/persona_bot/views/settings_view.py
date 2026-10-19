@@ -12,7 +12,10 @@ from persona_bot.config.choices import (
     RESPOND_MODE_DISPLAY_NAMES,
 )
 from persona_bot.config.paths import resolve_prompt_path
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, BackButton,
+    HubFactory, PanelView,
+)
 
 
 def _build_status_text(
@@ -64,9 +67,10 @@ class PersonaSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_persona = self.values[0]
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class ModelSelect(ui.Select):
@@ -89,9 +93,10 @@ class ModelSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_model = self.values[0]
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class RespondModeSelect(ui.Select):
@@ -114,9 +119,10 @@ class RespondModeSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_respond_mode = self.values[0]
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class ConfirmButton(ui.Button):
@@ -131,15 +137,15 @@ class ConfirmButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
 
         # ペルソナのファイル存在チェック
         await interaction.response.defer()
         if not await run_in_thread(lambda: resolve_prompt_path(view.temp_persona).exists()):
-            await interaction.edit_original_response(
+            await edit_panel_message(interaction, deferred=True,
                 content=f"エラー: ファイル「{view.temp_persona}」が見つかりませんでした。設定は変更されていません。",
                 view=None,
             )
-            view.stop()
             return
 
         # 一時選択値をこのサーバー（ギルド）専用の設定に反映し、DB へ保存する
@@ -157,8 +163,7 @@ class ConfirmButton(ui.Button):
             confirmed=True,
         )
 
-        await interaction.edit_original_response(content=confirmed_text, view=None)
-        view.stop()
+        await edit_panel_message(interaction, deferred=True, content=confirmed_text, view=None)
 
 
 class ResetButton(ui.Button):
@@ -174,26 +179,25 @@ class ResetButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: SettingsView = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
 
         channel = interaction.channel
         channel_id = getattr(channel, "id", None)
         if channel_id is None:
-            await interaction.response.edit_message(
+            await edit_panel_message(interaction,
                 content="エラー: チャンネルが取得できませんでした。",
                 view=None,
             )
-            view.stop()
             return
 
         # パネル作成時ではなく、ボタン押下時点を境界にする。
         # Interaction ID もメッセージと同じ Snowflake なので履歴の after に使える。
         view.guild_settings.channel_reset_points[int(channel_id)] = interaction.id
 
-        await interaction.response.edit_message(
+        await edit_panel_message(interaction,
             content="🔄 会話履歴をリセットしました。ここから新しい会話を始めます。",
             view=None,
         )
-        view.stop()
 
 
 class SettingsView(PanelView):

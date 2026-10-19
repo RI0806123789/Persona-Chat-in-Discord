@@ -112,6 +112,36 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             run.assert_not_awaited()
         self.assertTrue(self.bot.active)
 
+    async def test_stop_reaches_fake_ssh_from_restart_wait_starting_and_reloading(self):
+        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+        original_show = self.bot.service_show
+        for active_state, sub_state in (("activating", "auto-restart"), ("activating", "start"), ("reloading", "reload")):
+            with self.subTest(active_state=active_state, sub_state=sub_state):
+                self.bot.active = True
+
+                def show():
+                    value = original_show()
+                    if self.bot.active:
+                        value = value.replace("ActiveState=active\n", f"ActiveState={active_state}\n")
+                        value = value.replace("SubState=running\n", f"SubState={sub_state}\n")
+                    return value
+
+                with mock.patch.object(self.bot, "service_show", side_effect=show):
+                    status, body = await request("/api/status")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["service"]["active_state"], active_state)
+                    history_count = len(self.session.history)
+                    stale = {**target, "connected_at": target["connected_at"] + 1}
+                    self.assertEqual((await request("/api/service/stop", method="POST", body=stale))[0], 409)
+                    self.assertEqual(len(self.session.history), history_count)
+                    status, body = await request("/api/service/stop", method="POST", body=target)
+                    self.assertEqual(status, 200)
+                    self.assertTrue(json.loads(body)["ok"])
+                    self.assertEqual(json.loads(body)["profile_id"], self.profile.id)
+                    self.assertFalse(self.bot.active)
+                    status, body = await request("/api/status")
+                    self.assertEqual(json.loads(body)["service"]["active_state"], "inactive")
+
     async def test_sudo_failure_is_recorded_with_japanese_instructions(self):
         target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
         with mock.patch.object(self.session, "run", return_value=CommandResult("", "sudo: a password is required", 1, 2)):

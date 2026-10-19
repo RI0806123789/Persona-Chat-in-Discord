@@ -4,7 +4,7 @@ import { Icon, type IconName } from "../components/Icon";
 import { Button, Card, EmptyState, StatusChip } from "../components/ui";
 import { formatDateTime } from "../format";
 import { usePrivacy } from "../privacy";
-import { serviceTone } from "../status";
+import { canStopService, serviceTone } from "../status";
 import type { DeployRecord, GitInfo, Operation, Profile, ServiceAction, ServiceStatus } from "../types";
 import { DeployCard } from "./DeployCard";
 import { NotConnected } from "./shared";
@@ -77,7 +77,7 @@ export function OperationsPage({
           <div className="action-grid">
             {ACTIONS.map((item) => {
               const disabled =
-                busyAction !== null || deployRunning || !service || (item.action === "start" && active) || (item.action === "stop" && !active);
+                busyAction !== null || deployRunning || !service || (item.action === "start" && active) || (item.action === "stop" && !canStopService(service));
               return (
                 <div key={item.action} className={`action-card action-${item.variant}`}>
                   <span className="action-icon">{busyAction === item.action ? <LoadingIndicator size={40} /> : <Icon name={item.icon} size={28} />}</span>

@@ -8,6 +8,13 @@ export interface ToneLabel {
   hint?: string;
 }
 
+/** 起動途中・自動再起動待ち・再読み込み中も、明示的な停止を許可する。 */
+export function canStopService(service: ServiceStatus | null): boolean {
+  return service !== null
+    && (service.load_state === "loaded" || service.load_state === "masked")
+    && ["active", "activating", "reloading"].includes(service.active_state);
+}
+
 /** systemd の状態を、色と日本語のラベルにする。色だけで意味を伝えないよう、必ずラベルと組で使う。 */
 export function serviceTone(service: ServiceStatus | null): ToneLabel {
   if (!service) return { tone: "neutral", label: "不明" };

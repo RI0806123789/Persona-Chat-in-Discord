@@ -155,7 +155,7 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                 if private:
                     sending.assert_not_awaited()
                     interaction.channel.send.assert_not_awaited()
-                    interaction.edit_original_response.assert_awaited_once_with(content=text[:2000])
+                    interaction.edit_original_response.assert_awaited_once_with(content=text[:2000], view=None)
                     self.assertEqual([len(call.args[0]) for call in interaction.followup.send.call_args_list], [2000, 1])
                     self.assertTrue(all(call.kwargs == {"ephemeral": True} for call in interaction.followup.send.call_args_list))
                 else:

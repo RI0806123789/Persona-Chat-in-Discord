@@ -5,7 +5,7 @@ import { formatBytes, formatClock, formatDuration, formatNumber, formatPercent, 
 import { LEVEL_LABELS, classifyEntries, displayMessage } from "../logs";
 import { conversationLines, redactLogLine, usePrivacy } from "../privacy";
 import type { PageId } from "../navigation";
-import { ratioOf, serviceTone, usageTone } from "../status";
+import { canStopService, ratioOf, serviceTone, usageTone } from "../status";
 import type { ConnectionState, Insights, LogEntry, Profile, Sample, ServiceAction, StatusResponse } from "../types";
 import { NotConnected } from "./shared";
 
@@ -137,7 +137,7 @@ function ServiceHero({
           disabled={!service || deployRunning}
           busy={busyAction !== null}
           items={[
-            { label: "停止", icon: "stop", onSelect: () => onRequestAction("stop"), disabled: !active, danger: true },
+            { label: "停止", icon: "stop", onSelect: () => onRequestAction("stop"), disabled: !canStopService(service), danger: true },
             { label: "起動", icon: "play", onSelect: () => onRequestAction("start"), disabled: active },
             { label: "再起動", icon: "restart", onSelect: () => onRequestAction("restart"), disabled: !active },
           ]}

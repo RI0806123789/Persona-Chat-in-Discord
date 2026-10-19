@@ -311,6 +311,8 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
 
+`PanelView`は同じメッセージを共有するパネルの表示先・操作世代・編集ロックを引き継ぐ。DB等の待機前に`begin_panel_operation`で世代を確保し、画面更新は`edit_panel_message`を使う（保留後の確定更新は`deferred=True`）。古い操作の画面更新を破棄しても、受付済みの保存は最後まで待つ。遷移では実際に表示していたViewと不採用の遷移先を停止し、旧タイマーが最新画面へ触れないようにする。長時間処理の結果も同じ操作世代で確認する。
+
 DBを待つGoogle検索トグル・自発会話の確定・リマインダー一覧と取消・統計プライバシーの確定と削除は、先にコンポーネント応答を`defer(ephemeral=True)`してから保存・取得する。その後は`edit_original_response`で元のパネルを更新し、`swap_panel`も`response.is_done()`に応じて編集経路を選ぶ。保留後もViewの停止・Webhookの参照・ブラックリスト判定を引き継ぐ。選択肢の表示文は`view_parts.select_option_text`で1行にし、空の名前はID等で補う。統計の候補取得は選択中のユーザーを上限内に残すが、収集停止中のユーザーは含めず、`has_data`も収集停止分を数えない。
 
 サブパネルへの遷移とハブ復帰では、古いViewを停止して `await interaction.original_response()` の `InteractionMessage` を新しいViewへ渡す。通常の `interaction.message` を保持すると、エフェメラルUIのタイムアウト編集がチャンネル経由になり404で失敗する。

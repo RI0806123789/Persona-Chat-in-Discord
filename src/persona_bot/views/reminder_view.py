@@ -3,7 +3,10 @@ from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS, REMINDER_PANEL_MAX_LENGTH
 from persona_bot.services.reminder_service import ReminderService
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, BackButton,
+    HubFactory, PanelView, select_option_text,
+)
 
 
 def _build_status_text(records: list[dict], service: ReminderService) -> str:
@@ -56,23 +59,22 @@ class ReminderCancelSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "ReminderView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         await interaction.response.defer(ephemeral=True)
         reminder_id = int(self.values[0])
 
         # 取り消しは SQL 側でも user_id で絞るため、他人のものは取り消せない
         canceled = await view.service.cancel(reminder_id, view.viewer_id)
         if canceled is None:
-            await interaction.edit_original_response(
+            await edit_panel_message(interaction, deferred=True,
                 content="このリマインダーは既に通知済みか、取り消されています。", view=None
             )
-            view.stop()
             return
 
-        await interaction.edit_original_response(
+        await edit_panel_message(interaction, deferred=True,
             content=f"🗑️ リマインダーを取り消しました。\n・{view.service.describe(canceled)}",
             view=None,
         )
-        view.stop()
 
 
 class ReminderView(PanelView):

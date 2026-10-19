@@ -3,7 +3,10 @@ from discord import ui
 
 from persona_bot.config.constants import STATS_RECENT_SAMPLES_MAX
 from persona_bot.services.stats_service import StatsService
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, BackButton,
+    HubFactory, PanelView,
+)
 
 
 def _build_status_text(
@@ -47,11 +50,12 @@ class StatsCollectToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsPrivacyView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_collect_enabled = not view.temp_collect_enabled
         # トグルし直したら削除の確認状態は解除する（別操作を巻き込まないため）
         view.delete_confirmed = False
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class StatsPrivacyConfirmButton(ui.Button):
@@ -62,6 +66,7 @@ class StatsPrivacyConfirmButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsPrivacyView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         await interaction.response.defer(ephemeral=True)
 
         opted_out = not view.temp_collect_enabled
@@ -79,8 +84,9 @@ class StatsPrivacyConfirmButton(ui.Button):
             # 設定はメモリ上には反映済みだが、再起動で失われる可能性があるため隠さず伝える。
             result += "\n⚠️ ただし設定を保存できませんでした。ボットの再起動で元に戻る可能性があります。"
 
-        await interaction.edit_original_response(content=result, view=None)
-        view.stop()
+        shown = await edit_panel_message(interaction, deferred=True, content=result, view=None)
+        if not shown and not saved:
+            await interaction.followup.send(result, ephemeral=True)
 
 
 class StatsDataDeleteButton(ui.Button):
@@ -92,12 +98,13 @@ class StatsDataDeleteButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsPrivacyView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
 
         if not view.delete_confirmed:
             # 1回目は確認を促すだけ。DB には触らない（View の一時状態のみ）。
             view.delete_confirmed = True
             view.refresh_items()
-            await interaction.response.edit_message(content=view.build_preview(), view=view)
+            await edit_panel_message(interaction, content=view.build_preview(), view=view)
             return
 
         # 削除するのは実行者本人の分だけ（他人のIDを指定できる経路は作らない）。
@@ -112,8 +119,9 @@ class StatsDataDeleteButton(ui.Button):
             # プライバシー操作の失敗は隠さない（黙って成功したように見せない）。
             result = "⚠️ データを削除できませんでした。時間をおいて再度お試しください。"
 
-        await interaction.edit_original_response(content=result, view=None)
-        view.stop()
+        shown = await edit_panel_message(interaction, deferred=True, content=result, view=None)
+        if not shown and not deleted:
+            await interaction.followup.send(result, ephemeral=True)
 
 
 class StatsPrivacyView(PanelView):

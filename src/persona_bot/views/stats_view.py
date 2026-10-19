@@ -5,7 +5,11 @@ from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.utils.discord_helpers import is_administrator, split_message
 from persona_bot.services.feedback_service import FeedbackService, get_default_service
 from persona_bot.services.stats_service import StatsService
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text, send_graph_ephemeral
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, panel_operation_is_current,
+    BackButton, HubFactory, PanelView,
+    select_option_text, send_graph_ephemeral,
+)
 
 # 項目セレクトの値 → 表示名
 _ITEM_LABELS = {
@@ -28,9 +32,10 @@ class StatsItemSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_item = self.values[0]
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class StatsUserSelect(ui.Select):
@@ -59,9 +64,10 @@ class StatsUserSelect(ui.Select):
         if not is_administrator(interaction.user):
             await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
             return
+        begin_panel_operation(view, interaction)
         view.temp_target_id = self.values[0]
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class RunStatsButton(ui.Button):
@@ -79,9 +85,10 @@ class RunStatsButton(ui.Button):
             await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
             return
 
+        begin_panel_operation(view, interaction)
         # パネル（エフェメラル）を「集計中」に更新してから長時間処理に入る。
-        await interaction.response.edit_message(content="🔄 集計中...", view=None)
-        view.stop()
+        if not await edit_panel_message(interaction, content="🔄 集計中...", view=None):
+            return
 
         # viewer_id（誰が見ているか）を必ず渡す。省略すると build_dashboard が
         # 「本人が見ている」とみなし、管理者が他人の統計を開いたときに
@@ -94,9 +101,11 @@ class RunStatsButton(ui.Button):
             caption, images = await view.stats.build_dashboard(
                 target_id, view.temp_item, viewer_id=view.viewer_id
             )
+            if not panel_operation_is_current(view, interaction):
+                return
             # 描画・解析の待機中にも権限は変わりうる。送信直前にも他人のデータを守る。
             if target_id != view.viewer_id and not is_administrator(interaction.user):
-                await interaction.edit_original_response(
+                await edit_panel_message(interaction, deferred=True,
                     content="この機能はサーバー管理者のみ利用できます。", view=None,
                 )
                 return
@@ -104,7 +113,8 @@ class RunStatsButton(ui.Button):
             for filename, buffer in images:
                 files.append(discord.File(buffer, filename=filename))
             chunks = split_message(caption)
-            await interaction.edit_original_response(content=chunks[0])
+            if not await edit_panel_message(interaction, deferred=True, content=chunks[0]):
+                return
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk, ephemeral=True)
             if files:
@@ -114,7 +124,7 @@ class RunStatsButton(ui.Button):
             print(f"会話統計の生成・送信中にエラー: {error}")
             notice = "エラー: 統計の表示に失敗しました。"
             try:
-                await interaction.edit_original_response(content=notice, view=None)
+                await edit_panel_message(interaction, deferred=True, content=notice, view=None)
             except Exception:
                 await interaction.followup.send(notice, ephemeral=True)
         finally:
