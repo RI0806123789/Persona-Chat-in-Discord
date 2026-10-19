@@ -1,6 +1,7 @@
 """共通化した送信・権限・マスク処理と、調整定数の反映を検証する。"""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import io
 from pathlib import Path
 import sys
@@ -80,7 +81,11 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
             id=10, name="架空のチャンネル", send=AsyncMock(), guild=SimpleNamespace(me=object()),
             permissions_for=Mock(return_value=SimpleNamespace(view_channel=True, send_messages=True)),
         )
-        settings = auto_topic_service.GuildSettings(current_prompt_file="架空のパス", current_model_name="架空モデル")
+        settings = auto_topic_service.GuildSettings(
+            current_prompt_file="架空のパス", current_model_name="架空モデル",
+            auto_topic_enabled=True, auto_topic_interval_hours=1,
+            auto_topic_channels={10: datetime.now(timezone.utc) - timedelta(hours=2)},
+        )
         service = AutoTopicService(
             SimpleNamespace(user=None), None, None,
             SimpleNamespace(generate=AsyncMock(return_value=(text, None, []))), None, None,

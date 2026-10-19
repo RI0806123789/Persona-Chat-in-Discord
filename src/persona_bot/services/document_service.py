@@ -110,10 +110,15 @@ class DocumentService:
         return task_id
 
     async def run_worker(self) -> None:
-        try:
-            await self._recover_stuck_tasks()
-        except Exception as error:
-            print(f"文書ワーカー: 中断タスクの復旧に失敗しました: {error}")
+        # 起動時の復旧が完了してから通常処理へ進む。成功後は再実行しない。
+        while not self._stopping:
+            try:
+                await self._recover_stuck_tasks()
+            except Exception as error:
+                print(f"文書ワーカー: 中断タスクの復旧に失敗しました。待機後に再試行します: {error}")
+                await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
+            else:
+                break
 
         while not self._stopping:
             # キューの読み書きで予期しない例外（一時的な DB ロック等）が

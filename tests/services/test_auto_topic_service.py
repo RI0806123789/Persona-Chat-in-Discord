@@ -1,5 +1,6 @@
 """自動投稿の権限確認・通知制限・再試行条件を外部通信なしで確認する。"""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import discord
 from persona_bot.services import auto_topic_service
 from persona_bot.core.app_state import BotState
+from persona_bot.core.background import spawn
 from persona_bot.services.auto_topic_service import AutoTopicService
 from tests.helpers.thread_probe import make_thread_probe
 
@@ -184,6 +186,93 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.service.run_pending_checks()
         self.gemini.generate.assert_not_awaited()
 
+    async def test_topic_rechecks_conditions_after_each_wait_without_recording_cancellation(self):
+        for stage in ("prompt", "history", "generation", "moderation"):
+            for change in ("disabled", "activity", "session", "interval", "unwatched"):
+                with self.subTest(stage=stage, change=change):
+                    self.settings.auto_topic_enabled = True
+                    self.settings.auto_topic_interval_hours = 1
+                    self.settings.autonomous_session = None
+                    self.settings.auto_topic_channels[10] = datetime.now(timezone.utc) - timedelta(hours=2)
+                    self.settings.auto_topic_posted_at.clear()
+                    self.gemini.generate.reset_mock()
+                    self.channel.send.reset_mock()
+                    entered, release = asyncio.Event(), asyncio.Event()
+                    result = {
+                        "prompt": "架空のペルソナ", "history": "架空の履歴",
+                        "generation": ("架空の話題", None, []), "moderation": (False, "架空の判定"),
+                    }[stage]
+
+                    async def pause(*args, **kwargs):
+                        entered.set()
+                        await release.wait()
+                        return result
+
+                    target, name = {
+                        "prompt": (auto_topic_service, "load_persona_template"),
+                        "history": (auto_topic_service, "fetch_channel_history_text"),
+                        "generation": (self.gemini, "generate"),
+                        "moderation": (self.moderator, "check"),
+                    }[stage]
+                    with patch.object(target, name, new=AsyncMock(side_effect=pause)) as waiting:
+                        task = spawn(self.service.run_pending_checks(), label="話題生成中の条件変更の確認")
+                        try:
+                            await asyncio.wait_for(entered.wait(), 2)
+                            if change == "disabled":
+                                self.settings.auto_topic_enabled = False
+                            elif change == "activity":
+                                self.service.mark_activity(10, 1)
+                            elif change == "session":
+                                self.settings.autonomous_session = object()
+                            elif change == "interval":
+                                self.settings.auto_topic_interval_hours = 3
+                            else:
+                                self.settings.auto_topic_channels.pop(10)
+                            release.set()
+                            await asyncio.wait_for(task, 2)
+                        finally:
+                            release.set()
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+                        waiting.assert_awaited_once()
+                    self.channel.send.assert_not_awaited()
+                    self.assertEqual(self.settings.auto_topic_posted_at, {})
+                    if stage in ("prompt", "history"):
+                        self.gemini.generate.assert_not_awaited()
+
+                    # 中止を処理済みにせず、条件が戻った次の巡回で投稿できる。
+                    self.settings.auto_topic_enabled = True
+                    self.settings.auto_topic_interval_hours = 1
+                    self.settings.autonomous_session = None
+                    self.settings.auto_topic_channels[10] = datetime.now(timezone.utc) - timedelta(hours=2)
+                    await self.service.run_pending_checks()
+                    self.channel.send.assert_awaited_once()
+
+    async def test_later_channels_use_current_settings_and_activity(self):
+        for change in ("disabled", "session", "activity"):
+            with self.subTest(change=change):
+                self.settings.auto_topic_enabled = True
+                self.settings.autonomous_session = None
+                old = datetime.now(timezone.utc) - timedelta(hours=2)
+                self.settings.auto_topic_channels = {10: old, 20: old}
+                self.settings.auto_topic_posted_at.clear()
+                self.channel.send.reset_mock()
+
+                async def generate(*args, **kwargs):
+                    if change == "disabled":
+                        self.settings.auto_topic_enabled = False
+                    elif change == "session":
+                        self.settings.autonomous_session = object()
+                    else:
+                        self.service.mark_activity(20, 1)
+                    return "架空の話題", None, []
+
+                with patch.object(self.gemini, "generate", new=AsyncMock(side_effect=generate)) as generation:
+                    await self.service.run_pending_checks()
+                    generation.assert_awaited_once()
+                self.assertEqual(self.channel.send.await_count, 1 if change == "activity" else 0)
+                self.assertNotIn(20, self.settings.auto_topic_posted_at)
+
 
 class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
     """記念日の投稿先の選び直しと、送信拒否後の再生成抑止を確認する（#56）。"""
@@ -254,6 +343,50 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
             channel.send.assert_not_awaited()
         self.assertEqual(set(self.settings.auto_topic_channels), {10, 20, 30})
         self.assert_recorded(False)
+
+    async def test_disabling_anniversary_during_wait_does_not_record_or_generate_later_users(self):
+        for stage in ("member", "history", "generation", "moderation"):
+            with self.subTest(stage=stage):
+                self.settings.auto_topic_enabled = True
+                self.settings.anniversary_posted_dates.clear()
+                for channel in self.channels.values():
+                    channel.send.reset_mock()
+                entered, release = asyncio.Event(), asyncio.Event()
+
+                async def pause(*args, **kwargs):
+                    entered.set()
+                    await release.wait()
+                    return {
+                        "member": self.member, "history": "架空の履歴",
+                        "generation": ("架空のお祝い", None, []), "moderation": (False, "架空の判定"),
+                    }[stage]
+
+                target, name = {
+                    "member": (self.service, "_resolve_member"),
+                    "history": (auto_topic_service, "fetch_channel_history_text"),
+                    "generation": (self.gemini, "generate"),
+                    "moderation": (self.service._moderator, "check"),
+                }[stage]
+                with patch.object(target, name, new=AsyncMock(side_effect=pause)) as waiting:
+                    task = spawn(self.celebrate(), label="お祝い生成中の無効化の確認")
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        self.settings.auto_topic_enabled = False
+                        release.set()
+                        await asyncio.wait_for(task, 2)
+                        await self.service._celebrate_user("22", "誕生日", self.TODAY)
+                    finally:
+                        release.set()
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    waiting.assert_awaited_once()
+                for channel in self.channels.values():
+                    channel.send.assert_not_awaited()
+                self.assert_recorded(False)
+                self.settings.auto_topic_enabled = True
+                await self.celebrate()
+                self.channels[10].send.assert_awaited_once()
+                self.assert_recorded(True)
 
     async def test_unsendable_channels_are_skipped_without_api_calls(self):
         self.channels[10].permissions.send_messages = False

@@ -13,8 +13,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
+from requests.exceptions import ConnectTimeout, ReadTimeout
 
 from persona_bot.audio import voice
+from persona_bot.core.background import spawn
 
 
 class SpeechTextTests(unittest.TestCase):
@@ -73,6 +75,65 @@ class PcmDecodeTests(unittest.TestCase):
 
 
 class SynthesisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gtts_receives_finite_network_timeouts_and_closes_buffer(self):
+        buffers = []
+
+        def write(buffer):
+            buffers.append(buffer)
+            buffer.write(b"fictional-mp3")
+
+        with patch.object(voice, "gTTS", return_value=SimpleNamespace(write_to_fp=write)) as engine:
+            self.assertEqual(voice._fetch_gtts_mp3("架空の音声"), b"fictional-mp3")
+        engine.assert_called_once_with(
+            text="架空の音声", lang=voice.TTS_LANG,
+            timeout=(voice.TTS_GTTS_CONNECT_TIMEOUT_SECONDS, voice.TTS_GTTS_READ_TIMEOUT_SECONDS),
+        )
+        for seconds in engine.call_args.kwargs["timeout"]:
+            self.assertGreater(seconds, 0)
+            self.assertLess(seconds, float("inf"))
+        self.assertTrue(buffers[0].closed)
+
+    async def test_gtts_repeated_cancellation_recovers_sync_worker_and_buffer(self):
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                entered, release = asyncio.Event(), threading.Event()
+                finished = threading.Event()
+                buffers = []
+                loop = asyncio.get_running_loop()
+
+                def write(buffer):
+                    buffers.append(buffer)
+                    loop.call_soon_threadsafe(entered.set)
+                    try:
+                        if not release.wait(5):
+                            raise TimeoutError("音声テストの待機が終了しませんでした")
+                        if failure:
+                            raise ReadTimeout("架空の読み取り期限超過")
+                        buffer.write(b"fictional-mp3")
+                    finally:
+                        finished.set()
+
+                with patch.object(voice, "gTTS", return_value=SimpleNamespace(write_to_fp=write)), patch.object(
+                    voice, "_fetch_edge_mp3", new=AsyncMock(side_effect=OSError("架空の障害")),
+                ), patch.object(voice, "_edge_tts_failing", False):
+                    task = spawn(voice._fetch_mp3("架空の音声", {}), label="退避音声のキャンセルの確認")
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        for _ in range(2):
+                            task.cancel()
+                            await asyncio.sleep(0)
+                            self.assertFalse(task.done())
+                            self.assertFalse(buffers[0].closed)
+                        release.set()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await asyncio.wait_for(task, 2)
+                    finally:
+                        release.set()
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                self.assertTrue(finished.is_set())
+                self.assertTrue(buffers[0].closed)
+
     async def test_edge_stream_ignores_metadata_and_keeps_audio_order(self):
         async def stream():
             for chunk in ({"type": "WordBoundary"}, {"type": "audio", "data": b"first"}, {"type": "audio", "data": b"second"}):
@@ -193,6 +254,76 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             for text in ("時間切れ", "失敗", "正常"):
                 await voice.speak_text(self.guild, text)
             await self.workers[0]
+        play.assert_awaited_once_with(self.client, b"pcm")
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_gtts_network_timeouts_skip_failed_requests_and_next_edge_request_plays(self):
+        # gTTS本体を通し、HTTP境界だけで接続・読み取り期限の例外を注入する。
+        threads = []
+        timeouts = []
+        failures = iter((ConnectTimeout("架空の接続期限超過"), ReadTimeout("架空の読み取り期限超過")))
+
+        def send(*args, **kwargs):
+            threads.append(threading.get_ident())
+            timeouts.append(kwargs["timeout"])
+            raise next(failures)
+
+        with patch.object(voice, "_fetch_edge_mp3", new=AsyncMock(side_effect=[
+            OSError("架空の障害"), OSError("架空の障害"), b"fictional-mp3",
+        ])), patch("gtts.tts.requests.Session.send", side_effect=send) as network, patch.object(
+            voice, "_decode_to_pcm", return_value=b"pcm",
+        ) as decode, patch.object(voice, "_play_pcm", new=AsyncMock()) as play, patch.object(
+            voice, "_edge_tts_failing", False,
+        ):
+            for text in ("接続失敗", "読み取り失敗", "次の返信"):
+                await voice.speak_text(self.guild, text)
+            await asyncio.wait_for(self.workers[0], 2)
+        self.assertEqual(network.call_count, 2)
+        self.assertEqual(len(threads), 2)
+        self.assertNotIn(threading.get_ident(), threads)
+        self.assertEqual(timeouts, [(
+            voice.TTS_GTTS_CONNECT_TIMEOUT_SECONDS, voice.TTS_GTTS_READ_TIMEOUT_SECONDS,
+        )] * 2)
+        decode.assert_called_once()
+        play.assert_awaited_once_with(self.client, b"pcm")
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_synthesis_deadline_waits_for_gtts_cleanup_before_advancing_queue(self):
+        entered, release = asyncio.Event(), threading.Event()
+        buffers = []
+        loop = asyncio.get_running_loop()
+        normal_timeout = voice.TTS_TIMEOUT_SECONDS
+
+        def write(buffer):
+            buffers.append(buffer)
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(5):
+                raise TimeoutError("音声テストの待機が終了しませんでした")
+            raise ReadTimeout("架空の読み取り期限超過")
+
+        with patch.object(voice, "gTTS", return_value=SimpleNamespace(write_to_fp=write)), patch.object(
+            voice, "_fetch_edge_mp3", new=AsyncMock(side_effect=[OSError("架空の障害"), b"fictional-mp3"]),
+        ), patch.object(voice, "_decode_to_pcm", return_value=b"pcm"), patch.object(
+            voice, "_play_pcm", new=AsyncMock(),
+        ) as play, patch.object(voice, "TTS_TIMEOUT_SECONDS", 0.02), patch.object(voice, "_edge_tts_failing", False):
+            await voice.speak_text(self.guild, "期限超過")
+            await voice.speak_text(self.guild, "次の返信")
+            task = spawn(self.workers[0], label="合成期限後の同期処理回収の確認")
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                await asyncio.sleep(0.05)
+                self.assertFalse(task.done())
+                play.assert_not_awaited()
+                self.assertFalse(buffers[0].closed)
+                # 後続の正常な合成には既定の期限を戻し、CIのスレッド起動時間で失敗させない。
+                voice.TTS_TIMEOUT_SECONDS = normal_timeout
+                release.set()
+                await asyncio.wait_for(task, 2)
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(buffers[0].closed)
         play.assert_awaited_once_with(self.client, b"pcm")
         self.assertEqual(voice._speech_queues, {})
 

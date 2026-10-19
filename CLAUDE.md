@@ -234,6 +234,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 ### 文書パイプライン (`document_service.py`)
 
+起動時の中断タスク復旧は、成功するまで `DOCUMENT_WORKER_IDLE_SECONDS` の待機付きで再試行する。成功前は通常の取得・処理を始めず、成功後は復旧を繰り返さない（実行中の正常なタスクを `pending` へ戻さない）。停止・キャンセル時も復旧中の同期処理を回収する。
+
 ダウンロード後も実バイト数の上限を検証する。旧キューで投稿者IDが未設定（`0`を含む）なら取得したメッセージの投稿者を使い、要約保存・記憶取得・会話ログ追記を同じユーザーへ揃える。回答後の記憶追記と完了状態保存は個別に保護し、保存失敗を`failed`への変更や二重のエラー返信へ変えない。回答前の失敗状態保存が失敗しても、利用者への失敗通知は試みる。
 
 文書の取得後、最初の添付処理より前に `snapshot_response()` を取得し、全添付の要約・プロンプト読込・最終生成で共用する。`build_contexts` の文書件数は `max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments))` とし、同時添付が既定件数を超えても先頭の要約を落とさない。PDFは `with temp_path.open("rb")` のストリームを `PdfReader` へ渡し、検証の例外時も閉じる。検証ワーカーは `run_in_thread` で終了まで待ってからキャンセルを伝播し、Windowsで削除前にハンドルを解放する。終了タスクの状態保存と古いタスクの掃除は別に扱い、掃除の例外はログだけに留める（完了済みタスクを失敗へ戻したり、回答後にエラーを二重返信しない）。
@@ -261,6 +263,8 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 **感情タグを扱うコードはこのモジュールに集約すること。** `[V:X, A:Y]` の正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置く（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）。`extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。読み上げ用の `strip_speech_tags(text)` はこれを再利用し、`_SPEECH_EMOTION_TAG_PATTERN` で感情名（happy / sad / angry / neutral / excited / calm / surprised / scared）と arousal / valence / affinity の数値タグも除去する。一般の角括弧付き本文は保持する。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
+
+gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`TTS_GTTS_READ_TIMEOUT_SECONDS` を渡す。外側の合成期限や停止・キャンセルでも同期ワーカーを放置せず、処理完了とバッファの回収を待つ。複数のHTTP要求を含む退避処理では合成期限を超えて終了を待つ場合があるため、通信期限を外さない。
 
 `_play_pcm` は再生待ちのキャンセル時にも`stop()`を試し、音声ソースの`cleanup()`と所有するPCMバッファの`close()`を終えてからキャンセルを伝播する。`PCMAudio.cleanup()`だけでは入力ストリームは閉じないため、バッファの回収も維持する。
 
@@ -314,6 +318,8 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 `/functions` はエフェメラルな `FunctionsView`（ハブ）を開く。Discord の View は最大5行のため設定と要約を1枚に合体できず、ボタンで選んだ機能のパネルへ**同じメッセージを差し替える**方式で統合している。⚙️キャラ設定→`SettingsView`、📋会話要約→`SummaryView`、📈会話統計→`StatsView`、💬自発会話→`AutoTopicView`、⏰リマインダー→`ReminderView`、❓使い方→`HelpView`、🔒統計プライバシー→`StatsPrivacyView`、🚫ブロック解除→`UnblockView`（管理者のみボタン表示）はメッセージを差し替え、📊グラフ・🔄NG再読込は別のエフェメラルメッセージで結果を返す。**ハブの5行（row 0〜4）は使い切っている**ので、以降の機能追加はハブではなくサブパネル側へ置くこと（row 3 = ❓使い方 / row 4 = 🔒統計プライバシー）。差し替えは `view_parts.swap_panel()` を使う（ハブの `stop()` 忘れを防ぐため。新規パネルは `ui.View` 直継承ではなく `PanelView` を継承する）。🔍Google検索はハブ上のトグルで、押した瞬間にそのサーバーの `GuildSettings.grounding_enabled` を反転して保存する。各サブパネルは共通の **↩️ 戻る** ボタン（`view_parts.py` の `BackButton`）を持ち、`make_hub`（`FunctionsView.clone` を渡す）でハブを再生成して同じメッセージを戻す — `view_parts.py` が `functions_view.py` を import すると循環参照になるため、生成関数を渡す形にしている。**会話要約**は期間（1時間〜1か月）と表示範囲（自分だけ/全員）を選んで実行する。`generate_channel_summary` が対象期間のメッセージを `fetch_messages_since` で取得（`SUMMARY_MAX_MESSAGES` 件超過で自動停止）、`build_summary_source_text` で**発言者名つき**に整形し、`build_summary_prompt`（`prompting.py`）＋ **そのサーバーの `GuildSettings`** の選択モデル/ペルソナで議事録を生成する。生成結果は感情タグ除去・Markdown見出し除去・`screen_bot_response` を経て、表示範囲に応じてチャンネル投稿またはエフェメラル表示される。`RunSummaryButton` は生成から送信までを `try` で囲み、パネルを「要約中...」のまま残さない。全員表示の投稿の失敗は、権限不足（`Forbidden`。権限設定の確認か「自分だけ」での表示を案内）と途中での失敗（`HTTPException`。一部が投稿されている可能性を案内）を個別に伝え、それ以外の想定外の例外も定型の案内へ差し替える（例外の文面は内部の情報を含みうるので見せない）。「自分だけ」で1通目を表示済みなら、それを上書きせず followup で伝える。Gemini の通信エラー・タイムアウトは `GeminiService.generate` が `None` に変えるため、`generate_channel_summary` が案内文を返す。
 
 ### 自発的な会話 (`auto_topic_service.py`, `auto_topic_view.py`)
+
+話題提供は各チャンネルの生成前と送信前に、現在の有効状態・監視対象・最終活動時刻・間隔・自律配信状態を再確認する。記念日も生成前と送信前に有効状態と監視対象を確認する。条件変更による中止は処理済み時刻・記念日記録へ確定せず、後続チャンネルにも現在の条件を適用する。ペルソナ・モデルは従来どおり `snapshot_response()` で開始時の値を維持する。
 
 自動投稿は生成前に `_can_send` でチャンネル単位の閲覧・送信権限を確認する。スレッドでは `send_messages_in_threads` を使い、DM・ボットのMember未取得時も生成を見送る。事前の権限不足は記録せず、復旧後の見回りで再試行する。生成中の権限変更による `Forbidden` は話題提供の処理済み時刻を記録し、次に人間が発言するまでAPIの再実行を抑える。話題提供は `AllowedMentions.none()`、記念日は対象Memberだけを許可し、全体・ロール・他ユーザーへの通知を抑止する。
 
