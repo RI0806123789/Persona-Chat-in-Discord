@@ -52,6 +52,16 @@ Windows・Python 3.13.3・tzdata 2026.5で全578件が成功。146ファイル�
 
 Windows・Python 3.13でボット552件、バックエンド133件、Node.js 24で画面32件がすべて成功。画面ビルド、両仮想環境の`pip check`、143ファイルの構文/Python 3.10文法、構成図XML・メッセージ分割・`git diff --check`も成功した。実データは使用せず、外部通信はモックまたはループバックの模擬SSHへ限定した。追加したCIジョブの実行、Linux/Python 3.10での実行、実Discord・Gemini・遠隔デプロイとブラウザでの手動操作は未確認。
 
+## Issue #167の確認
+
+| 範囲 | テスト | 確認内容 |
+| --- | --- | --- |
+| 判定 | `utils/test_response_text.py` | 検索の呼び出し・思考・最終回答の連続、内部形式だけ、コードフェンス付き、前置き後の呼び出し・検索結果、CRLFを検出。日本語、英文の`thought`、文中の単独行・派生語、Pythonのコード例、インラインコードは対象外。構造化された思考・コード・関数呼び出しは本文に含まれず、診断の要約にも本文・検索語を含めない |
+| 生成 | `services/test_gemini_service.GeminiInternalTextTests` | 選択モデル・429後の検索サブモデル・検索なしの各経路で、同じモデル・検索設定のまま上限まで再生成し、生成全体の期限を共有。破棄した応答の参考リンク・利用量を返さず、上限・期限切れでは追加の要求を出さない。感情タグと通常の応答は維持 |
+| 返信 | `core/test_bot_reply_settings.py` | 実際の`GeminiService`を通し、Discord送信・NGワード処理・会話記憶・利用ログ・読み上げ入口へ最終回答だけが渡る。再生成でも解消しなければ定型の失敗案内だけを返し、評価にも登録しない |
+
+修正前のソースへ追加テストを適用し、subTestを含め10失敗・3エラー（判定関数が無いことによる読込エラーを含む）を確認した。期限切れと通常応答の2件は修正前から成功し、既存動作を保護する。修正後はWindows・Python 3.13.3・google-genai 2.31.0で全606件が成功し、`pip check`、125ファイルのPython 3.10文法、`compileall`、構成図XML・メッセージ分割・`git diff --check`も成功した。SDKの生成要求・Discord・記憶・読み上げはモックで、架空の応答だけを使った。実際のGemini APIが内部形式を返す条件の再現、Linux・Python 3.10での実行、実Discordでの確認は未確認。
+
 ## Issue #134・#135の確認
 
 | Issue | 回帰の範囲 |
@@ -137,6 +147,7 @@ Discord・Gemini・音声通信はモックを使い、保存先は一時ディ�
 | utils | [test_image_attachments.py](utils/test_image_attachments.py) |
 | utils | [test_json_extraction.py](utils/test_json_extraction.py) |
 | utils | [test_lifecycle_helpers.py](utils/test_lifecycle_helpers.py) |
+| utils | [test_response_text.py](utils/test_response_text.py) |
 | utils | [test_shared_helpers.py](utils/test_shared_helpers.py) |
 | utils | [test_storage.py](utils/test_storage.py) |
 | utils | [test_timeutil.py](utils/test_timeutil.py) |

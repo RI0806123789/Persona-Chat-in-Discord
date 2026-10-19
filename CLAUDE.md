@@ -254,6 +254,8 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 
 Geminiのテキストは `storage.safe_response_text` から取得する。空候補・プロンプトや候補の安全ブロックでは本文を返さず、思考パートはSDKの本文取得で除外される。`get_prompt_block_reason` は新SDKの文字列enumと旧形式の数値enumを区別し、未指定をブロックと誤認しない。モデルのJSONは `storage.extract_json_object` でコードブロックを優先し、ネスト・文字列内の括弧を標準パーサーで処理する。不正候補の後も走査し、モデレーションは `required_keys=("safe",)` で説明中の別形式のJSON例を除外する。
 
+`GeminiService._generate` は採用前に本文を `storage.contains_internal_response_text` で検証する。SDKが構造化して返す思考・コード・関数呼び出しは本文取得で除かれるが、それらが目印を失って通常のtextとして返った応答（`tool_code`・`tool_outputs` だけの行、行頭の `print(google_search.`、先頭行だけの `thought`）は、思考と最終回答の境目を切り分けられないため削らずに破棄し、同じモデル・検索設定で `GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS` 回まで生成全体の期限内で再生成する。上限に達したら `(None, None, [])` を返す。Discord・読み上げ・会話記憶・利用ログへ流れる前の共通の入口なので、呼び出し側に個別の検証を足さないこと。診断ログ（`describe_response_parts`）にはモデル・検索の有無・終了理由・パートの種類と件数だけを出し、本文・プロンプト・検索語を載せない。文中の `thought` や通常のコード例まで検出対象を広げないこと（正常な回答まで再生成・失敗になる）。
+
 ### 親密度 / 感情 (`affinity_service.py`)
 
 ユーザーごとの2次元感情（valence/arousal、30分の半減期で 50 へ減衰）に加えて、緩やかに変動する親密度。DB の `affinity` テーブルに永続化される。モデルには返信の末尾に `[V:X, A:Y]` タグを付けるよう指示しており、`handle_chat_message` がタグを抽出・除去し、親密度・感情を更新して対象ユーザー分の保存を開始する。本文はその後にモデレーション・送信される。保存は `asyncio.Lock` で直列化される。
