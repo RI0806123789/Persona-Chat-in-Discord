@@ -327,6 +327,25 @@ class ServiceTarget(BaseModel):
 async def control_service(action: str, body: ServiceTarget | None = None) -> dict:
     if action not in rc.SERVICE_ACTIONS:
         raise HTTPException(status_code=400, detail="許可されていない操作です。")
+    async with _connection_change_lock:
+        # 送信済みの操作は呼出元がキャンセルされても完了までロックを保つ。
+        # ロック待ちの間に変わった接続先とデプロイ状態は、実行直前に取り直す。
+        task = asyncio.create_task(_control_service(action, body))
+        canceled = False
+        while True:
+            try:
+                operation = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                canceled = True
+        if canceled:
+            raise asyncio.CancelledError
+        return operation
+
+
+async def _control_service(action: str, body: ServiceTarget | None) -> dict:
     if deploys.running:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()

@@ -144,6 +144,7 @@ class DeployRunner:
         # 直前の再起動の時刻（サーバーの UNIX 秒）と、そのときの自動再起動の回数。ヘルスチェックが使う
         self._since = 0
         self._restarts_after: int | None = None
+        self._pid_after: int | None = None
 
     # ------------------------------------------------------------ 全体の流れ
 
@@ -407,12 +408,14 @@ class DeployRunner:
         step.message = f"新しいプロセス（PID {state['main_pid']}）で起動しました。"
         self._since = step_since
         self._restarts_after = state["restarts"]
+        self._pid_after = state["main_pid"]
 
     async def _health(self, step: Step) -> None:
         await self._health_check(step)
 
     async def _health_check(self, step: Step) -> None:
         since, restarts_after = self._since, self._restarts_after
+        pid_after = self._pid_after
         command = rc.journal_since_command(self.profile.service, since, use_sudo=self.profile.journal_sudo)
         step.commands.append(command)
         started = self._clock()
@@ -421,16 +424,19 @@ class DeployRunner:
         found: dict | None = None
         while True:
             entries = await self._logs_since(step, command)
-            found = next((entry for entry in entries if rc.LOGIN_SUCCESS_TEXT in entry["message"]), None)
+            found = next((entry for entry in entries
+                          if pid_after is not None and entry.get("pid") == pid_after
+                          and rc.LOGIN_SUCCESS_TEXT in entry["message"]), None)
             state = await self._service(step, quiet=True)
-            if found:
-                break
             # 起動に失敗して止まった・落ちて再起動を待っているなら、待たずに失敗にする
             if state["active_state"] in ("failed", "inactive") or state["sub_state"] == "auto-restart":
                 # ログを読んだ後・状態を読む前に止まったときは、止まった原因（例外など）がまだ手元に無い。
                 # 原因を画面に残すため、止まったと分かってから読み直す
                 self._append_log_tail(step, await self._logs_since(step, command))
                 raise StepFailed(f"ボットが起動の途中で止まりました（状態: {state['active_state']} / {state['sub_state']}）。")
+            self._check_startup_process(step, state, pid_after, restarts_after)
+            if found:
+                break
             if self._clock() >= deadline:
                 self._append_log_tail(step, entries)
                 raise StepFailed(f"{self._health_timeout:g} 秒たっても「{rc.LOGIN_SUCCESS_TEXT}」のログが出ませんでした。")
@@ -438,8 +444,10 @@ class DeployRunner:
 
         waited = max(0.0, self._clock() - started)
         self._append_log_tail(step, entries)
-        step.checks.append(Check(f"「{rc.LOGIN_SUCCESS_TEXT}」のログが出た", True, found["message"]))
+        step.checks.append(Check(f"起動したPIDの「{rc.LOGIN_SUCCESS_TEXT}」のログが出た", True,
+                                 f"PID {pid_after}: {found['message']}"))
         state = await self._service(step, quiet=False)
+        self._check_startup_process(step, state, pid_after, restarts_after)
         self._check(
             step,
             "サービスが稼働中のまま",
@@ -453,6 +461,17 @@ class DeployRunner:
             f"自動再起動の回数: {restarts_after} → {state['restarts']}",
         )
         step.message = f"「{rc.LOGIN_SUCCESS_TEXT}」まで確認しました（再起動から約 {waited:.0f} 秒）。"
+
+    def _check_startup_process(self, step: Step, state: dict, pid: int | None, restarts: int | None) -> None:
+        """ログ待機中と成功確定直前に、再起動で確認したプロセスが続いているかを照合する。"""
+        if pid is None or state["main_pid"] != pid:
+            self._check(step, "起動確認中のPIDが変わっていない", False,
+                        f"確認対象: {pid or 'なし'} → 現在: {state['main_pid'] or 'なし'}",
+                        failure="起動確認中にボットのプロセスが変わりました。サーバーの状態を確認してください。")
+        if state["restarts"] != restarts:
+            self._check(step, "落ちて自動再起動していない", False,
+                        f"自動再起動の回数: {restarts} → {state['restarts']}",
+                        failure="起動確認中にボットが自動再起動しました。サーバーの状態を確認してください。")
 
     async def _logs_since(self, step: Step, command: str) -> list[dict]:
         result = await self._run(step, command, label="再起動後のログ", quiet=True)

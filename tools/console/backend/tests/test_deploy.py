@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,6 +72,114 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
     def sent(self, fragment: str) -> list[str]:
         """模擬サーバーへ送られたコマンドのうち、fragment を含むもの。"""
         return [record.command for record in self.session.history if fragment in record.command]
+
+    async def restart_for_health(self, *, health_timeout=0):
+        record = new_record(1, self.profile)
+        runner = DeployRunner(self.session, self.profile, record, **{**FAST, "health_timeout": health_timeout})
+        previous_pid = self.bot.pid
+        self.assertTrue(await runner._step("restart", runner._restart))
+        return runner, record, previous_pid
+
+    async def check_health_with_raw_logs(self, runner, records):
+        original_run = self.session.run
+
+        async def run(command, **kwargs):
+            if "journalctl" in command:
+                return CommandResult("\n".join(json.dumps(record) for record in records), "", 0, 1)
+            return await original_run(command, **kwargs)
+
+        with patch.object(self.session, "run", side_effect=run):
+            return await runner._step("health", runner._health)
+
+    async def test_old_pid_login_in_time_window_does_not_pass_health(self):
+        runner, record, previous_pid = await self.restart_for_health()
+        # 1秒前から読む既存の時刻境界内にある、旧プロセスの成功行だけを返す。
+        old_login = {"MESSAGE": rc.LOGIN_SUCCESS_TEXT, "_PID": str(previous_pid),
+                     "__REALTIME_TIMESTAMP": str((runner._since + 1) * 1_000_000 - 100_000)}
+        self.assertFalse(await self.check_health_with_raw_logs(runner, [old_login]))
+        self.assertEqual(self.step(record, "health").status, "failed")
+        self.assertNotEqual(previous_pid, self.bot.pid)
+
+    async def test_current_pid_login_passes_health(self):
+        runner, record, _ = await self.restart_for_health()
+        self.assertTrue(await self.check_health_with_raw_logs(runner, [
+            {"MESSAGE": rc.LOGIN_SUCCESS_TEXT, "_PID": str(self.bot.pid)},
+        ]))
+        self.assertEqual(self.step(record, "health").status, "succeeded")
+
+    async def test_login_without_pid_does_not_pass_health(self):
+        runner, _, _ = await self.restart_for_health()
+        self.assertFalse(await self.check_health_with_raw_logs(runner, [{"MESSAGE": rc.LOGIN_SUCCESS_TEXT}]))
+
+    async def test_health_waits_for_current_pid_after_old_login(self):
+        runner, record, old_pid = await self.restart_for_health(health_timeout=5)
+        old = {"message": rc.LOGIN_SUCCESS_TEXT, "pid": old_pid}
+        current = {"message": rc.LOGIN_SUCCESS_TEXT, "pid": self.bot.pid}
+        with patch.object(runner, "_logs_since", new=AsyncMock(side_effect=[[old], [old, current]])) as logs, \
+                patch.object(runner, "_sleep", new=AsyncMock()):
+            self.assertTrue(await runner._step("health", runner._health))
+        self.assertEqual(logs.await_count, 2)
+        self.assertEqual(self.step(record, "health").status, "succeeded")
+
+    async def test_process_replacement_and_restart_count_are_detected_during_wait(self):
+        for change in ("main_pid", "restarts"):
+            with self.subTest(change=change):
+                runner, record, _ = await self.restart_for_health(health_timeout=5)
+                original_service = runner._service
+
+                async def service(*args, **kwargs):
+                    state = await original_service(*args, **kwargs)
+                    state[change] += 1
+                    return state
+
+                with patch.object(runner, "_service", side_effect=service), \
+                        patch.object(runner, "_logs_since", new=AsyncMock(return_value=[])):
+                    self.assertFalse(await runner._step("health", runner._health))
+                message = self.step(record, "health").message
+                self.assertIn("プロセスが変わりました" if change == "main_pid" else "自動再起動しました", message)
+
+    async def test_process_replacement_before_final_confirmation_does_not_pass_health(self):
+        runner, record, _ = await self.restart_for_health()
+        original_service = runner._service
+        reads = 0
+
+        async def service(*args, **kwargs):
+            nonlocal reads
+            state = await original_service(*args, **kwargs)
+            reads += 1
+            if reads == 2:
+                state["main_pid"] += 1
+            return state
+
+        with patch.object(runner, "_service", side_effect=service):
+            self.assertFalse(await self.check_health_with_raw_logs(runner, [
+                {"MESSAGE": rc.LOGIN_SUCCESS_TEXT, "_PID": str(self.bot.pid)},
+            ]))
+        self.assertIn("プロセスが変わりました", self.step(record, "health").message)
+
+    async def test_rollback_health_rejects_login_from_failed_deployment_process(self):
+        before = self.repo.head
+        original_run = self.session.run
+        previous_attempt_pid = None
+
+        async def run(command, **kwargs):
+            nonlocal previous_attempt_pid
+            if "journalctl" in command:
+                output = json.dumps({"MESSAGE": rc.LOGIN_SUCCESS_TEXT, "_PID": str(previous_attempt_pid)}) if self.repo.head == before else ""
+                return CommandResult(output, "", 0, 1)
+            result = await original_run(command, **kwargs)
+            if "systemctl restart" in command and previous_attempt_pid is None:
+                previous_attempt_pid = self.bot.pid
+            return result
+
+        record = new_record(1, self.profile)
+        with patch.object(self.session, "run", side_effect=run):
+            runner = DeployRunner(self.session, self.profile, record, **{**FAST, "health_timeout": 0})
+            await runner.run()
+        self.assertEqual(record.status, "rollback_failed", record.message)
+        self.assertEqual(self.step(record, "rollback_health").status, "failed")
+        self.assertEqual(self.repo.head, before)
+        self.assertNotEqual(previous_attempt_pid, self.bot.pid)
 
     # ------------------------------------------------------------ 成功
 
