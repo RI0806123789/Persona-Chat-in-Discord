@@ -11,6 +11,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -36,6 +38,8 @@ class ConsoleLifetimeTests(unittest.TestCase):
         self.processes = [Mock(pid=100 + index) for index in range(3)]
         for process in self.processes:
             process.poll.return_value = None
+            process.wait.return_value = 0
+            process.returncode = 0
         self.spawn = self.resources.enter_context(patch.object(launcher.subprocess, "Popen", side_effect=self.processes))
         self.resources.enter_context(patch.object(launcher.shutil, "which", return_value="node.exe"))
         self.resources.enter_context(patch.object(launcher, "find_browser", return_value=Path("browser.exe")))
@@ -47,8 +51,12 @@ class ConsoleLifetimeTests(unittest.TestCase):
         self.notify = Mock()
 
     def assert_stopped(self, count=3):
-        for process in self.processes[:count]:
-            process.terminate.assert_called_once()
+        for index, process in enumerate(self.processes[:count]):
+            if index == 0:
+                process.stdin.close.assert_called_once()
+                process.terminate.assert_not_called()
+            else:
+                process.terminate.assert_called_once()
             process.wait.assert_called()
 
     def test_closing_window_stops_services_even_if_browser_is_in_background(self):
@@ -60,6 +68,8 @@ class ConsoleLifetimeTests(unittest.TestCase):
         self.assertEqual(commands[0].args[0][0], str(self.root / "backend/.venv/Scripts/python.exe"))
         self.assertEqual(commands[1].args[0][1], str(self.root / "frontend/node_modules/vite/bin/vite.js"))
         self.assertIn(f"--user-data-dir={self.root / '.run/browser-profile'}", commands[2].args[0])
+        self.assertEqual(commands[0].kwargs["stdin"], subprocess.PIPE)
+        self.assertEqual(commands[0].kwargs["env"]["PERSONA_CONSOLE_MANAGED"], "1")
         if os.name == "nt":
             for command in commands[:2]:
                 self.assertEqual(command.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
@@ -75,6 +85,13 @@ class ConsoleLifetimeTests(unittest.TestCase):
         self.window.side_effect = window_is_open
         launcher.run_console(self.root, self.notify)
         self.assert_stopped()
+
+    def test_forced_backend_shutdown_is_reported_as_launcher_failure(self):
+        with patch.object(launcher, "stop_backend", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "正常終了できません"):
+                launcher.run_console(self.root, self.notify)
+        self.processes[1].terminate.assert_called_once()
+        self.processes[2].terminate.assert_called_once()
 
     def test_second_service_launch_failure_cleans_up_first_service(self):
         self.spawn.side_effect = [self.processes[0], OSError("起動失敗")]
@@ -129,6 +146,101 @@ class ConsoleLifetimeTests(unittest.TestCase):
 
 
 class LauncherBoundaryTests(unittest.TestCase):
+    def test_managed_backend_waits_for_deploy_before_disconnect_and_exit(self):
+        # 実uvicorn子プロセスでWindowsの終了経路を検証。SSHとデプロイだけを模擬する。
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = directory / "managed_backend.py"
+            script.write_text(textwrap.dedent('''\
+                import asyncio
+                from contextlib import asynccontextmanager
+                from pathlib import Path
+                import sys
+                sys.path.insert(0, sys.argv[1])
+                import app as backend
+                from managed_server import run_server
+                root = Path(sys.argv[2])
+                def record(event):
+                    with (root / 'order.txt').open('a', encoding='utf-8') as stream:
+                        stream.write(event + '\\n')
+                async def deploy():
+                    while not (root / 'release').exists():
+                        await asyncio.sleep(0.02)
+                    record('rollback')
+                original_wait = backend.deploys.wait
+                async def wait():
+                    record('wait')
+                    (root / 'waiting').touch()
+                    return await original_wait()
+                async def disconnect():
+                    record('disconnect')
+                backend.deploys.wait = wait
+                backend.session.disconnect = disconnect
+                @asynccontextmanager
+                async def fixture(app):
+                    backend.deploys._task = asyncio.create_task(deploy())
+                    async with backend.lifespan(app):
+                        (root / 'started').touch()
+                        yield
+                    record('lifespan')
+                backend.app.router.lifespan_context = fixture
+                run_server(backend.app, host='127.0.0.1', port=0, managed=True)
+                record('exit')
+                '''), encoding="utf-8")
+            with (directory / "backend.log").open("wb") as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-B", str(script), str(LAUNCHER_PATH.parent / "backend"), str(directory)],
+                    stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+                results = []
+                stopper = None
+                try:
+                    self.wait_for_marker(directory / "started", process)
+                    stopper = threading.Thread(target=lambda: results.append(launcher.stop_backend(process, timeout=10)))
+                    stopper.start()
+                    self.wait_for_marker(directory / "waiting", process)
+                    self.assertIsNone(process.poll())
+                    self.assertEqual((directory / "order.txt").read_text(encoding="utf-8").splitlines(), ["wait"])
+                    (directory / "release").touch()
+                    stopper.join(timeout=10)
+                    self.assertFalse(stopper.is_alive())
+                    self.assertEqual(results, [True])
+                    self.assertEqual(process.returncode, 0)
+                    self.assertEqual((directory / "order.txt").read_text(encoding="utf-8").splitlines(),
+                                     ["wait", "rollback", "disconnect", "lifespan", "exit"])
+                finally:
+                    (directory / "release").touch()
+                    if stopper is not None:
+                        stopper.join(timeout=12)
+                    launcher.stop_process(process)
+                    if process.stdin is not None:
+                        process.stdin.close()
+
+    @staticmethod
+    def wait_for_marker(path, process):
+        deadline = time.monotonic() + 10
+        while not path.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not path.exists():
+            raise AssertionError(f"検証用バックエンドの通知がありません: {path.name}")
+
+    def test_graceful_shutdown_timeout_reports_forced_termination(self):
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        try:
+            with self.assertLogs(level="ERROR") as logs:
+                self.assertFalse(launcher.stop_backend(process, timeout=0.05))
+            self.assertIsNotNone(process.poll())
+            self.assertIn("強制終了", "".join(logs.output))
+            self.assertIn("0.05", "".join(logs.output))
+        finally:
+            launcher.stop_process(process)
+            process.stdin.close()
+
     def test_port_probe_preserves_existing_listener(self):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))

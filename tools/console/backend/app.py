@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
@@ -20,7 +21,6 @@ from pathlib import Path
 from starlette.websockets import WebSocketDisconnect
 
 import asyncssh
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 import remote_commands as rc
 from deploy import DeployManager
 from local_repo import local_schema_version
+from managed_server import MANAGED_ENV, run_server
 from profiles import Profile, ProfileError, load_profiles
 from ssh_session import NotConnectedError, SshError, SshSession
 
@@ -539,4 +540,4 @@ if FRONTEND_DIST.is_dir():
 
 if __name__ == "__main__":
     print(f"Persona Bot Console のバックエンドを起動します: http://{HOST}:{PORT}")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    run_server(app, host=HOST, port=PORT, managed=os.environ.get(MANAGED_ENV) == "1")

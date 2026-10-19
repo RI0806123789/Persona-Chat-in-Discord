@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -19,7 +20,7 @@ import remote_commands as rc  # noqa: E402
 from deploy import DeployManager, DeployRecord, DeployRunner, new_record  # noqa: E402
 from fake_ssh_server import start_fake_server  # noqa: E402
 from profiles import Profile  # noqa: E402
-from ssh_session import SshSession  # noqa: E402
+from ssh_session import CommandResult, SshError, SshSession  # noqa: E402
 
 FAST = {"restart_settle_timeout": 5, "health_timeout": 5, "poll_interval": 0.05}
 
@@ -154,6 +155,68 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sent("git merge"), [])
 
     # ------------------------------------------------------------ 途中で失敗したら、自動で前の版へ戻す
+
+    async def lost_pull_response(self, *, updated=True, unreachable=False, nonzero=False):
+        original_run = self.session.run
+        sent = False
+
+        async def run(command, **kwargs):
+            nonlocal sent
+            if "git merge --ff-only" in command:
+                sent = True
+                if updated:
+                    await original_run(command, **kwargs)
+                if nonzero:
+                    return CommandResult("", "架空の取り込み失敗", 1, 0)
+                raise SshError("架空の応答タイムアウト")
+            if sent and unreachable:
+                raise SshError("架空の通信不能")
+            return await original_run(command, **kwargs)
+
+        with patch.object(self.session, "run", side_effect=run):
+            return await self.deploy()
+
+    async def test_lost_merge_response_rechecks_head_and_rolls_back(self):
+        before, pid = self.repo.head, self.bot.pid
+        record = await self.lost_pull_response()
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(self.repo.head, before)
+        self.assertEqual(self.bot.pid, pid)
+        self.assertEqual(record.after_commit, self.repo.origin)
+        self.assertEqual(self.statuses(record)["rollback_code"], "succeeded")
+        self.assertIn("再確認", self.step(record, "pull").output)
+
+    async def test_lost_merge_response_without_update_does_not_reset(self):
+        before = self.repo.head
+        record = await self.lost_pull_response(updated=False)
+        self.assertEqual(record.status, "failed")
+        self.assertEqual(record.after_commit, before)
+        self.assertEqual(self.repo.head, before)
+        self.assertEqual(self.sent("git reset"), [])
+        self.assertIn("変えていません", record.message)
+
+    async def test_unreachable_head_and_rollback_do_not_claim_no_changes(self):
+        record = await self.lost_pull_response(unreachable=True)
+        self.assertEqual(record.status, "rollback_failed", record.message)
+        self.assertIn("変更の有無は不明", self.step(record, "pull").output)
+        self.assertNotIn("変えていません", record.message)
+        self.assertEqual(self.statuses(record)["rollback_code"], "failed")
+
+    async def test_lost_merge_response_with_failed_reset_reports_rollback_failure(self):
+        self.repo.reset_fails = True
+        record = await self.lost_pull_response()
+        self.assertEqual(record.status, "rollback_failed", record.message)
+        self.assertEqual(self.repo.head, self.repo.origin)
+        self.assertTrue(self.sent("git reset"))
+
+    async def test_nonzero_merge_rechecks_updated_and_unchanged_head(self):
+        before = self.repo.head
+        record = await self.lost_pull_response(nonzero=True)
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(self.repo.head, before)
+        record = await self.lost_pull_response(updated=False, nonzero=True)
+        self.assertEqual(record.status, "failed", record.message)
+        self.assertEqual(record.after_commit, before)
 
     async def test_pip_failure_rolls_back_without_restart(self) -> None:
         before, old_pid = self.repo.head, self.bot.pid
