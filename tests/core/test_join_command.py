@@ -1,5 +1,6 @@
 """/join の権限確認・接続の再利用・接続待ち時間を確かめる（#67・#87）。"""
 
+import asyncio
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -86,6 +87,29 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         reply = await self.join()
         self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
         self.assertIn("に接続しました", reply)
+
+    async def test_disconnect_failure_sends_followup_without_connecting(self) -> None:
+        for connected in (True, False):
+            with self.subTest(connected=connected):
+                self.interaction.followup.send.reset_mock()
+                old = self.make_voice_client(self.make_channel(30), connected=connected)
+                old.disconnect.side_effect = OSError("架空の切断失敗")
+                self.guild.voice_client = old
+                reply = await self.join()
+                old.disconnect.assert_awaited_once_with(force=True)
+                self.interaction.followup.send.assert_awaited_once()
+                self.assertIn("切り替えられませんでした", reply)
+                self.assertNotIn("架空の切断失敗", reply)
+                self.channel.connect.assert_not_awaited()
+
+    async def test_disconnect_cancellation_propagates_without_reconnecting(self) -> None:
+        old = self.make_voice_client(self.make_channel(30))
+        old.disconnect.side_effect = asyncio.CancelledError
+        self.guild.voice_client = old
+        with self.assertRaises(asyncio.CancelledError):
+            await self.join()
+        self.channel.connect.assert_not_awaited()
+        self.interaction.followup.send.assert_not_awaited()
 
     def make_stage(self, *, can_promote=True):
         stage = Mock(spec=discord.StageChannel, id=40)

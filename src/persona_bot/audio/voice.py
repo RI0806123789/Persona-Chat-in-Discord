@@ -22,6 +22,7 @@ CPU 1コア / メモリ 1GB 級の小さなサーバーでも動かせるよう�
 """
 
 import asyncio
+from dataclasses import dataclass
 import io
 import re
 from typing import Any, Callable, Mapping
@@ -276,10 +277,31 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
 # ワーカーは最初の依頼で起動し、キューが空になったら自分を片付けて終了するので、
 # 参加していないサーバーの分までタスクが常駐することはない。
 #
-# 積むのはテキスト・そのときのボイスプロファイル・任意の有効性判定の組。
+# 投入時の接続・チャンネルも記録し、切替前の返信を別の通話へ持ち越さない。
 # プロファイルを積む時点で確定させておくと、待っている間に /functions でペルソナを
 # 切り替えられても、既に積まれた分は依頼時のキャラクターの声のまま読み上げられる。
-_speech_queues: dict[int, asyncio.Queue[tuple[str, Mapping[str, Any], Callable[[], bool] | None]]] = {}
+@dataclass(frozen=True)
+class _SpeechRequest:
+    text: str
+    profile: Mapping[str, Any]
+    voice_client: discord.VoiceClient
+    channel_id: int | None
+    is_valid: Callable[[], bool] | None
+
+    def matches_connection(self, guild: discord.Guild) -> bool:
+        return (
+            guild.voice_client is self.voice_client
+            and self.voice_client.is_connected()
+            and getattr(self.voice_client.channel, "id", None) == self.channel_id
+        )
+
+
+_speech_queues: dict[int, asyncio.Queue[_SpeechRequest]] = {}
+
+
+def _discard_speech_queue(guild_id: int, queue: asyncio.Queue[_SpeechRequest]) -> None:
+    if _speech_queues.get(guild_id) is queue:
+        _speech_queues.pop(guild_id, None)
 
 
 async def _run_speech_worker(guild: discord.Guild) -> None:
@@ -288,30 +310,29 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
     try:
         while True:
             try:
-                text, profile, is_valid = queue.get_nowait()
+                request = queue.get_nowait()
             except asyncio.QueueEmpty:
                 # ここから return までに await を挟まないこと。挟むと、キューが空だと
                 # 判断した後・登録を消す前に新しい依頼が積まれ、その分が
                 # 誰にも処理されないまま取り残される。
-                _speech_queues.pop(guild.id, None)
                 return
 
             # 読み上げている間に /leave された場合に備え、毎回その時点の接続を見る。
-            voice_client = guild.voice_client
-            if not isinstance(voice_client, discord.VoiceClient) or not voice_client.is_connected():
-                _speech_queues.pop(guild.id, None)
-                return
+            if not request.matches_connection(guild):
+                continue
+            voice_client = request.voice_client
+            is_valid = request.is_valid
 
             try:
                 # 配信が終了した依頼は、キュー待機後にも捨てる。
                 if is_valid is not None and not is_valid():
                     continue
                 pcm = await asyncio.wait_for(
-                    _synthesize_pcm(text, profile),
+                    _synthesize_pcm(request.text, request.profile),
                     timeout=TTS_TIMEOUT_SECONDS,
                 )
                 # 合成待機中の終了・移動・接続差し替えも、再生の直前に確かめる。
-                if (guild.voice_client is not voice_client or not voice_client.is_connected()
+                if (not request.matches_connection(guild)
                         or (is_valid is not None and not is_valid())):
                     continue
                 await _play_pcm(voice_client, pcm)
@@ -322,7 +343,7 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
                 print(f"TTS エラー ({type(error).__name__}): {error}")
     finally:
         # 予期しない例外で抜けた場合も登録を残さない（次の返信で再起動できるように）。
-        _speech_queues.pop(guild.id, None)
+        _discard_speech_queue(guild.id, queue)
 
 
 async def play_tts_response(
@@ -381,16 +402,30 @@ async def speak_text(
         return
 
     # 待ち行列に並ぶ前に、いま選ばれているキャラクターの声を確定させておく。
-    request = (speech_text, resolve_profile(prompt_file), is_valid)
+    request = _SpeechRequest(
+        speech_text, resolve_profile(prompt_file), voice_client,
+        getattr(voice_client.channel, "id", None), is_valid,
+    )
 
     queue = _speech_queues.get(guild.id)
     if queue is None:
         queue = asyncio.Queue(maxsize=TTS_QUEUE_MAX)
         _speech_queues[guild.id] = queue
         queue.put_nowait(request)
-        spawn(_run_speech_worker(guild), label="ボイス読み上げ")
+        worker = spawn(_run_speech_worker(guild), label="ボイス読み上げ")
+        if worker is not None:
+            # 終了と競合して開始前にキャンセルされた場合は finally が走らない。
+            worker.add_done_callback(lambda _: _discard_speech_queue(guild.id, queue))
         return
 
+    # 接続切替前の待機要素が上限を埋めていても、新しい接続の返信を受け付ける。
+    pending = []
+    while not queue.empty():
+        queued = queue.get_nowait()
+        if queued.matches_connection(guild):
+            pending.append(queued)
+    for queued in pending:
+        queue.put_nowait(queued)
     try:
         queue.put_nowait(request)
     except asyncio.QueueFull:

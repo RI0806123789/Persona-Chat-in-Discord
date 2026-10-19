@@ -66,7 +66,8 @@ class DocumentShutdownTests(unittest.IsolatedAsyncioTestCase):
                 bot_client, "close_genai_client", new=AsyncMock(side_effect=lambda *_: order.append("gemini")),
             ), patch.object(db, "close", side_effect=close_db):
                 try:
-                    service.start_worker()
+                    with client.background_tasks.scope():
+                        service.start_worker()
                     worker = service._worker
                     service.start_worker()
                     self.assertIs(service._worker, worker)

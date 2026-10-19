@@ -17,6 +17,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.client = Mock(spec=discord.VoiceClient)
         self.client.is_connected.return_value = True
+        self.client.channel = SimpleNamespace(id=10)
         self.guild = SimpleNamespace(id=1, voice_client=self.client)
         self.valid = True
         self.profile = {"voice": "架空の話者"}
@@ -97,6 +98,69 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.workers[0]
         self.synthesize.assert_awaited_once_with("架空のコメント応答", self.profile)
         self.play.assert_awaited_once_with(self.client, b"pcm")
+
+    async def test_normal_queue_discards_old_connection_and_channel_requests(self) -> None:
+        for change in ("replace", "move"):
+            with self.subTest(change=change):
+                self.guild.voice_client = self.client
+                self.client.channel = SimpleNamespace(id=10)
+                self.synthesize.reset_mock()
+                self.play.reset_mock()
+                self.workers.clear()
+                started, release = asyncio.Event(), asyncio.Event()
+
+                async def synthesize(text, profile):
+                    if text == "旧接続の一件目":
+                        started.set()
+                        await release.wait()
+                    return text.encode()
+
+                self.synthesize.side_effect = synthesize
+                await voice.speak_text(self.guild, "旧接続の一件目")
+                await voice.speak_text(self.guild, "旧接続の二件目")
+                worker = asyncio.create_task(self.workers[0])
+                try:
+                    await asyncio.wait_for(started.wait(), 2)
+                    if change == "replace":
+                        new = Mock(spec=discord.VoiceClient)
+                        new.is_connected.return_value = True
+                        self.guild.voice_client = new
+                    else:
+                        new = self.client
+                    new.channel = SimpleNamespace(id=20)
+                    # 投入経路の整理に依存せず、ワーカー自身も古い待機要素を捨てる。
+                    release.set()
+                    await asyncio.wait_for(worker, 2)
+                    self.play.assert_not_awaited()
+                    self.synthesize.assert_awaited_once_with("旧接続の一件目", self.profile)
+                    await voice.speak_text(self.guild, "新接続の返信")
+                    await self.workers[-1]
+                    self.play.assert_awaited_once_with(new, "新接続の返信".encode())
+                    self.assertEqual(voice._speech_queues, {})
+                finally:
+                    release.set()
+                    await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_full_old_queue_accepts_new_connection_and_preserves_its_order(self) -> None:
+        with patch.object(voice, "TTS_QUEUE_MAX", 2):
+            await voice.speak_text(self.guild, "旧一件目")
+            await voice.speak_text(self.guild, "旧二件目")
+            new = Mock(spec=discord.VoiceClient)
+            new.channel = SimpleNamespace(id=20)
+            new.is_connected.return_value = True
+            self.guild.voice_client = new
+            await voice.speak_text(self.guild, "新一件目")
+            await voice.speak_text(self.guild, "新二件目")
+            await self.workers[0]
+        self.assertEqual([call.args[0] for call in self.synthesize.await_args_list], ["新一件目", "新二件目"])
+        self.assertEqual([call.args[0] for call in self.play.await_args_list], [new, new])
+
+    async def test_same_channel_reuse_keeps_both_waiting_requests(self) -> None:
+        await voice.speak_text(self.guild, "一件目")
+        self.client.channel = SimpleNamespace(id=10)
+        await voice.speak_text(self.guild, "二件目")
+        await self.workers[0]
+        self.assertEqual([call.args[0] for call in self.synthesize.await_args_list], ["一件目", "二件目"])
 
 
 if __name__ == "__main__":
