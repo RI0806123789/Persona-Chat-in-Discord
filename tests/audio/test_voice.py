@@ -292,6 +292,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), threading.Event()
         buffers = []
         loop = asyncio.get_running_loop()
+        normal_timeout = voice.TTS_TIMEOUT_SECONDS
 
         def write(buffer):
             buffers.append(buffer)
@@ -314,6 +315,8 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(task.done())
                 play.assert_not_awaited()
                 self.assertFalse(buffers[0].closed)
+                # 後続の正常な合成には既定の期限を戻し、CIのスレッド起動時間で失敗させない。
+                voice.TTS_TIMEOUT_SECONDS = normal_timeout
                 release.set()
                 await asyncio.wait_for(task, 2)
             finally:
