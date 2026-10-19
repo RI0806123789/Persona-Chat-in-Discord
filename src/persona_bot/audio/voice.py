@@ -39,6 +39,8 @@ from persona_bot.config.constants import (
     PCM_INT16_MAX,
     PCM_INT16_MIN,
     TTS_CHANNELS,
+    TTS_GTTS_CONNECT_TIMEOUT_SECONDS,
+    TTS_GTTS_READ_TIMEOUT_SECONDS,
     TTS_LANG,
     TTS_MAX_CHARS,
     TTS_PLAY_TIMEOUT_MARGIN_SECONDS,
@@ -140,9 +142,12 @@ async def _fetch_edge_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
 
 def _fetch_gtts_mp3(text: str) -> bytes:
     """退避用。gTTS で mp3 を取得する（同期処理なので別スレッドから呼ぶこと）。"""
-    buffer = io.BytesIO()
-    gTTS(text=text, lang=TTS_LANG).write_to_fp(buffer)
-    return buffer.getvalue()
+    with io.BytesIO() as buffer:
+        gTTS(
+            text=text, lang=TTS_LANG,
+            timeout=(TTS_GTTS_CONNECT_TIMEOUT_SECONDS, TTS_GTTS_READ_TIMEOUT_SECONDS),
+        ).write_to_fp(buffer)
+        return buffer.getvalue()
 
 
 async def _fetch_mp3(text: str, profile: Mapping[str, Any]) -> bytes:

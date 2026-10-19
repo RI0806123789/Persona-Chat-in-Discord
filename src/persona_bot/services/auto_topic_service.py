@@ -117,17 +117,11 @@ class AutoTopicService:
         if guild_settings.autonomous_session is not None:
             return
 
-        now = datetime.now(timezone.utc)
-        interval = timedelta(hours=guild_settings.auto_topic_interval_hours)
-
         # ループ中に辞書を更新する可能性があるためスナップショットを走査する
-        for channel_id, last_activity in list(guild_settings.auto_topic_channels.items()):
-            if now - last_activity < interval:
-                continue
-
-            # 前回の話題提供より後に人間の発言が無ければ見送る（沈黙中の連投防止）
-            posted_at = guild_settings.auto_topic_posted_at.get(channel_id)
-            if posted_at is not None and posted_at >= last_activity:
+        for channel_id in list(guild_settings.auto_topic_channels):
+            if not guild_settings.auto_topic_enabled or guild_settings.autonomous_session is not None:
+                return
+            if not self._topic_is_due(guild_settings, channel_id):
                 continue
 
             channel = self._client.get_channel(channel_id)
@@ -152,15 +146,31 @@ class AutoTopicService:
                 # 完了時のみ記録する。一時的な失敗（False）は次回の見回りで自然にリトライされる。
                 guild_settings.auto_topic_posted_at[channel_id] = datetime.now(timezone.utc)
 
+    @staticmethod
+    def _topic_is_due(
+        guild_settings: GuildSettings, channel_id: int, *, last_activity: datetime | None = None,
+    ) -> bool:
+        """現在の投稿条件を確認し、生成開始後に活動が更新された話題も見送る。"""
+        if not guild_settings.auto_topic_enabled or guild_settings.autonomous_session is not None:
+            return False
+        current_activity = guild_settings.auto_topic_channels.get(channel_id)
+        if current_activity is None or (last_activity is not None and current_activity != last_activity):
+            return False
+        if datetime.now(timezone.utc) - current_activity < timedelta(hours=guild_settings.auto_topic_interval_hours):
+            return False
+        posted_at = guild_settings.auto_topic_posted_at.get(channel_id)
+        return posted_at is None or posted_at < current_activity
+
     async def _post_topic(self, channel: Any, guild_settings: GuildSettings) -> bool:
         """過去の話題をもとに話しかけを生成し、チャンネルへ投稿する。
 
         戻り値は「この沈黙期間の処理を完了したか」。True なら次に人間の発言が
         あるまで再実行されない（投稿できた場合と、モデレーション見送りのように
         リトライしても同じ結果になる場合）。False は一時的な失敗で、次回の
-        見回りでリトライされる。
+        見回りでリトライされる。設定・活動の変更による中止も False を返して記録しない。
         """
-        if not self._can_send(channel):
+        last_activity = guild_settings.auto_topic_channels.get(channel.id)
+        if not self._topic_is_due(guild_settings, channel.id) or not self._can_send(channel):
             return False
 
         response_settings = guild_settings.snapshot_response()
@@ -186,6 +196,9 @@ class AutoTopicService:
             history_text,
         )
 
+        if not self._topic_is_due(guild_settings, channel.id, last_activity=last_activity):
+            return False
+
         # 話題提供に Google 検索は不要なためグラウンディングは無効で呼び出す
         response_text, usage_info, _sources = await self._gemini.generate(
             full_prompt,
@@ -200,6 +213,8 @@ class AutoTopicService:
             return False
 
         screened, done = await self._screen_auto_post(response_text, "自発的な会話")
+        if not self._topic_is_due(guild_settings, channel.id, last_activity=last_activity):
+            return False
         if screened is None:
             return done
         response_text = screened
@@ -442,7 +457,8 @@ class AutoTopicService:
         label: str,
     ) -> bool:
         """お祝いメッセージを生成し、チャンネルへ投稿する。戻り値の意味は _post_topic と同様。"""
-        if not self._can_send(channel):
+        if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
+                or not self._can_send(channel)):
             return False
 
         response_settings = guild_settings.snapshot_response()
@@ -460,6 +476,9 @@ class AutoTopicService:
         )
         full_prompt = build_anniversary_prompt(persona_prompt, member.display_name, label, history_text)
 
+        if not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels:
+            return False
+
         response_text, usage_info, _sources = await self._gemini.generate(
             full_prompt,
             response_settings.model_name,
@@ -473,6 +492,8 @@ class AutoTopicService:
             return False
 
         screened, done = await self._screen_auto_post(response_text, "記念日のお祝い")
+        if not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels:
+            return False
         if screened is None:
             return done
         response_text = screened
