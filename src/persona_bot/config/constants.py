@@ -131,6 +131,10 @@ GROUNDING_REQUEST_TIMEOUT_SECONDS = 60.0
 # True: 選択モデル検索 → サブモデル検索 → 選択モデル検索なしの順で試す。
 # False: サブモデルを省いて検索なしへ進む。期限切れ・5xx・認証と、検索なしの生成の利用枠エラーは再試行しない。
 GROUNDING_SUBMODEL_RETRY_ENABLED = True
+# 検索ツールの呼び出しや思考（tool_code・thought など）が通常の本文へ混入した応答を破棄し、
+# 同じモデル・検索設定で生成し直す回数の上限（1回の生成全体で共有）。再生成も生成全体の期限内で行う。
+# 0 にすると再生成せず、生成の失敗として扱う。
+GEMINI_INTERNAL_TEXT_MAX_REGENERATIONS = 1
 
 # UsageTracker が保持するトークン履歴の上限（リングバッファ）
 MAX_USAGE_HISTORY = 500
