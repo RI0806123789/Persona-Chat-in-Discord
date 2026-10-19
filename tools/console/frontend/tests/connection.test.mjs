@@ -75,7 +75,7 @@ function consoleHarness(api) {
     "./theme/theme": { SEED_OPTIONS: [{ id: "test", hex: "#123456" }] },
   };
   modules["./controllers"] = compile(controllerSource, modules);
-  const exposed = "return {busyAction, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
+  const exposed = "return {busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
   const instrumented = appSource.replace("function Console() {", "export function Console() {")
     .replace("  return (\n    <PrivacyContext.Provider", `  ${exposed}\n  return (\n    <PrivacyContext.Provider`);
   assert.ok(instrumented.includes(exposed));
@@ -104,6 +104,20 @@ test("切断完了後に古い状態・インサイト・デプロイの成功�
     assert.equal(after.statusError, null);
     assert.equal(after.insightsError, null);
   }
+});
+
+test("停止はサービス名入力による確認を開き、確認前にAPIを実行しない", () => {
+  const calls = [];
+  const harness = consoleHarness({ service: (...args) => { calls.push(args); } });
+  const state = connection("A");
+  state.profile = { ...state.profile, service: "fictional-bot", environment: "production" };
+  harness.render().applyConnection(state);
+  harness.render().requestAction("stop");
+  const after = harness.render();
+  assert.equal(after.confirmOpen, true);
+  assert.equal(after.confirm.requireText, "fictional-bot");
+  assert.equal(after.confirm.confirmLabel, "停止する");
+  assert.deepEqual(calls, []);
 });
 
 test("切り替え前に予約したサービス操作後のタイマーは新しい接続で取得しない", async () => {

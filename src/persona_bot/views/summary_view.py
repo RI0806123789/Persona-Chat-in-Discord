@@ -21,7 +21,10 @@ from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_summary_prompt
 from persona_bot.utils.usage_graph import UsageTracker
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, panel_operation_is_current,
+    BackButton, HubFactory, PanelView,
+)
 
 # Markdown の見出し記号（行頭の # 〜 ######）を除去する正規表現。
 # Discord は h4 以降（####）を描画せず「#### 見出し」がそのまま表示され見づらいため、
@@ -50,9 +53,11 @@ async def _report_failure(interaction: discord.Interaction, notice: str, *, keep
     パネルに要約の一部を表示済み（keep_result=True）なら、上書きして消さないよう
     followup で伝える。パネルを書き換えられない場合も followup へ切り替える。
     """
+    if not panel_operation_is_current(None, interaction):
+        return
     if not keep_result:
         try:
-            await interaction.edit_original_response(content=notice)
+            await edit_panel_message(interaction, deferred=True, content=notice)
             return
         except Exception as error:
             print(f"要約: 失敗の案内をパネルに表示できませんでした: {error}")
@@ -163,10 +168,11 @@ class SummaryPeriodSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "SummaryView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         selected = int(self.values[0])
         view.temp_period = next(c for c in SUMMARY_PERIOD_CHOICES if c.value == selected)
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class PrivateToggleButton(ui.Button):
@@ -179,9 +185,10 @@ class PrivateToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "SummaryView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_private = not view.temp_private
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class RunSummaryButton(ui.Button):
@@ -192,19 +199,18 @@ class RunSummaryButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "SummaryView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
 
         channel = interaction.channel
         if not is_supported_message_channel(channel):
-            await interaction.response.edit_message(
+            await edit_panel_message(interaction,
                 content="このチャンネルでは要約を実行できません。", view=None
             )
-            view.stop()
             return
 
         # パネル（エフェメラル）を「要約中」に更新してコンポーネント応答を返す。
-        await interaction.response.edit_message(content="🔄 要約中...", view=None)
-        # 以降は長時間処理になるため、View のタイムアウトとの競合を避けて先に停止する。
-        view.stop()
+        if not await edit_panel_message(interaction, content="🔄 要約中...", view=None):
+            return
 
         bot_user = interaction.client.user
         # パネルに要約の1通目を表示済みか（失敗の案内でそれを上書きしないため）
@@ -226,15 +232,19 @@ class RunSummaryButton(ui.Button):
                 usage=view.usage,
             )
 
+            if not panel_operation_is_current(view, interaction):
+                return
+
             # 通知・エラーはパネル（本人だけに見える）にそのまま表示して終了。
             if not is_summary:
-                await interaction.edit_original_response(content=text)
+                await edit_panel_message(interaction, deferred=True, content=text)
                 return
 
             if view.temp_private:
                 # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
                 chunks = split_message(text)
-                await interaction.edit_original_response(content=chunks[0])
+                if not await edit_panel_message(interaction, deferred=True, content=chunks[0]):
+                    return
                 result_shown = True
                 for chunk in chunks[1:]:
                     await interaction.followup.send(chunk, ephemeral=True)
@@ -252,7 +262,7 @@ class RunSummaryButton(ui.Button):
                     print(f"要約: チャンネルへの投稿に失敗しました: {error}")
                     await _report_failure(interaction, _PARTIAL_POST_NOTICE, keep_result=False)
                     return
-                await interaction.edit_original_response(content="✅ 要約をチャンネルに投稿しました。")
+                await edit_panel_message(interaction, deferred=True, content="✅ 要約をチャンネルに投稿しました。")
         except Exception as error:
             print(f"要約: 生成・送信中にエラーが発生しました: {error}")
             # 例外の文面には内部の情報が含まれうるため、利用者には定型文だけを見せる。

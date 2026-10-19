@@ -1,3 +1,5 @@
+import asyncio
+from dataclasses import dataclass
 import io
 from typing import Any, Callable
 
@@ -13,18 +15,106 @@ from persona_bot.utils.discord_helpers import reject_blocked_interaction
 HubFactory = Callable[[], Any]
 
 
+class _PanelState:
+    def __init__(self, view: "PanelView") -> None:
+        self.current: PanelView | None = view
+        self.generation = 0
+        self.edit_lock = asyncio.Lock()
+
+
+@dataclass(frozen=True)
+class _PanelOperation:
+    source: "PanelView"
+    state: _PanelState
+    generation: int
+
+    def is_current(self) -> bool:
+        # 元Viewが遷移で停止しても、受付済みの最新操作は次の遷移を完了できる。
+        # 停止済みViewそのものの再表示は、編集時に別途拒否する。
+        return self.generation == self.state.generation
+
+
+def begin_panel_operation(view: ui.View | None, interaction: discord.Interaction) -> _PanelOperation | None:
+    """DB待機より前に操作の世代を確保する。同じInteractionでは二重に進めない。"""
+    if not isinstance(view, PanelView):
+        return None
+    extras = getattr(interaction, "extras", None)
+    if not isinstance(extras, dict):
+        extras = interaction.extras = {}
+    previous = extras.get("persona_panel_operation")
+    if isinstance(previous, _PanelOperation) and previous.source is view:
+        return previous
+    state = view._panel_state
+    if state.current is not view or view.is_finished():
+        operation = _PanelOperation(view, state, -1)
+    else:
+        state.generation += 1
+        operation = _PanelOperation(view, state, state.generation)
+    extras["persona_panel_operation"] = operation
+    return operation
+
+
 def select_option_text(text: Any, *, fallback: str = "") -> str:
     """選択肢の表示文を1行・上限以内にし、空なら代わりの表示名を使う。"""
     single_line = " ".join(("" if text is None else str(text)).split())
     return single_line[:DISCORD_SELECT_LABEL_MAX_LENGTH].rstrip() or fallback
 
 
-async def edit_panel_message(interaction: discord.Interaction, *, content: str, view: ui.View | None) -> None:
-    """応答保留後も、同じエフェメラルパネルを編集する。"""
-    if interaction.response.is_done():
+def panel_operation_is_current(view: ui.View | None, interaction: discord.Interaction) -> bool:
+    extras = getattr(interaction, "extras", {})
+    operation = extras.get("persona_panel_operation") if isinstance(extras, dict) else None
+    if not isinstance(operation, _PanelOperation):
+        operation = begin_panel_operation(view, interaction)
+    return operation is None or operation.is_current()
+
+
+async def _edit_panel_message(
+    interaction: discord.Interaction, *, content: str, view: ui.View | None, deferred: bool,
+) -> None:
+    if deferred or getattr(interaction.response, "is_done", lambda: not hasattr(interaction.response, "edit_message"))():
         await interaction.edit_original_response(content=content, view=view)
     else:
         await interaction.response.edit_message(content=content, view=view)
+
+
+async def edit_panel_message(
+    interaction: discord.Interaction, *, content: str, view: ui.View | None = None,
+    source: ui.View | None = None, deferred: bool = False,
+) -> bool:
+    """同じパネルの編集を直列化し、後から始まった操作がある旧更新を破棄する。"""
+    extras = getattr(interaction, "extras", {})
+    operation = extras.get("persona_panel_operation") if isinstance(extras, dict) else None
+    if not isinstance(operation, _PanelOperation) or (source is not None and operation.source is not source):
+        operation = begin_panel_operation(source if source is not None else view, interaction)
+    if operation is None:
+        await _edit_panel_message(interaction, content=content, view=view, deferred=deferred)
+        return True
+    state = operation.state
+    try:
+        # 先行するHTTP編集が遅くても、ロック待ちでInteractionを失効させない。
+        if state.edit_lock.locked() and not getattr(interaction.response, "is_done", lambda: False)():
+            await interaction.response.defer(ephemeral=True)
+        async with state.edit_lock:
+            if not operation.is_current() or (view is not None and view.is_finished()):
+                if view is not None and view is not state.current:
+                    view.stop()
+                if not getattr(interaction.response, "is_done", lambda: False)():
+                    await interaction.response.defer(ephemeral=True)
+                return False
+            await _edit_panel_message(interaction, content=content, view=view, deferred=deferred)
+            previous = state.current
+            if previous is not view:
+                state.current = view
+                if isinstance(view, PanelView):
+                    view._panel_state = state
+                if previous is not None:
+                    previous.stop()
+            return True
+    except BaseException:
+        # ロック待ちの取り消しでも、不採用の遷移先を残さない。
+        if view is not None and view is not state.current:
+            view.stop()
+        raise
 
 
 async def bind_panel_message(
@@ -58,23 +148,44 @@ class PanelView(ui.View):
         # タイムアウトしたときにユーザーへ表示する文言（パネルごとに変える）。
         self.timeout_notice: str = timeout_notice
         self.blocked_user_check: Callable[[int], bool] | None = None
+        self._panel_state = _PanelState(self)
+
+    def stop(self) -> None:
+        if self._panel_state.current is self:
+            self._panel_state.current = None
+            self._panel_state.generation += 1
+        super().stop()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """パネルを開いた後にブロックされた利用者も、操作のたびに拒否する。"""
-        if self.blocked_user_check is None:
-            return True
-        return not await reject_blocked_interaction(interaction, self.blocked_user_check)
+        if self.is_finished() or self._panel_state.current is not self:
+            return False
+        if self.blocked_user_check is not None and await reject_blocked_interaction(interaction, self.blocked_user_check):
+            return False
+        # グラフ等の別メッセージへの操作では、保留中のパネル更新を失効させない。
+        # 画面を更新するコールバックだけが、待機前に操作世代を確保する。
+        return not self.is_finished() and self._panel_state.current is self
 
     async def on_timeout(self) -> None:
         """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
+        state = self._panel_state
+        if state.current is not self:
+            return
         if self.message is None:
             # メッセージ参照が無い（送信前・差し替え済みなど）ときは何もしない。
+            self.stop()
             return
-        try:
-            await self.message.edit(content=self.timeout_notice, view=None)
-        except discord.HTTPException as error:
-            # 既に消えたメッセージ・権限切れなどで失敗しうるが、致命的ではないのでログのみ。
-            print(f"パネル({type(self).__name__})のタイムアウト処理エラー: {error}")
+        state.generation += 1
+        generation = state.generation
+        async with state.edit_lock:
+            if state.current is not self or state.generation != generation:
+                return
+            try:
+                await self.message.edit(content=self.timeout_notice, view=None)
+            except discord.HTTPException as error:
+                print(f"パネル({type(self).__name__})のタイムアウト処理エラー: {error}")
+            finally:
+                self.stop()
 
     def refresh_items(self) -> None:
         """UI パーツを組み直す（セレクト選択やトグル操作のあとに呼ぶ）。
@@ -113,13 +224,15 @@ class BackButton(ui.Button):
         make_hub: HubFactory | None = getattr(view, "make_hub", None)
         if make_hub is None:
             # エフェメラルメッセージは delete() できないため、内容を編集して閉じる。
-            await edit_panel_message(interaction, content="パネルを閉じました。", view=None)
-            if view is not None:
+            edited = await edit_panel_message(interaction, content="パネルを閉じました。", view=None, source=view)
+            if edited and view is not None:
                 view.stop()
             return
 
         hub = make_hub()
-        await edit_panel_message(interaction, content=hub.build_preview(), view=hub)
+        hub.blocked_user_check = getattr(view, "blocked_user_check", None)
+        if not await edit_panel_message(interaction, content=hub.build_preview(), view=hub, source=view):
+            return
         if view is not None:
             view.stop()
         # エフェメラルはチャンネル経由では編集できないためWebhookの参照を保持する。
@@ -144,7 +257,8 @@ async def swap_panel(
         content:     差し替え後のメッセージ本文（通常は panel.build_preview()）。
     """
     panel.blocked_user_check = getattr(hub, "blocked_user_check", None)
-    await edit_panel_message(interaction, content=content, view=panel)
+    if not await edit_panel_message(interaction, content=content, view=panel, source=hub):
+        return
     # ハブは役目を終えたので停止する。止めないとハブのタイムアウト処理が
     # 後からメッセージを誤って上書きする（同じメッセージを共有しているため、
     # 表示中のサブパネルが「機能パネルは時間切れです」に化けてしまう）。

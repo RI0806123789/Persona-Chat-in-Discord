@@ -24,7 +24,10 @@ from persona_bot.core.app_state import GuildSettings
 from persona_bot.services.autonomous_service import compute_talk_desire, describe_quiet_hours
 from persona_bot.config.choices import AUTO_TOPIC_INTERVAL_CHOICES, AUTO_TOPIC_INTERVAL_DISPLAY_NAMES
 from persona_bot.config.constants import AUTONOMOUS_IDLE_STOP_MINUTES
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, BackButton,
+    HubFactory, PanelView,
+)
 
 # 「話したいゲージ」を文字で描くときの目盛りの数。
 _GAUGE_BAR_WIDTH = 10
@@ -120,9 +123,10 @@ class AutoTopicIntervalSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_interval_hours = int(self.values[0])
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class AutoTopicToggleButton(ui.Button):
@@ -135,9 +139,10 @@ class AutoTopicToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_auto_topic_enabled = not view.temp_auto_topic_enabled
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class AutonomousToggleButton(ui.Button):
@@ -150,9 +155,10 @@ class AutonomousToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         view.temp_autonomous_enabled = not view.temp_autonomous_enabled
         view.refresh_items()
-        await interaction.response.edit_message(content=view.build_preview(), view=view)
+        await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
 
 class AutoTopicConfirmButton(ui.Button):
@@ -163,6 +169,7 @@ class AutoTopicConfirmButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "AutoTopicView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(view, interaction)
         await interaction.response.defer(ephemeral=True)
 
         # 一時選択値をこのサーバー（ギルド）専用の設定に反映し、DB へ保存する。
@@ -188,8 +195,7 @@ class AutoTopicConfirmButton(ui.Button):
             view.temp_interval_hours,
             confirmed=True,
         )
-        await interaction.edit_original_response(content=confirmed_text, view=None)
-        view.stop()
+        await edit_panel_message(interaction, deferred=True, content=confirmed_text, view=None)
 
 
 class AutoTopicView(PanelView):

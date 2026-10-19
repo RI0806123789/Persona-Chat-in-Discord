@@ -19,7 +19,11 @@ from persona_bot.services.stats_service import StatsService
 from persona_bot.views.stats_view import StatsView
 from persona_bot.views.summary_view import SummaryView
 from persona_bot.utils.usage_graph import UsageTracker
-from persona_bot.views.view_parts import BackButton, HubFactory, PanelView, select_option_text, send_graph_ephemeral, swap_panel
+from persona_bot.views.view_parts import (
+    begin_panel_operation, edit_panel_message, BackButton,
+    HubFactory, PanelView, select_option_text,
+    send_graph_ephemeral, swap_panel,
+)
 
 
 class OpenSettingsButton(ui.Button):
@@ -30,6 +34,7 @@ class OpenSettingsButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         blocked_users = hub.blacklist.get_all_blocked_users()
         blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
@@ -51,6 +56,7 @@ class OpenSummaryButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         summary_view = SummaryView(
             hub.guild_settings,
@@ -106,6 +112,7 @@ class GroundingToggleButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
         await interaction.response.defer(ephemeral=True)
         hub.guild_settings.grounding_enabled = not hub.guild_settings.grounding_enabled
         # このトグルは確定操作が無く押した瞬間に反映されるため、その場で保存する
@@ -113,7 +120,7 @@ class GroundingToggleButton(ui.Button):
 
         # ボタンの表示（ON/OFF）を更新するために View を再構築
         hub.refresh_items()
-        await interaction.edit_original_response(content=hub.build_preview(), view=hub)
+        await edit_panel_message(interaction, deferred=True, content=hub.build_preview(), view=hub)
 
 
 class NgReloadButton(ui.Button):
@@ -155,6 +162,7 @@ class StatsButton(ui.Button):
             await interaction.response.send_message("まだ会話統計データがありません。", ephemeral=True)
             return
 
+        begin_panel_operation(hub, interaction)
         member = interaction.user
         is_admin = is_administrator(member)
         stats_view = StatsView(hub.stats, viewer_id=str(member.id), is_admin=is_admin, make_hub=hub.clone)
@@ -175,6 +183,7 @@ class AutoTopicButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         auto_topic_view = AutoTopicView(hub.guild_settings, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージを自発会話パネルに差し替える
@@ -192,6 +201,7 @@ class ReminderButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         await interaction.response.defer(ephemeral=True)
         viewer_id = str(interaction.user.id)
@@ -214,6 +224,7 @@ class HelpButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         # ボット名はハードコードせず、押された時点のクライアントから解決する
         # （別名のボットで同じコードを動かしてもメンション例が正しくなるように）。
@@ -237,6 +248,7 @@ class StatsPrivacyButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
+        begin_panel_operation(hub, interaction)
 
         privacy_view = StatsPrivacyView(
             hub.stats,
@@ -270,6 +282,7 @@ class UnblockButton(ui.Button):
             )
             return
 
+        begin_panel_operation(hub, interaction)
         unblock_view = UnblockView(hub.blacklist, blocked_users, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージをブロック解除パネルに差し替える
         await swap_panel(
@@ -301,17 +314,17 @@ class UnblockSelect(ui.Select):
         if not is_administrator(interaction.user):
             await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
             return
+        begin_panel_operation(view, interaction)
         user_id = int(self.values[0])
         # 選択肢のラベルから表示名を拾う（通知メッセージ用）
         name = next((o.label for o in self.options if o.value == self.values[0]), str(user_id))
         await interaction.response.defer()
         if await view.blacklist.unblock(user_id):
-            await interaction.edit_original_response(content=f"✅ {name} のブロックを解除しました。", view=None)
+            await edit_panel_message(interaction, deferred=True, content=f"✅ {name} のブロックを解除しました。", view=None)
         else:
-            await interaction.edit_original_response(
+            await edit_panel_message(interaction, deferred=True,
                 content=f"{name} はブラックリストに登録されていませんでした。", view=None
             )
-        view.stop()
 
 
 class UnblockView(PanelView):
