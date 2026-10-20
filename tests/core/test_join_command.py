@@ -27,9 +27,10 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
             return register
 
         self.autonomous = SimpleNamespace(stop_session=AsyncMock(return_value=False))
+        self.voice_guard = Mock(name="voice_guard")
         register_commands(SimpleNamespace(command=command), BotState(), None, None,
                           SimpleNamespace(is_blocked=Mock(return_value=False)),
-                          None, None, None, None, self.autonomous)
+                          None, None, None, None, self.autonomous, voice_guard=self.voice_guard)
         self.channel = self.make_channel(20)
         self.guild = SimpleNamespace(id=1, me=object(), voice_client=None)
         self.interaction = SimpleNamespace(
@@ -82,6 +83,41 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                 voice_client.disconnect.assert_awaited_once_with(force=True)
                 self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
                 self.assertIn("に接続しました", reply)
+
+    async def test_join_registers_the_chosen_channel_as_the_intended_destination(self) -> None:
+        # 初回の接続・同じチャンネルの再利用のどちらも、人が選んだ先を意図した接続先にする（#171）
+        await self.join()
+        self.voice_guard.adopt.assert_called_once_with(1, 20)
+        self.voice_guard.adopt.reset_mock()
+        self.guild.voice_client = self.make_voice_client(self.channel)
+        await self.join()
+        self.voice_guard.adopt.assert_called_once_with(1, 20)
+        self.voice_guard.release.assert_not_called()
+
+    async def test_switching_releases_the_guard_before_disconnecting(self) -> None:
+        old = self.make_voice_client(self.make_channel(30))
+        self.guild.voice_client = old
+        order = Mock()
+        order.attach_mock(self.voice_guard.release, "release")
+        order.attach_mock(old.disconnect, "disconnect")
+        order.attach_mock(self.voice_guard.adopt, "adopt")
+        await self.join()
+        self.assertEqual([call[0] for call in order.mock_calls], ["release", "disconnect", "adopt"])
+
+    async def test_failed_join_does_not_register_a_destination(self) -> None:
+        self.channel.connect.side_effect = asyncio.TimeoutError
+        await self.join()
+        self.voice_guard.adopt.assert_not_called()
+
+    async def test_leave_releases_the_guard_before_disconnecting(self) -> None:
+        current = self.make_voice_client(self.channel)
+        self.guild.voice_client = current
+        order = Mock()
+        order.attach_mock(self.voice_guard.release, "release")
+        order.attach_mock(current.disconnect, "disconnect")
+        await self.commands["leave"](self.interaction)
+        self.assertEqual([call[0] for call in order.mock_calls], ["release", "disconnect"])
+        self.voice_guard.release.assert_called_once_with(1)
 
     async def test_first_join_connects_with_timeout(self) -> None:
         reply = await self.join()

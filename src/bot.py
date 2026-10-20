@@ -49,6 +49,7 @@ from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
 from persona_bot.config.settings_loader import load_settings
 from persona_bot.services.stats_service import StatsService
+from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
 
 
@@ -88,6 +89,8 @@ stats = StatsService(database, gemini)
 auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
 autonomous = AutonomousService(client, state, gemini, moderator, ng_filter, usage)
 client.add_shutdown_callback(autonomous.stop_all_sessions)
+# 管理者などにボットを別のボイスチャンネルへ移されたとき、接続先を守る（#171）。
+voice_guard = VoiceGuard(client, autonomous)
 reminders = ReminderService(client, database, ng_filter)
 feedback = FeedbackService(client, database)
 # 集計パネル（会話統計 → 👍 フィードバック）は機能ハブ経由で生成されるため、
@@ -101,7 +104,10 @@ message_handler = MessageHandler(
     gemini=gemini, usage=usage, feedback=feedback,
 )
 
-register_commands(tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, autonomous)
+register_commands(
+    tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, autonomous,
+    voice_guard=voice_guard,
+)
 
 
 # --- 定期実行の見回りループ ---
@@ -231,6 +237,22 @@ async def on_guild_join(guild: discord.Guild) -> None:
 @client.event
 async def on_message(message: discord.Message) -> None:
     await message_handler.on_message(message)
+
+
+@client.event
+async def on_voice_state_update(
+    member: discord.Member, before: discord.VoiceState, after: discord.VoiceState,
+) -> None:
+    """ボット自身が別のボイスチャンネルへ移されたら、接続先を保護する（#171）。
+
+    判断と保護動作は voice_guard が担う（ボット以外の利用者の更新はそこで無視する）。
+    想定外の失敗でイベント処理を落とさないよう、ここで受け止めてログだけ残す。
+    必要な voice_states インテントは上で有効にしている。
+    """
+    try:
+        voice_guard.handle_voice_state_update(member, before, after)
+    except Exception as error:
+        print(f"ボイス接続の保護の処理エラー: {type(error).__name__}: {error}")
 
 
 @client.event
