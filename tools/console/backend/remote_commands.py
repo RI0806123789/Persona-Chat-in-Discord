@@ -216,6 +216,7 @@ DB_TABLES = (
     "user_stats",
     "queue_tasks",
     "pending_log",
+    "legacy_imports",
     "profile",
     "guild_settings",
     "anniversary_posts",

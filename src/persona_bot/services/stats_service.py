@@ -2,6 +2,7 @@ import asyncio
 import io
 import math
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,7 +25,7 @@ from persona_bot.config.constants import (
     STATS_TIMEZONE,
     STATS_TOPIC_COUNT,
 )
-from persona_bot.core.background import run_in_thread
+from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to_buffer, serialized_plot
 from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_stats_analysis_prompt
@@ -108,6 +109,16 @@ def normalize_hourly(hourly: Any) -> list[float]:
     return counts + [0.0] * (STATS_HOURLY_BUCKETS - len(counts))
 
 
+@dataclass
+class _AnalysisFlight:
+    """同じ入力の解析を共有し、最新の要求だけに保存を許可する。"""
+
+    samples: list[str]
+    version: int
+    task: asyncio.Task | None = None
+    waiters: int = 0
+
+
 class StatsService:
     """ユーザー別の会話統計（発言回数・時間帯・話題・性格推定）を集計・可視化する。
 
@@ -134,6 +145,7 @@ class StatsService:
         self._save_lock = asyncio.Lock()
         # 削除・収集設定の変更より前に開始した解析結果を書き戻さないための世代。
         self._analysis_versions: dict[str, int] = {}
+        self._analysis_tasks: dict[str, _AnalysisFlight] = {}
         self._tz = resolve_timezone(STATS_TIMEZONE, purpose="会話統計の時間帯集計")
 
     # ---- 記録 -------------------------------------------------------------
@@ -330,7 +342,9 @@ class StatsService:
         """話題・性格推定の解析結果を返す。TTL 内ならキャッシュ、なければ LLM で再計算する。
 
         LLM 呼び出しやパースに失敗した場合は、既存のキャッシュ（あれば）にフォールバックする。
+        force=Trueも同じ入力の実行中処理を共有し、完了後の次のforce指定で再計算する。
         """
+        observed_flight = self._analysis_tasks.get(user_id)
         async with self._save_lock:
             entry = self.cache.get(user_id)
             if not entry:
@@ -346,6 +360,47 @@ class StatsService:
                     and not self._lacks_personality(cached, len(samples))):
                 return cached
             version = self._analysis_versions.get(user_id, 0)
+            flight = self._analysis_tasks.get(user_id)
+            if (flight is None and observed_flight is not None
+                    and observed_flight.version == version and observed_flight.samples == samples
+                    and observed_flight.task.done() and not observed_flight.task.cancelled()):
+                # 保存ロックを待つ間に完了した解析も、この要求の実行中処理として共有する。
+                return deepcopy(entry.get("analysis"))
+            if (flight is None or flight.version != version or flight.samples != samples
+                    or flight.task.done()):
+                flight = _AnalysisFlight(samples=samples, version=version)
+                self._analysis_tasks[user_id] = flight
+                flight.task = spawn(self._run_analysis(user_id, flight), label="会話統計の解析")
+            flight.waiters += 1
+
+        try:
+            # 1枚のパネルの中断で、ほかのパネルが待つ解析を中断しない。
+            return deepcopy(await asyncio.shield(flight.task))
+        finally:
+            flight.waiters -= 1
+            if flight.waiters == 0:
+                if self._analysis_tasks.get(user_id) is flight:
+                    self._analysis_tasks.pop(user_id)
+                if not flight.task.done():
+                    flight.task.cancel()
+                    # 保存中の同期処理も回収してから最後の呼出元へキャンセルを返す。
+                    await wait_for_cleanup(
+                        self._drain_analysis(flight.task), label="会話統計の解析中断待機",
+                    )
+
+    @staticmethod
+    async def _drain_analysis(task: asyncio.Task) -> None:
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _run_analysis(self, user_id: str, flight: _AnalysisFlight) -> dict | None:
+        try:
+            return await self._generate_analysis(user_id, flight)
+        finally:
+            if self._analysis_tasks.get(user_id) is flight:
+                self._analysis_tasks.pop(user_id)
+
+    async def _generate_analysis(self, user_id: str, flight: _AnalysisFlight) -> dict | None:
+        samples = flight.samples
 
         # プロンプト文面は prompting.py に集約している（STATS_TOPIC_COUNT のような
         # 定数は prompting が constants を import しない規約のため引数で渡す）。
@@ -388,7 +443,8 @@ class StatsService:
             if entry is None:
                 return None
             # LLM待機中の削除・停止・再開をまたいだ結果は反映しない。
-            if (analysis is None or version != self._analysis_versions.get(user_id, 0)
+            if (analysis is None or flight.version != self._analysis_versions.get(user_id, 0)
+                    or self._analysis_tasks.get(user_id) is not flight
                     or self._entry_opted_out(entry)):
                 return deepcopy(entry.get("analysis"))
             previous = entry.get("analysis")

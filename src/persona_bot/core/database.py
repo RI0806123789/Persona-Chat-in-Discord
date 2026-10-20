@@ -1,6 +1,6 @@
 """SQLite データベース層（memory/bot.db）。
 
-以下の9テーブルを SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
+以下の10テーブルを SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
 旧 JSON / テキストファイルから移したデータと、その後追加した機能のデータを持つ。
 
   - affinity     … ユーザーごとの親密度・感情（旧 affinity.json）
@@ -12,6 +12,7 @@
   - anniversary_posts … サーバー・ユーザー・記念日ごとの最終お祝い投稿日。
   - reminders    … ユーザーごとの通知予定・繰り返し・通知/取り消し状態。
   - feedback     … ボット返信への評価。(message_id, user_id) ごとに記録する。
+  - legacy_imports … 旧ファイルの取り込み済み記録。本文は保存せず内容のハッシュで照合する。
 
 projects.json は LLM が構造を自由に決める JSON のため、
 テーブル化せず従来どおりファイルのまま扱う。
@@ -39,6 +40,7 @@ _CREATE_TABLE_STATEMENTS は初版（バージョン1）の形のまま変更し
 両方を書き換えると二重適用でエラーになる）。
 """
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -55,7 +57,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -180,6 +182,14 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   索引の順序だけで済む。見回り（reminder_claim_due）は引き続き idx_reminders_due を使う。
     10: [
         "CREATE INDEX IF NOT EXISTS idx_reminders_user_status ON reminders (user_id, status, remind_at)",
+    ],
+    # バージョン11: 改名失敗後も旧ログの取り込みを繰り返さないための記録。
+    11: [
+        """CREATE TABLE legacy_imports (
+            source_name  TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            PRIMARY KEY (source_name, content_hash)
+        )""",
     ],
 }
 
@@ -470,7 +480,10 @@ class Database:
 
     def _import_pending_log_txt(self, path: Path) -> None:
         """旧 pending_log.txt（[時刻] User: … / [時刻] Bot: … 形式）を行単位で復元する。"""
-        text = path.read_text(encoding="utf-8-sig")
+        # 読み取った同じバイト列からハッシュと会話を作り、別内容の取り違えを防ぐ。
+        source = path.read_bytes()
+        content_hash = hashlib.sha256(source).hexdigest()
+        text = source.decode("utf-8-sig")
         if not text.strip():
             return
         entries: list[dict[str, str]] = []
@@ -503,11 +516,22 @@ class Database:
                 print(f"データベース: 引き継ぎ先が無いため、pending_log.txt の {len(entries)} 件は取り込みません。")
             return
         with self._lock, self._conn:
+            imported = self._conn.execute(
+                "SELECT 1 FROM legacy_imports WHERE source_name = ? AND content_hash = ?",
+                (path.name, content_hash),
+            ).fetchone()
+            if imported:
+                return
             for entry in entries:
                 self._conn.execute(
                     "INSERT INTO pending_log (user_id, created_at, question, response) VALUES (?, ?, ?, ?)",
                     (owner, entry["created_at"], entry["question"], entry["response"]),
                 )
+            # INSERTと同じトランザクションで確定する。失敗時は両方とも再試行できる。
+            self._conn.execute(
+                "INSERT INTO legacy_imports (source_name, content_hash) VALUES (?, ?)",
+                (path.name, content_hash),
+            )
 
     def _absorb_profile_json(self) -> None:
         """profile.json に書き足された内容を profile テーブルへ吸収する（毎起動時）。

@@ -282,6 +282,74 @@ class LegacyDataEdgeCaseTests(unittest.TestCase):
                 self.assertEqual(self.pending_users(db), expected)
                 self.assertEqual((root / "pending_log.txt.imported.bak").read_text(encoding="utf-8"), text)
 
+    def test_pending_import_rename_failure_is_idempotent_across_restarts(self) -> None:
+        source = self.root / "pending_log.txt"
+        text = "[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n"
+        source.write_text(text, encoding="utf-8-sig")
+        for _ in range(3):
+            db = self.open("owner-user")
+            with patch.object(Path, "replace", side_effect=OSError("架空の改名失敗")):
+                db.initialize()
+            self.assertEqual(len(db.pending_fetch_entries("owner-user")), 1)
+            self.assertEqual(db._conn.execute("SELECT COUNT(*) FROM legacy_imports").fetchone()[0], 1)
+            self.assertEqual(source.read_text(encoding="utf-8-sig"), text)
+            db.close()
+        restored = self.open("owner-user")
+        restored.initialize()
+        self.assertEqual(len(restored.pending_fetch_entries("owner-user")), 1)
+        self.assertFalse(source.exists())
+        self.assertEqual(source.with_suffix(".txt.imported.bak").read_text(encoding="utf-8-sig"), text)
+
+    def test_failed_pending_import_rolls_back_rows_and_marker_and_retries(self) -> None:
+        db = self.open("owner-user")
+        db.initialize()
+        source = self.root / "pending_log.txt"
+        source.write_text("[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n", encoding="utf-8")
+        # 会話のINSERT成功後、移行記録の書き込みだけを失敗させる。
+        with db._conn:
+            db._conn.execute(
+                "CREATE TRIGGER fail_import BEFORE INSERT ON legacy_imports "
+                "BEGIN SELECT RAISE(ABORT, 'fictional import failure'); END"
+            )
+        db.initialize()
+        self.assertTrue(source.exists())
+        self.assertEqual(db.pending_fetch_entries("owner-user"), [])
+        self.assertEqual(db._conn.execute("SELECT COUNT(*) FROM legacy_imports").fetchone()[0], 0)
+        with db._conn:
+            db._conn.execute("DROP TRIGGER fail_import")
+        db.close()
+        restored = self.open("owner-user")
+        restored.initialize()
+        self.assertEqual(len(restored.pending_fetch_entries("owner-user")), 1)
+        self.assertFalse(source.exists())
+
+    def test_consumed_pending_rows_are_not_reimported_after_rename_failure(self) -> None:
+        source = self.root / "pending_log.txt"
+        source.write_text("[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n", encoding="utf-8")
+        db = self.open("owner-user")
+        with patch.object(Path, "replace", side_effect=OSError("架空の改名失敗")):
+            db.initialize()
+        entries = db.pending_fetch_entries("owner-user")
+        db.pending_clear_upto("owner-user", entries[-1]["id"])
+        db.close()
+        restored = self.open("owner-user")
+        restored.initialize()
+        self.assertEqual(restored.pending_fetch_entries("owner-user"), [])
+        self.assertFalse(source.exists())
+
+    def test_pending_import_keeps_identical_conversations_and_distinct_sources(self) -> None:
+        source = self.root / "pending_log.txt"
+        text = "[2026-01-01] User: 架空の質問\n[2026-01-01] Bot: 架空の応答\n"
+        source.write_text(text * 2, encoding="utf-8")
+        db = self.open("owner-user")
+        with patch.object(Path, "replace", side_effect=OSError("架空の改名失敗")):
+            db.initialize()
+        self.add_pending(db, "owner-user")
+        source.write_text(text + "[2026-01-02] User: 別の架空の質問\n[2026-01-02] Bot: 別の架空の応答\n", encoding="utf-8")
+        db.initialize()
+        self.assertEqual(len(db.pending_fetch_entries("owner-user")), 5)
+        self.assertEqual(db._conn.execute("SELECT COUNT(*) FROM legacy_imports").fetchone()[0], 2)
+
     def test_broken_legacy_json_is_left_in_place_for_retry(self) -> None:
         files = {
             "affinity.json": "{架空の壊れたJSON",

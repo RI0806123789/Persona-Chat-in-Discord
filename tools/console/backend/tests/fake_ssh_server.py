@@ -424,9 +424,9 @@ def insights_output(bot: FakeBot) -> str:
 # 本当に実行する（件数と中身が食い違わず、スクリプトそのものも SSH 越しに確かめられるように）。
 # 人・サーバー・チャンネル・メッセージの ID と名前、会話の文はすべて架空のもの。
 
-# ボットの bot.db（スキーマ バージョン10）と同じ形。src/persona_bot/core/database.py の初版の定義に
+# ボットの bot.db（スキーマ バージョン11）と同じ形。src/persona_bot/core/database.py の初版の定義に
 # 移行をすべて適用した後の形を書き写したもの（ボットのコードは import しない）。
-FAKE_DB_SCHEMA_VERSION = 10
+FAKE_DB_SCHEMA_VERSION = 11
 FAKE_DB_TABLES = (
     "CREATE TABLE affinity (user_id TEXT PRIMARY KEY, affinity INTEGER NOT NULL DEFAULT 50, "
     "valence INTEGER NOT NULL DEFAULT 50, arousal INTEGER NOT NULL DEFAULT 50, last_interaction REAL NOT NULL DEFAULT 0)",
@@ -440,6 +440,8 @@ FAKE_DB_TABLES = (
     "updated_at TEXT NOT NULL DEFAULT '', finished_at TEXT, error TEXT)",
     "CREATE TABLE pending_log (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, "
     "question TEXT NOT NULL, response TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '')",
+    "CREATE TABLE legacy_imports (source_name TEXT NOT NULL, content_hash TEXT NOT NULL, "
+    "PRIMARY KEY (source_name, content_hash))",
     "CREATE TABLE profile (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (user_id, key))",
     "CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, prompt_file TEXT NOT NULL DEFAULT '', "
     "model_name TEXT NOT NULL DEFAULT '', respond_mode TEXT NOT NULL DEFAULT '', grounding_enabled INTEGER NOT NULL DEFAULT 1, "
@@ -495,6 +497,10 @@ def make_fake_database(directory: Path) -> tuple[Path, Path]:
         for statement in FAKE_DB_TABLES:
             con.execute(statement)
         con.execute(f"PRAGMA user_version = {FAKE_DB_SCHEMA_VERSION}")
+        con.execute(
+            "INSERT INTO legacy_imports (source_name, content_hash) VALUES (?, ?)",
+            ("pending_log.txt", "a" * 64),
+        )
         for index, (user_id, name) in enumerate(FAKE_USERS):
             last = now - timedelta(hours=index * 7 + 1)
             con.execute(
