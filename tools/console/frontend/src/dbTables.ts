@@ -150,6 +150,16 @@ export const DB_TABLE_SPECS: Record<string, TableSpec> = {
       { key: "id", label: "番号", kind: "count" },
     ],
   },
+  legacy_imports: {
+    label: "旧ログの取り込み記録",
+    icon: "history",
+    description: "旧ファイルの二重取り込みを防ぐ記録。会話本文は含みません。",
+    order: "ファイル名・内容のハッシュ順",
+    columns: [
+      { key: "source_name", label: "ファイル名", kind: "label", list: true },
+      { key: "content_hash", label: "内容のハッシュ", kind: "id", list: true },
+    ],
+  },
   profile: {
     label: "プロフィール記憶",
     icon: "person",

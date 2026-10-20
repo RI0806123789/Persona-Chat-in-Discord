@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -223,6 +224,241 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 self.gemini.generate.side_effect = generate
                 self.assertIsNone(await self.service.ensure_analysis("user-0", force=True))
                 self.assertIsNone(self.db.stats_load_all()["user-0"]["analysis"])
+
+
+    def start_analysis(self, user_id="user-0", *, force=False):
+        task = spawn(self.service.ensure_analysis(user_id, force=force), label="並行統計解析の検証")
+
+        async def cleanup():
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        self.addAsyncCleanup(cleanup)
+        return task
+
+    async def test_concurrent_analysis_and_force_requests_share_the_same_work(self) -> None:
+        for force in (False, True):
+            with self.subTest(force=force):
+                self.seed(2)
+                self.gemini.generate.reset_mock()
+                entered, release = asyncio.Event(), asyncio.Event()
+
+                async def generate(*args, **kwargs):
+                    entered.set()
+                    await release.wait()
+                    return json.dumps(self.generated_analysis), None, []
+
+                self.gemini.generate.side_effect = generate
+                first = self.start_analysis(force=force)
+                await asyncio.wait_for(entered.wait(), 2)
+                others = [self.start_analysis(force=force) for _ in range(4)]
+                await asyncio.sleep(0)
+                self.gemini.generate.assert_awaited_once()
+                release.set()
+                results = await asyncio.gather(first, *others)
+                self.assertTrue(all(result == results[0] for result in results))
+                self.assertIsNot(results[0], results[1])
+                self.assertEqual(await self.service.ensure_analysis("user-0"), results[0])
+                self.gemini.generate.assert_awaited_once()
+                await self.service.ensure_analysis("user-0", force=True)
+                self.assertEqual(self.gemini.generate.await_count, 2)
+                self.assertEqual(self.service._analysis_tasks, {})
+
+    async def test_older_analysis_cannot_overwrite_newer_completed_samples(self) -> None:
+        self.service.cache["user-0"]["recent_samples"] = [f"架空の発言{i}" for i in range(10)]
+        entered = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+
+        async def generate(*args, **kwargs):
+            nonlocal calls
+            index = calls
+            calls += 1
+            entered[index].set()
+            await release[index].wait()
+            analysis = deepcopy(self.generated_analysis)
+            analysis["personality"] = "古い架空の解析" if index == 0 else "新しい架空の解析"
+            return json.dumps(analysis), None, []
+
+        self.gemini.generate.side_effect = generate
+        older = self.start_analysis()
+        await asyncio.wait_for(entered[0].wait(), 2)
+        await self.service.record("user-0", "架空", "追加の架空の発言", self.when)
+        newer = self.start_analysis()
+        await asyncio.wait_for(entered[1].wait(), 2)
+        release[1].set()
+        adopted = await newer
+        release[0].set()
+        self.assertEqual(await older, adopted)
+        final = await self.service.ensure_analysis("user-0")
+        self.assertEqual(final["sample_count"], 11)
+        self.assertEqual(final["personality"], "新しい架空の解析")
+        self.assertEqual(self.db.stats_load_all()["user-0"]["analysis"], final)
+        self.assertEqual(calls, 2)
+
+    async def test_force_request_during_save_shares_the_finishing_analysis(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_save = self.service._save_user_locked
+
+        async def save(user_id):
+            entered.set()
+            await release.wait()
+            return await original_save(user_id)
+
+        with patch.object(self.service, "_save_user_locked", side_effect=save):
+            first = self.start_analysis(force=True)
+            await asyncio.wait_for(entered.wait(), 2)
+            second = self.start_analysis(force=True)
+            await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.gather(first, second)
+        self.assertEqual(results[0], results[1])
+        self.gemini.generate.assert_awaited_once()
+
+    async def test_other_user_record_analysis_and_privacy_do_not_wait_for_generation(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(prompt, *args, **kwargs):
+            if "待機する架空の発言" in prompt:
+                entered.set()
+                await release.wait()
+            return json.dumps(self.generated_analysis), None, []
+
+        self.service.cache["user-0"]["recent_samples"] = ["待機する架空の発言"]
+        self.gemini.generate.side_effect = generate
+        first = self.start_analysis()
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(self.service.record("other", "架空", "別の架空の発言", self.when), 2)
+        self.assertIsNotNone(await asyncio.wait_for(self.service.ensure_analysis("other"), 2))
+        self.assertTrue(await asyncio.wait_for(self.service.set_opt_out("other", "架空", True), 2))
+        self.assertTrue(await asyncio.wait_for(self.service.clear_user_data("other"), 2))
+        release.set()
+        await first
+
+    async def test_cancelling_one_waiter_keeps_the_shared_analysis(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return json.dumps(self.generated_analysis), None, []
+
+        self.gemini.generate.side_effect = generate
+        first = self.start_analysis()
+        await asyncio.wait_for(entered.wait(), 2)
+        second = self.start_analysis(force=True)
+        await asyncio.sleep(0)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        release.set()
+        self.assertIsNotNone(await second)
+        self.gemini.generate.assert_awaited_once()
+        self.assertEqual(self.service._analysis_tasks, {})
+
+    async def test_last_waiter_cancellation_cleans_up_and_allows_retry(self) -> None:
+        entered, canceled = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                canceled.set()
+
+        self.gemini.generate.side_effect = generate
+        first = self.start_analysis()
+        await asyncio.wait_for(entered.wait(), 2)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(first, 2)
+        self.assertTrue(canceled.is_set())
+        self.assertEqual(self.service._analysis_tasks, {})
+        self.gemini.generate.side_effect = None
+        self.assertIsNotNone(await self.service.ensure_analysis("user-0"))
+
+    async def test_shared_failure_is_retired_and_next_request_retries(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            raise RuntimeError("架空の解析失敗")
+
+        self.gemini.generate.side_effect = generate
+        first = self.start_analysis()
+        await asyncio.wait_for(entered.wait(), 2)
+        second = self.start_analysis()
+        await asyncio.sleep(0)
+        release.set()
+        self.assertEqual(await asyncio.gather(first, second), [None, None])
+        self.gemini.generate.assert_awaited_once()
+        self.assertEqual(self.service._analysis_tasks, {})
+        self.gemini.generate.side_effect = None
+        self.assertIsNotNone(await self.service.ensure_analysis("user-0"))
+
+    async def test_shared_task_cancelled_before_start_does_not_remain_registered(self) -> None:
+        def cancel_before_start(coro, **kwargs):
+            task = spawn(coro, **kwargs)
+            task.cancel()
+            return task
+
+        with patch.object(stats_service, "spawn", side_effect=cancel_before_start):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.ensure_analysis("user-0")
+        self.assertEqual(self.service._analysis_tasks, {})
+        self.assertIsNotNone(await self.service.ensure_analysis("user-0"))
+
+    async def test_repeated_cancellation_during_analysis_save_waits_before_clear(self) -> None:
+        entered, release = asyncio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        original_save = self.db.stats_save_user
+
+        def save(user_id, entry):
+            if entry.get("analysis") is not None:
+                loop.call_soon_threadsafe(entered.set)
+                if not release.wait(5):
+                    raise AssertionError("架空の保存待機が解除されませんでした")
+            original_save(user_id, entry)
+
+        with patch.object(self.db, "stats_save_user", side_effect=save):
+            first = self.start_analysis()
+            clear = None
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                first.cancel()
+                await asyncio.sleep(0)
+                first.cancel()
+                await asyncio.sleep(0)
+                clear = spawn(self.service.clear_user_data("user-0"), label="解析中断中の統計削除")
+                await asyncio.sleep(0)
+                self.assertFalse(first.done())
+                self.assertFalse(clear.done())
+            finally:
+                release.set()
+                await asyncio.gather(first, *([clear] if clear else []), return_exceptions=True)
+        self.assertTrue(first.cancelled())
+        self.assertEqual(self.service._analysis_tasks, {})
+        self.assertIsNone(self.db.stats_load_all()["user-0"]["analysis"])
+
+    async def test_stop_and_resume_does_not_adopt_the_pre_stop_analysis(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return json.dumps(self.generated_analysis), None, []
+
+        self.gemini.generate.side_effect = generate
+        first = self.start_analysis()
+        await asyncio.wait_for(entered.wait(), 2)
+        await self.service.set_opt_out("user-0", "架空", True)
+        await self.service.set_opt_out("user-0", "架空", False)
+        release.set()
+        self.assertIsNone(await first)
+        self.assertIsNone(self.db.stats_load_all()["user-0"]["analysis"])
+        self.assertIsNotNone(await self.service.ensure_analysis("user-0"))
 
 
 class StatsAnalysisTests(unittest.IsolatedAsyncioTestCase):

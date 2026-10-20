@@ -29,6 +29,7 @@ TABLES = {
     "user_stats": {"order": ["last_seen DESC", "user_id"], "json": ["hourly", "recent_samples", "analysis"]},
     "queue_tasks": {"order": ["created_at DESC", "task_id"], "json": []},
     "pending_log": {"order": ["id DESC"], "json": []},
+    "legacy_imports": {"order": ["source_name", "content_hash"], "json": []},
     "profile": {"order": ["user_id", "key"], "json": ["value"]},
     "guild_settings": {"order": ["guild_id"], "json": []},
     "anniversary_posts": {"order": ["posted_date DESC", "guild_id", "user_id", "label"], "json": []},
