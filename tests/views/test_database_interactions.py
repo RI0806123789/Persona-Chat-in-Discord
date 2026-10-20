@@ -13,7 +13,8 @@ import discord
 from persona_bot.core.app_state import GuildSettings
 from persona_bot.services.stats_service import StatsService
 from persona_bot.views.auto_topic_view import AutoTopicView, AutoTopicConfirmButton
-from persona_bot.views.functions_view import GroundingToggleButton, ReminderButton, StatsButton, UnblockSelect
+from persona_bot.views.functions_view import GroundingToggleButton, ReminderButton, StatsButton
+from persona_bot.views.unblock_view import UnblockSelect
 from persona_bot.views.reminder_view import ReminderCancelSelect, ReminderView
 from persona_bot.views.stats_privacy_view import StatsPrivacyView, StatsPrivacyConfirmButton, StatsDataDeleteButton
 from persona_bot.views.stats_view import StatsUserSelect, StatsView

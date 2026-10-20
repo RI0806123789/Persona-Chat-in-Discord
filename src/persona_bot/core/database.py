@@ -274,6 +274,26 @@ def _load_legacy_json_object(path: Path) -> dict[str, Any]:
     return data
 
 
+def _affinity_row_params(user_id: Any, entry: dict[str, Any]) -> tuple[str, Any, Any, Any, Any]:
+    """affinity テーブル1行分の保存パラメータ（列順は user_id, affinity, valence, arousal, last_interaction）。
+
+    旧 JSON の取り込み・1行の保存・全件置換の3か所で同じ既定値を使うため、ここに集約する。
+    列を足すときはこの関数と3か所の INSERT 文の列を合わせて直すこと。
+    None・欠けた値は中立値（最終会話時刻は 0.0）として保存する。
+    """
+    def value_or(key: str, default: Any) -> Any:
+        value = entry.get(key)
+        return default if value is None else value
+
+    return (
+        str(user_id),
+        value_or("affinity", AFFINITY_NEUTRAL),
+        value_or("valence", AFFINITY_NEUTRAL),
+        value_or("arousal", AFFINITY_NEUTRAL),
+        value_or("last_interaction", 0.0),
+    )
+
+
 class Database:
     """memory/bot.db への読み書きを一手に引き受けるクラス。
 
@@ -417,13 +437,7 @@ class Database:
                     "INSERT OR IGNORE INTO affinity"
                     " (user_id, affinity, valence, arousal, last_interaction)"
                     " VALUES (?, ?, ?, ?, ?)",
-                    (
-                        str(user_id),
-                        entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
-                        entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
-                        entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
-                        entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
-                    ),
+                    _affinity_row_params(user_id, entry),
                 )
 
     def _import_user_stats_json(self, path: Path) -> None:
@@ -1044,13 +1058,7 @@ class Database:
                 " ON CONFLICT(user_id) DO UPDATE SET"
                 " affinity=excluded.affinity, valence=excluded.valence,"
                 " arousal=excluded.arousal, last_interaction=excluded.last_interaction",
-                (
-                    str(user_id),
-                    entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
-                    entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
-                    entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
-                    entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
-                ),
+                _affinity_row_params(user_id, entry),
             )
 
     def affinity_save_all(self, cache: dict[str, dict[str, Any]]) -> None:
@@ -1062,13 +1070,7 @@ class Database:
                     "INSERT INTO affinity"
                     " (user_id, affinity, valence, arousal, last_interaction)"
                     " VALUES (?, ?, ?, ?, ?)",
-                    (
-                        str(user_id),
-                        entry.get("affinity") if entry.get("affinity") is not None else AFFINITY_NEUTRAL,
-                        entry.get("valence") if entry.get("valence") is not None else AFFINITY_NEUTRAL,
-                        entry.get("arousal") if entry.get("arousal") is not None else AFFINITY_NEUTRAL,
-                        entry.get("last_interaction") if entry.get("last_interaction") is not None else 0.0,
-                    ),
+                    _affinity_row_params(user_id, entry),
                 )
 
     # ---- user_stats（会話統計） ----------------------------------------------

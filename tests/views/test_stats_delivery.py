@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
 from persona_bot.views import stats_view
-from persona_bot.views.functions_view import UnblockSelect, UnblockView
+from persona_bot.views.unblock_view import UnblockSelect, UnblockView
 from persona_bot.views.stats_view import RunStatsButton, StatsUserSelect, StatsView
 
 

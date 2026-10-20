@@ -20,6 +20,25 @@ from zoneinfo import ZoneInfo
 WEEKDAY_NAMES_JA = ("月", "火", "水", "木", "金", "土", "日")
 
 
+def utc_now() -> datetime:
+    """現在の UTC 時刻を秒精度（マイクロ秒を落とす）で返す。保存する時刻の既定の精度。
+
+    リマインダーの期限判定のように ISO 8601 文字列の比較で扱う値があるため、
+    保存する時刻の桁数は秒に揃える（桁数が混ざると文字列の比較が壊れる）。
+    """
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def utc_now_iso(*, timespec: str = "seconds") -> str:
+    """現在の UTC 時刻を、保存用の ISO 8601 文字列（例: 2026-01-01T00:00:00+00:00）で返す。
+
+    既定は秒精度。各サービスで datetime.now(...).isoformat() を直書きすると精度が
+    混ざるため、保存する時刻文字列はこの関数で作る。同じ1秒に作られた記録の順序を
+    時刻で決める列（文書キューの created_at）だけは timespec="microseconds" を明示する。
+    """
+    return datetime.now(timezone.utc).isoformat(timespec=timespec)
+
+
 def parse_iso_datetime(text: str) -> datetime:
     """Python 3.10でもUTC末尾のZを解釈する。その他のISO形式は標準に従う。"""
     return datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)

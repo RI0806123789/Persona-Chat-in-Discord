@@ -499,6 +499,59 @@ class DbTableScriptTests(unittest.TestCase):
         self.assertEqual(data["errors"], ["bot.db が見つかりません。"])
         self.assertNotIn("fictional-missing", json.dumps(data))
 
+    @staticmethod
+    def load_user_names():
+        """スクリプトは読み込むと main() が走るため、表示名の関数と定数だけを取り出して使う。"""
+        tree = ast.parse(rc.DB_TABLE_SCRIPT)
+        nodes = [
+            node for node in tree.body
+            if (isinstance(node, ast.FunctionDef) and node.name == "user_names")
+            or (isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "NAME_LOOKUP_CHUNK" for target in node.targets))
+        ]
+        namespace = {"sqlite3": sqlite3}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "db_table.py", "exec"), namespace)
+        return namespace
+
+    def test_names_are_looked_up_only_for_the_shown_users(self) -> None:
+        namespace = self.load_user_names()
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE reminders (reminder_id INTEGER PRIMARY KEY, user_id TEXT, user_name TEXT)")
+        con.execute("CREATE TABLE user_stats (user_id TEXT PRIMARY KEY, user_name TEXT)")
+        # 表示しない利用者の行を多数置いても、問い合わせは表示中の ID だけに絞られる
+        con.executemany("INSERT INTO reminders (user_id, user_name) VALUES (?, ?)",
+                        [(str(1000 + index), "架空の他人") for index in range(300)])
+        con.executemany("INSERT INTO reminders (user_id, user_name) VALUES (?, ?)", [
+            ("11", "架空の旧名"), ("11", "架空の新名"), ("12", "架空のリマインダー名"), ("13", ""),
+        ])
+        con.executemany("INSERT INTO user_stats VALUES (?, ?)", [("12", "架空の統計名"), ("14", "架空の統計だけ")])
+        statements = []
+        con.set_trace_callback(statements.append)
+
+        names = namespace["user_names"](con, {"11", "12", "13", "14", "99"})
+
+        # 新しいリマインダーの名前で上書きし、会話統計の名前を最優先にする。空の名前は使わない
+        self.assertEqual(names, {"11": "架空の新名", "12": "架空の統計名", "14": "架空の統計だけ"})
+        selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(len(selects), 2)
+        self.assertTrue(all("IN (" in sql for sql in selects))
+        self.assertFalse(any("1000" in sql for sql in selects))
+        self.assertEqual(namespace["user_names"](con, set()), {})
+
+    def test_many_shown_users_are_split_into_bounded_queries(self) -> None:
+        namespace = self.load_user_names()
+        chunk = namespace["NAME_LOOKUP_CHUNK"]
+        self.assertLess(chunk, 999)  # 古い SQLite の変数の上限
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE user_stats (user_id TEXT PRIMARY KEY, user_name TEXT)")
+        ids = [str(10_000 + index) for index in range(chunk * 2 + 1)]
+        con.executemany("INSERT INTO user_stats VALUES (?, ?)", [(user_id, "架空" + user_id) for user_id in ids])
+        statements = []
+        con.set_trace_callback(statements.append)
+        names = namespace["user_names"](con, set(ids))
+        self.assertEqual(len(names), len(ids))
+        self.assertEqual(sum(sql.lstrip().upper().startswith("SELECT") and "user_stats" in sql for sql in statements), 3)
+
     def test_old_schema_and_broken_values_do_not_stop_the_page(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "bot.db"

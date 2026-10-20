@@ -41,6 +41,8 @@ OPT_OUT_HIDDEN = ("recent_samples", "analysis")
 # 利用者の ID が入る列（表示名を引くため）
 USER_COLUMNS = ("user_id", "target_user_id", "author_id")
 MAX_LIMIT = 200
+# 表示名を引く1回の問い合わせに渡す ID の数の上限（古い SQLite の変数の上限 999 より小さく保つ）
+NAME_LOOKUP_CHUNK = 500
 # JavaScript の Number で正確に表せる整数の上限
 MAX_SAFE_INTEGER = 2 ** 53 - 1
 
@@ -88,20 +90,29 @@ def parse_json_column(value):
 
 
 def user_names(con, user_ids):
-    """利用者の ID → 表示名。会話統計とリマインダーに残っている、依頼時・発言時の表示名を使う。"""
+    """利用者の ID → 表示名。会話統計とリマインダーに残っている、依頼時・発言時の表示名を使う。
+
+    表示中の行に出てくる ID（多くても件数の上限 × 利用者の列の数）だけを WHERE user_id IN (...) で
+    引く。テーブルを全件読むと、記録が増えるほど1ページの表示が遅くなり、メモリも使うため。
+    ID は文字列のまま渡す（どちらのテーブルも user_id は TEXT 型）。
+    """
     names = {}
-    if not user_ids:
+    ids = sorted(user_ids)
+    if not ids:
         return names
     for sql in (
-        # リマインダーは古いものから読み、新しい表示名で上書きする
-        "SELECT user_id, user_name FROM reminders WHERE user_name != '' ORDER BY reminder_id",
-        "SELECT user_id, user_name FROM user_stats WHERE user_name != ''",
+        # リマインダーは古いものから読み、新しい表示名で上書きする。会話統計の名前を最優先にする
+        "SELECT user_id, user_name FROM reminders WHERE user_name != '' AND user_id IN (%s) ORDER BY reminder_id",
+        "SELECT user_id, user_name FROM user_stats WHERE user_name != '' AND user_id IN (%s)",
     ):
         try:
-            for user_id, name in con.execute(sql):
-                key = str(user_id)
-                if key in user_ids and isinstance(name, str) and name:
-                    names[key] = name
+            # 区切りごとに ID が重ならないので、区切っても上書きの順序は変わらない
+            for start in range(0, len(ids), NAME_LOOKUP_CHUNK):
+                chunk = ids[start:start + NAME_LOOKUP_CHUNK]
+                for user_id, name in con.execute(sql % ", ".join("?" * len(chunk)), chunk):
+                    key = str(user_id)
+                    if key in user_ids and isinstance(name, str) and name:
+                        names[key] = name
         except sqlite3.Error:
             pass  # 古い版の DB にテーブル・列が無いだけなら、表示名なしで続ける
     return names

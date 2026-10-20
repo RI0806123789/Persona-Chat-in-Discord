@@ -4,7 +4,8 @@
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, redirect_stdout
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -260,6 +261,62 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*self.tasks)
         affinity.update_emotion.assert_called_once_with("11", 1, 2)
         affinity.save_background.assert_awaited_once_with("11")
+
+    # ---- 送信後の付随処理の失敗境界（#157） --------------------------------------
+
+    def assert_sent_once_and_spoken(self) -> None:
+        from persona_bot.core import message_handler
+        message_handler.send_long_reply.assert_awaited_once()
+        self.assertEqual(len(self.generations), 1)  # 再生成しない
+        self.assertEqual(
+            self.voice.await_args.args, (self.message, "架空の応答です。", "../prompts/prompt_default.txt"),
+        )
+
+    async def test_saved_reply_is_remembered_compacted_and_spoken(self) -> None:
+        memory = self.namespace["memory"]
+        await self.on_message(self.message)
+        await asyncio.gather(*self.tasks)
+        memory.append_pending_log.assert_awaited_once_with("11", "架空の質問です。", "架空の応答です。")
+        memory.flush_if_needed.assert_awaited_once()
+        self.assert_sent_once_and_spoken()
+
+    async def test_memory_save_failure_after_send_still_speaks_the_sent_reply(self) -> None:
+        memory = self.namespace["memory"]
+        memory.append_pending_log.side_effect = OSError("架空の記憶保存失敗")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            await self.on_message(self.message)
+        await asyncio.gather(*self.tasks)
+        self.assert_sent_once_and_spoken()
+        self.feedback.track_reply.assert_called_once()
+        # 保存できなかった会話を成功扱いにせず、記憶圧縮も起動しない
+        memory.flush_if_needed.assert_not_awaited()
+        self.assertIn("記憶への追記に失敗しました", output.getvalue())
+        self.assertIn("OSError", output.getvalue())
+
+    async def test_feedback_registration_failure_does_not_skip_memory_or_voice(self) -> None:
+        self.feedback.track_reply.side_effect = RuntimeError("架空の登録失敗")
+        with redirect_stdout(io.StringIO()):
+            await self.on_message(self.message)
+        await asyncio.gather(*self.tasks)
+        self.namespace["memory"].append_pending_log.assert_awaited_once()
+        self.assert_sent_once_and_spoken()
+
+    async def test_send_failure_is_not_spoken_remembered_or_tracked(self) -> None:
+        from persona_bot.core import message_handler
+        with patch.object(message_handler, "send_long_reply", AsyncMock(side_effect=RuntimeError("架空の送信失敗"))):
+            with self.assertRaises(RuntimeError):
+                await self.on_message(self.message)
+        self.voice.assert_not_awaited()
+        self.feedback.track_reply.assert_not_called()
+        self.namespace["memory"].append_pending_log.assert_not_awaited()
+
+    async def test_cancellation_during_memory_save_still_propagates(self) -> None:
+        self.namespace["memory"].append_pending_log.side_effect = asyncio.CancelledError
+        with self.assertRaises(asyncio.CancelledError):
+            await self.on_message(self.message)
+        self.voice.assert_not_awaited()
+        self.namespace["memory"].flush_if_needed.assert_not_awaited()
 
     async def test_autonomous_comment_passes_snapshot_to_generation_and_voice(self) -> None:
         self.namespace["autonomous"].is_comment_channel.return_value = True

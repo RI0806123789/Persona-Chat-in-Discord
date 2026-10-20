@@ -374,17 +374,47 @@ class MessageHandler:
                 if grounding_sources:
                     reply_text += format_grounding_sources(grounding_sources)
 
+                # 送信の失敗は呼出元へ伝える（送れていない返信を読み上げない）。
                 sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
-                # 送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
-                # 生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。
-                self.feedback.track_reply(
-                    sent,
-                    target_user_id=user_id,
-                    model_name=response_settings.model_name,
-                    prompt_file=response_settings.prompt_file,
-                )
-                await self.memory.append_pending_log(user_id, question, response_text)
-                spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
+                # ★ ここから先は送信済みの返信に付随する処理。どれが失敗しても、送った本文は
+                # 呼出元の読み上げへ返す（#157）。再生成・再送はしない（二重返信になるため）。
+                self._track_reply_for_feedback(sent, user_id, response_settings)
+                if await self._remember_reply(user_id, question, response_text):
+                    spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
                 return response_text
             finally:
                 close_image_attachments(image_objects)
+
+    def _track_reply_for_feedback(
+        self, sent: discord.Message, user_id: str, response_settings: ResponseSettings,
+    ) -> None:
+        """送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
+
+        生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。登録の失敗は
+        評価を取りこぼすだけなので、ログに残して記憶・読み上げへ進む。
+        """
+        try:
+            self.feedback.track_reply(
+                sent,
+                target_user_id=user_id,
+                model_name=response_settings.model_name,
+                prompt_file=response_settings.prompt_file,
+            )
+        except Exception as error:
+            print(f"評価対象の登録に失敗しました（返信は送信済み）: {type(error).__name__}: {error}")
+
+    async def _remember_reply(self, user_id: str, question: str, response_text: str) -> bool:
+        """会話を記憶圧縮前の一時ログへ追記し、成功したかを返す。
+
+        失敗しても返信は送信済みなので、例外を外へ出さずにログへ残す（成功扱いにはしない。
+        記憶圧縮も起動しない）。キャンセルは Exception に含まれないため従来どおり伝わる。
+        """
+        try:
+            await self.memory.append_pending_log(user_id, question, response_text)
+        except Exception as error:
+            print(
+                f"会話記憶: 返信は送信済みですが、記憶への追記に失敗しました"
+                f"（user_id={user_id}）: {type(error).__name__}: {error}"
+            )
+            return False
+        return True

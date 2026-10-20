@@ -12,6 +12,7 @@ from persona_bot.core.app_state import BotState
 from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     DOCUMENT_MEMORY_CONTEXT_LIMIT,
+    DOCUMENT_ONLY_QUESTION,
     DOCUMENT_WORKER_IDLE_SECONDS,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT,
@@ -29,6 +30,7 @@ from persona_bot.utils.discord_helpers import (
     is_supported_message_channel,
     send_long_reply,
 )
+from persona_bot.utils.timeutil import utc_now_iso
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.memory_service import MemoryService
 from persona_bot.services.ng_word_service import NgWordFilter
@@ -92,7 +94,10 @@ class DocumentService:
         attachments: Sequence[discord.Attachment],
     ) -> str:
         now = datetime.now(timezone.utc)
-        now_iso = now.isoformat()
+        # 取り出し順は ORDER BY created_at, task_id で決まり、task_id の先頭はチャンネルID。
+        # 秒精度にすると同じ1秒に届いた別チャンネルの文書が到着順に処理されなくなるため、
+        # この列だけはマイクロ秒まで残す（他の時刻は timeutil.utc_now_iso の秒精度）。
+        now_iso = now.isoformat(timespec="microseconds")
         task_id = f"{message.channel.id}-{message.id}-{int(now.timestamp() * 1000)}"
         await self._enqueue(
             {
@@ -138,7 +143,7 @@ class DocumentService:
 
         これがないと、処理中に Bot が落ちたタスクは二度と拾われず放置される。
         """
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now_iso()
         recovered = await run_in_thread(self._db.queue_recover_stuck, now_iso)
         if recovered:
             print(f"文書ワーカー: 中断された processing タスク {recovered} 件を pending に戻しました。")
@@ -147,7 +152,7 @@ class DocumentService:
         await run_in_thread(self._db.queue_upsert_task, task)
 
     async def _update_task(self, task_id: str, **updates: Any) -> None:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now_iso()
         await run_in_thread(self._db.queue_update_task, task_id, updates, now_iso)
         # 完了/失敗タスクが際限なく溜まらないよう、終了時に古いものから削除する
         if updates.get("status") in _TERMINAL_STATUSES:
@@ -158,7 +163,7 @@ class DocumentService:
                 print(f"文書ワーカー: 終了タスクの掃除に失敗しました: {error}")
 
     async def _claim_next_task(self) -> dict[str, Any] | None:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now_iso()
         return await run_in_thread(self._db.queue_claim_next_pending, now_iso)
 
     async def _process_task(self, task: dict[str, Any]) -> None:
@@ -181,7 +186,7 @@ class DocumentService:
                 author_id = str(message.author.id)
             question = clean_message_content(message, self._client.user)
             if not question:
-                question = str(task.get("question", "")).strip() or "このドキュメントの要点を整理してください。"
+                question = str(task.get("question", "")).strip() or DOCUMENT_ONLY_QUESTION
 
             # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
             guild_id = message.guild.id if message.guild is not None else None
@@ -253,7 +258,7 @@ class DocumentService:
                 await self._update_task(
                     task_id,
                     status="failed",
-                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    finished_at=utc_now_iso(),
                     error=str(error),
                 )
             except Exception as update_error:
@@ -272,7 +277,7 @@ class DocumentService:
         except Exception as error:
             print(f"文書タスク: 回答後の記憶追記に失敗しました: {type(error).__name__}")
         try:
-            await self._update_task(task_id, status="completed", finished_at=datetime.now(timezone.utc).isoformat())
+            await self._update_task(task_id, status="completed", finished_at=utc_now_iso())
         except Exception as error:
             print(f"文書タスク: 回答後の完了状態の保存に失敗しました: {type(error).__name__}")
 

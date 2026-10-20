@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from persona_bot.config.constants import BLACKLIST_PATH, BLACKLIST_MAX_VIOLATIONS
 from persona_bot.core.background import run_in_thread
 from persona_bot.utils.storage import load_json_file, write_json_file
+from persona_bot.utils.timeutil import utc_now_iso
 
 
 class BlacklistService:
@@ -120,7 +120,7 @@ class BlacklistService:
         just_blocked = False
         if record["count"] >= BLACKLIST_MAX_VIOLATIONS and not record.get("blocked", False):
             record["blocked"] = True
-            record["blocked_at"] = datetime.now(timezone.utc).isoformat()
+            record["blocked_at"] = utc_now_iso()
             just_blocked = True
 
         data[key] = record

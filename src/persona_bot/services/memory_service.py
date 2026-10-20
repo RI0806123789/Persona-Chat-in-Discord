@@ -27,6 +27,7 @@ from persona_bot.config.constants import (
 from persona_bot.core.database import Database
 from persona_bot.services.genai_client import generate_content
 from persona_bot.utils.normalization import normalize_memory_category
+from persona_bot.utils.timeutil import utc_now_iso
 from persona_bot.services.prompting import build_memory_compaction_prompt, build_router_prompt
 from persona_bot.utils.storage import (
     extract_json_object,
@@ -206,7 +207,7 @@ class MemoryService:
         return "none"
 
     async def store_document_summary(self, user_id: str, summary_data: dict[str, Any]) -> None:
-        summary_data = {**summary_data, "created_at": datetime.now(timezone.utc).isoformat()}
+        summary_data = {**summary_data, "created_at": utc_now_iso()}
         async with self.io_lock:
             await run_in_thread(self._store_document_summary, str(user_id), summary_data)
 

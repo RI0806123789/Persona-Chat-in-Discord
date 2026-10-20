@@ -37,6 +37,23 @@ Windows・Python 3.13.3・tzdata 2026.5で全672件が成功。154ファイル�
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #151・#152・#157の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #151 | 既存の `core/test_database`・`services/test_reminder_service`・`services/test_stats_service`・`services/test_document_*` など | 親密度の保存パラメータ・時刻文字列の生成・リマインダーの送信権限・文書の既定質問文を共通化しても、保存・通知・処理の結果が変わらない（振る舞いを変えない整理のため、既存テストで回帰を確認） |
+| #152 | コンソール `tests/test_remote_scripts.DbTableScriptTests` | 表示名は表示中の ID だけを `IN (...)` で問い合わせ、表示しない利用者の行を読まない。新しいリマインダーの名前で上書きし会話統計の名前を最優先にする順序と、ID が多いときの区切り（古い SQLite の変数上限未満）を確認 |
+| #152 | `views/test_panel_confirmations.py` | キャラ設定と自発会話は確定を押すまで設定を変えず、確定で反映・保存する。ペルソナのファイルが無ければ変更しない。自発会話の確定で配信の再挑戦待ちを解除する。ブロック解除の成功・解除済みの表示と、選択肢の上限・違反回数 |
+| #157 | `core/test_bot_reply_settings.py` | 送信後の記憶保存・評価登録が失敗しても、送った本文を同じ設定で読み上げへ渡す。保存失敗では記憶圧縮を起動せず、再生成・再送もしない。送信の失敗では読み上げ・記憶・評価を行わず、保存中のキャンセルは伝わる |
+
+## Issue #171〜#173の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #171 | `services/test_voice_guard.py`・`core/test_join_command.py`・`services/test_autonomous_session_cleanup.py` | 手動の移動から元のチャンネルへ戻り、再生中の読み上げを止める。自分の接続・切断・ミュートは移動とみなさない。元のチャンネルの削除・権限不足・移動の失敗・時間切れ・連続移動では戻らずに退出する。配信は即座に畳み、`/join`・`/leave` との競合では人の操作を優先する |
+| #172 | `core/test_voice_chat_ng_gate.py` | メンション必須モードでも、接続中のボイス／ステージのチャットのNG入力を記録し3回でブロックする。AI判定・返信は増やさず、他のチャンネル・未接続・移動前のチャットは見ない |
+| #173 | `core/test_violation_recording.py` | ローカルNG・AI判定・同時入力の3回目でブロック・保存・一覧・再読込が一致する。保存失敗は回数に数えず残り回数を出さない。ボット応答のNGは利用者の違反にしない。解除後は1回目から数え直す |
+
 ## Issue #112・#113・#116〜#121の確認
 
 | Issue | 変更と回帰の範囲 |
@@ -122,6 +139,8 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | core | [test_message_gates.py](core/test_message_gates.py) |
 | core | [test_message_handler_import.py](core/test_message_handler_import.py) |
 | core | [test_profile_absorption.py](core/test_profile_absorption.py) |
+| core | [test_violation_recording.py](core/test_violation_recording.py) |
+| core | [test_voice_chat_ng_gate.py](core/test_voice_chat_ng_gate.py) |
 | audio | [test_voice.py](audio/test_voice.py) |
 | audio | [test_voice_dsp.py](audio/test_voice_dsp.py) |
 | audio | [test_voice_session.py](audio/test_voice_session.py) |
@@ -136,6 +155,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | services | [test_autonomous_start_races.py](services/test_autonomous_start_races.py) |
 | services | [test_blacklist_service.py](services/test_blacklist_service.py) |
 | services | [test_document_lifecycle.py](services/test_document_lifecycle.py) |
+| services | [test_document_recovery.py](services/test_document_recovery.py) |
 | services | [test_document_service.py](services/test_document_service.py) |
 | services | [test_document_shutdown.py](services/test_document_shutdown.py) |
 | services | [test_gemini_service.py](services/test_gemini_service.py) |
@@ -146,8 +166,11 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | services | [test_reminder_service.py](services/test_reminder_service.py) |
 | services | [test_service_thread_cancellation.py](services/test_service_thread_cancellation.py) |
 | services | [test_stats_service.py](services/test_stats_service.py) |
+| services | [test_voice_guard.py](services/test_voice_guard.py) |
 | views | [test_database_interactions.py](views/test_database_interactions.py) |
 | views | [test_ng_reload_failure.py](views/test_ng_reload_failure.py) |
+| views | [test_panel_concurrency.py](views/test_panel_concurrency.py) |
+| views | [test_panel_confirmations.py](views/test_panel_confirmations.py) |
 | views | [test_remaining_io.py](views/test_remaining_io.py) |
 | views | [test_reminder_view.py](views/test_reminder_view.py) |
 | views | [test_settings_view.py](views/test_settings_view.py) |
