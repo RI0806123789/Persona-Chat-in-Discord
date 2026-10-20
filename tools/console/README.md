@@ -99,7 +99,9 @@ cd tools\console
 「スクリプトの実行が無効」と出る場合は、PowerShell の実行ポリシーで止められています。
 `powershell -ExecutionPolicy Bypass -File .\start-dev.ps1` で、その回だけ許可して実行できます。
 
-Microsoft Edge（無ければ Google Chrome）の専用画面で http://127.0.0.1:5173 が開きます。右上で接続先を選んで「接続」を押します。
+Google Chrome（無ければ Microsoft Edge）の専用画面で http://127.0.0.1:5173 が開きます。右上で接続先を選んで「接続」を押します。
+Edge も入っている環境でも Chrome を使います。Chrome は `Program Files (x86)`・`Program Files`・ユーザーごとのインストール先（`%LOCALAPPDATA%`）をすべて探し、見つからない場合だけ Edge を同じ順で探します。
+専用プロファイルはブラウザごとに分かれています（Chrome は `.run/browser-profile-chrome`、Edge は従来の `.run/browser-profile`）。そのため、以前 Edge で開いていた場合、Chrome での初回はテーマなど画面の設定が既定値に戻ります。
 バックエンドと Vite は非表示で動作し、**専用画面を閉じると、両方と子プロセスを自動終了**します。起動に使った PowerShell は起動完了後に閉じてもかまいません。
 画面の再読み込みでは終了しません。専用プロファイルを使うため、通常のブラウザとは設定・保存データが分かれます。
 画面を閉じた後も、進行中のデプロイがある場合は完了・巻き戻しとSSH切断を待ちます。その間は二重起動を断ります。
@@ -279,7 +281,7 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 
 | テスト | 確認内容 |
 | --- | --- |
-| `test_dev_launcher.py` | 画面終了・再読込・起動失敗時の回収、実uvicorn子プロセスでのデプロイ終了→SSH切断→lifespan終了の順序、期限超過時の強制終了と失敗通知、ポート競合の拒否・監視役強制終了時の子孫回収（Windows） |
+| `test_dev_launcher.py` | 起動ブラウザの探索順（Edge が先の場所にあっても Chrome を優先、Chrome が無ければ従来のプロファイルで Edge、両方無いときの案内）、画面終了・再読込・起動失敗時の回収、実uvicorn子プロセスでのデプロイ終了→SSH切断→lifespan終了の順序、期限超過時の強制終了と失敗通知、ポート競合の拒否・監視役強制終了時の子孫回収（Windows） |
 | `frontend/tests/fonts.test.mjs` | 共有した依存フォルダからアイコン・本文フォントを配信でき、配信範囲外のファイルは拒否すること |
 | `frontend/tests/connection.test.mjs` | 取得中の切断・接続切替、古いタイマーと同一接続内の応答順序、データ画面の集計破棄と接続先を変えたときにテーブルの中身を閉じること、ホーム所有者・通知・ツールチップの伏せ字を、APIとReactの境界を置き換えて確認 |
 | `frontend/tests/dbTables.test.mjs` | 画面のテーブル定義がバックエンドの `DB_TABLES` と一致すること、ID・名前・本文の列が伏せ字の対象になっていること、日時（ISO 8601・`pending_log` の書式・UNIX 秒）と解析結果の読み取り、古い版の DB の列の扱い |

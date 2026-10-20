@@ -25,6 +25,14 @@ WINDOW_TIMEOUT = 10
 POLL_INTERVAL = 0.2
 # 依存更新と巻き戻しの各900秒の待機も収まる猶予。超過時だけ強制終了する。
 BACKEND_SHUTDOWN_TIMEOUT = 3600
+# 専用画面に使うブラウザと専用プロファイルのフォルダ名。上のものほど優先する（既定は Chrome）。
+# プロファイルを分けるのは、Chrome と Edge が別の版番号でプロファイルを書き換えるため。
+# 共有して交互に使うと、相手の版を新しい版とみなして読み込めなくなるおそれがある。
+# Edge は従来のフォルダ名のままにし、これまでの画面の設定を引き継ぐ。
+BROWSER_CANDIDATES = (
+    ("Google/Chrome/Application/chrome.exe", "browser-profile-chrome"),
+    ("Microsoft/Edge/Application/msedge.exe", "browser-profile"),
+)
 _LIFETIME_RESOURCES = []
 
 
@@ -113,15 +121,18 @@ def browser_window_is_open(window: int) -> bool:
     return bool(user.IsWindow(window))
 
 
-def find_browser() -> Path:
-    for base in (os.environ.get("PROGRAMFILES(X86)"), os.environ.get("PROGRAMFILES"),
-                 os.environ.get("LOCALAPPDATA")):
-        if base:
-            for suffix in ("Microsoft/Edge/Application/msedge.exe", "Google/Chrome/Application/chrome.exe"):
-                candidate = Path(base) / suffix
-                if candidate.is_file():
-                    return candidate
-    raise RuntimeError("Microsoft Edge または Google Chrome が必要です。インストール後に起動してください。")
+def find_browser() -> tuple[Path, str]:
+    """起動するブラウザと、その専用プロファイルのフォルダ名を返す。"""
+    bases = [base for base in (os.environ.get("PROGRAMFILES(X86)"), os.environ.get("PROGRAMFILES"),
+                               os.environ.get("LOCALAPPDATA")) if base]
+    # 1つのブラウザを全ての場所で探してから次へ進む。場所ごとに両方を試すと、
+    # Program Files (x86) の Edge が Program Files の Chrome より先に見つかってしまう。
+    for suffix, profile in BROWSER_CANDIDATES:
+        for base in bases:
+            candidate = Path(base) / suffix
+            if candidate.is_file():
+                return candidate, profile
+    raise RuntimeError("Google Chrome または Microsoft Edge が必要です。インストール後に起動してください。")
 
 
 def check_port_available(port: int) -> None:
@@ -204,7 +215,7 @@ def run_console(root: Path, notify_ready) -> None:
     node = shutil.which("node.exe")
     if not python.is_file() or not vite.is_file() or not node:
         raise RuntimeError("初回セットアップが完了していません。Python・Node.js と依存関係を確認してください。")
-    browser = find_browser()
+    browser, profile = find_browser()
     for port in (8765, 5173):
         check_port_available(port)
     run = root / ".run"
@@ -228,7 +239,7 @@ def run_console(root: Path, notify_ready) -> None:
         wait_until_ready(services)
         # 普段のブラウザへ合流しない専用プロファイルで、画面の終了を追跡する。
         window = subprocess.Popen([
-            str(browser), f"--app={FRONTEND_URL}", f"--user-data-dir={run / 'browser-profile'}",
+            str(browser), f"--app={FRONTEND_URL}", f"--user-data-dir={run / profile}",
             "--no-first-run", "--no-default-browser-check", "--disable-background-mode",
         ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         resources.callback(stop_process, window)

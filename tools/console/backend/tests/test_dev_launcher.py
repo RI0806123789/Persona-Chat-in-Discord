@@ -1,4 +1,4 @@
-"""開発画面の寿命と、起動失敗時のプロセス回収を確認する。"""
+"""開発画面の寿命と起動ブラウザの探索順、起動失敗時のプロセス回収を確認する。"""
 
 from contextlib import ExitStack
 import ctypes
@@ -42,7 +42,8 @@ class ConsoleLifetimeTests(unittest.TestCase):
             process.returncode = 0
         self.spawn = self.resources.enter_context(patch.object(launcher.subprocess, "Popen", side_effect=self.processes))
         self.resources.enter_context(patch.object(launcher.shutil, "which", return_value="node.exe"))
-        self.resources.enter_context(patch.object(launcher, "find_browser", return_value=Path("browser.exe")))
+        self.resources.enter_context(patch.object(
+            launcher, "find_browser", return_value=(Path("browser.exe"), "browser-profile-chrome")))
         self.ports = self.resources.enter_context(patch.object(launcher, "check_port_available"))
         self.ready = self.resources.enter_context(patch.object(launcher, "wait_until_ready"))
         self.find_window = self.resources.enter_context(patch.object(launcher, "find_browser_window", return_value=42))
@@ -67,7 +68,8 @@ class ConsoleLifetimeTests(unittest.TestCase):
         commands = self.spawn.call_args_list
         self.assertEqual(commands[0].args[0][0], str(self.root / "backend/.venv/Scripts/python.exe"))
         self.assertEqual(commands[1].args[0][1], str(self.root / "frontend/node_modules/vite/bin/vite.js"))
-        self.assertIn(f"--user-data-dir={self.root / '.run/browser-profile'}", commands[2].args[0])
+        self.assertEqual(commands[2].args[0][0], "browser.exe")
+        self.assertIn(f"--user-data-dir={self.root / '.run/browser-profile-chrome'}", commands[2].args[0])
         self.assertEqual(commands[0].kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(commands[0].kwargs["env"]["PERSONA_CONSOLE_MANAGED"], "1")
         if os.name == "nt":
@@ -143,6 +145,86 @@ class ConsoleLifetimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "初回セットアップ"):
                 launcher.run_console(self.root, self.notify)
         self.spawn.assert_not_called()
+
+
+class BrowserSearchTests(unittest.TestCase):
+    CHROME = "Google/Chrome/Application/chrome.exe"
+    EDGE = "Microsoft/Edge/Application/msedge.exe"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        # 実際の Program Files などは見ず、一時フォルダを3つの探索場所に見立てる。
+        self.locations = {
+            "PROGRAMFILES(X86)": root / "Program Files (x86)",
+            "PROGRAMFILES": root / "Program Files",
+            "LOCALAPPDATA": root / "AppData/Local",
+        }
+
+    def install(self, variable, suffix):
+        path = self.locations[variable] / suffix
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        return path
+
+    def find(self, variables=("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")):
+        environment = {variable: str(self.locations[variable]) for variable in variables}
+        with patch.dict(launcher.os.environ, environment, clear=True):
+            return launcher.find_browser()
+
+    def test_chrome_is_preferred_over_edge_found_in_earlier_location(self):
+        # Windows の標準的な配置。場所ごとに探すと (x86) の Edge が先に見つかっていた。
+        self.install("PROGRAMFILES(X86)", self.EDGE)
+        chrome = self.install("PROGRAMFILES", self.CHROME)
+        self.assertEqual(self.find(), (chrome, "browser-profile-chrome"))
+
+    def test_chrome_installed_per_user_is_preferred_over_edge_in_all_other_locations(self):
+        self.install("PROGRAMFILES(X86)", self.EDGE)
+        self.install("PROGRAMFILES", self.EDGE)
+        chrome = self.install("LOCALAPPDATA", self.CHROME)
+        self.assertEqual(self.find(), (chrome, "browser-profile-chrome"))
+
+    def test_chrome_only(self):
+        chrome = self.install("PROGRAMFILES", self.CHROME)
+        self.assertEqual(self.find(), (chrome, "browser-profile-chrome"))
+
+    def test_edge_is_used_with_existing_profile_when_chrome_is_missing(self):
+        edge = self.install("PROGRAMFILES(X86)", self.EDGE)
+        # Edge はこれまでのプロファイルを使い続け、Chrome とは保存先を分ける。
+        self.assertEqual(self.find(), (edge, "browser-profile"))
+
+    def test_locations_keep_previous_order_within_same_browser(self):
+        first = self.install("PROGRAMFILES(X86)", self.CHROME)
+        self.install("PROGRAMFILES", self.CHROME)
+        self.install("LOCALAPPDATA", self.CHROME)
+        self.assertEqual(self.find(), (first, "browser-profile-chrome"))
+
+    def test_unset_location_and_directory_with_browser_name_are_skipped(self):
+        # 環境変数が無い場所は探さず、実行ファイル名のフォルダは実行ファイルとみなさない。
+        self.install("PROGRAMFILES(X86)", self.CHROME)
+        (self.locations["PROGRAMFILES"] / self.CHROME).mkdir(parents=True)
+        edge = self.install("LOCALAPPDATA", self.EDGE)
+        self.assertEqual(self.find(("PROGRAMFILES", "LOCALAPPDATA")), (edge, "browser-profile"))
+
+    def test_missing_both_browsers_names_chrome_first(self):
+        with self.assertRaisesRegex(RuntimeError, r"^Google Chrome または Microsoft Edge が必要です。"):
+            self.find()
+
+    def test_missing_browser_does_not_launch_background_processes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative in ("backend/.venv/Scripts/python.exe", "frontend/node_modules/vite/bin/vite.js"):
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).touch()
+            with patch.object(launcher.shutil, "which", return_value="node.exe"), \
+                    patch.object(launcher.subprocess, "Popen") as spawn, \
+                    patch.object(launcher, "check_port_available") as ports, \
+                    patch.dict(launcher.os.environ, {"PROGRAMFILES": str(self.locations["PROGRAMFILES"])}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "Google Chrome または Microsoft Edge"):
+                    launcher.run_console(root, Mock())
+            spawn.assert_not_called()
+            ports.assert_not_called()
 
 
 class LauncherBoundaryTests(unittest.TestCase):
