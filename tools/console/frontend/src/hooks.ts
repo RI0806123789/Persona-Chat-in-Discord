@@ -224,7 +224,6 @@ export function useModalFocus(open: boolean, containerRef: RefObject<HTMLElement
 }
 
 const FLUSH_INTERVAL_MS = 120;
-const RECONNECT_DELAY_MS = 4000;
 
 export type StreamStatus = "idle" | "connecting" | "live" | "ended" | "error";
 
@@ -236,6 +235,7 @@ export interface LogStream {
   pendingCount: number;
   setPaused: (paused: boolean) => void;
   clear: () => void;
+  retry: () => void;
 }
 
 type StreamMessage =
@@ -265,7 +265,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
       return;
     }
     let disposed = false;
-    let retryTimer: number | undefined;
+    let terminalMessage = false;
     bufferRef.current = [];
     heldRef.current = [];
     heldCountRef.current = 0;
@@ -274,13 +274,33 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
     setStatus("connecting");
     setMessage(null);
 
-    const socket = new WebSocket(logStreamUrl(initialLines));
+    const fail = (reason: string) => {
+      if (disposed || terminalMessage) return;
+      terminalMessage = true;
+      setStatus("error");
+      setMessage(reason);
+    };
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(logStreamUrl(initialLines));
+    } catch {
+      fail("ログに接続できませんでした。接続先の設定を確認してから再試行してください。");
+      return () => { disposed = true; };
+    }
     socket.onopen = () => {
-      if (!disposed) setStatus("live");
+      if (!disposed && !terminalMessage) setStatus("live");
     };
     socket.onmessage = (event: MessageEvent<string>) => {
-      if (disposed) return;
-      const data = JSON.parse(event.data) as StreamMessage;
+      if (disposed || terminalMessage) return;
+      let data: StreamMessage;
+      try {
+        data = JSON.parse(event.data) as StreamMessage;
+        if (!data || !["entry", "error", "end"].includes(data.type)) throw new Error();
+      } catch {
+        fail("ログの応答を読み取れませんでした。再試行してください。");
+        socket.close();
+        return;
+      }
       if (data.type === "entry") {
         if (pausedRef.current) {
           heldRef.current = appendLogEntries(heldRef.current, [data.entry]);
@@ -289,14 +309,23 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
           bufferRef.current = appendLogEntries(bufferRef.current, [data.entry]);
         }
       } else {
+        terminalMessage = true;
         setStatus(data.type === "error" ? "error" : "ended");
         setMessage(data.message);
       }
     };
-    socket.onclose = () => {
-      if (disposed) return;
-      setStatus((current) => (current === "error" ? current : "ended"));
-      retryTimer = window.setTimeout(() => setReconnectToken((n) => n + 1), RECONNECT_DELAY_MS);
+    socket.onerror = () => {
+      fail("ログの通信に失敗しました。接続元やサーバーの状態を確認してから再試行してください。");
+    };
+    socket.onclose = (event: CloseEvent) => {
+      if (disposed || terminalMessage) return;
+      if (event.code !== 1000) {
+        fail(`ログの接続が切れました（コード ${event.code}）。接続元やサーバーの状態を確認してから再試行してください。`);
+      } else {
+        terminalMessage = true;
+        setStatus("ended");
+        setMessage("ログの受信が終了しました。再開するには再試行してください。");
+      }
     };
 
     const flushTimer = window.setInterval(() => {
@@ -311,7 +340,6 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
     return () => {
       disposed = true;
       window.clearInterval(flushTimer);
-      window.clearTimeout(retryTimer);
       socket.close();
     };
   }, [enabled, initialLines, reconnectToken, connectionKey]);
@@ -340,5 +368,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
     setEntries([]);
   }, []);
 
-  return { entries, status, message, paused, pendingCount, setPaused, clear };
+  const retry = useCallback(() => setReconnectToken((n) => n + 1), []);
+
+  return { entries, status, message, paused, pendingCount, setPaused, clear, retry };
 }

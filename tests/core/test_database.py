@@ -166,7 +166,7 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_persisted_settings_round_trip_for_guilds_and_dm(self) -> None:
         state = BotState()
         state.restore_from_database(self.db)
-        from persona_bot.config.choices import PERSONA_CHOICES, MODEL_CHOICES
+        from persona_bot.config.choices import AUTO_TOPIC_INTERVAL_CHOICES, PERSONA_CHOICES, MODEL_CHOICES
         expected = {}
         for index, guild_id in enumerate((1, 2, None)):
             settings = state.get_guild(guild_id)
@@ -176,7 +176,7 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 "current_respond_mode": "all" if index == 0 else "mention",
                 "grounding_enabled": index != 1,
                 "auto_topic_enabled": index == 1,
-                "auto_topic_interval_hours": index + 1,
+                "auto_topic_interval_hours": AUTO_TOPIC_INTERVAL_CHOICES[index].value,
                 "autonomous_enabled": index != 2,
             }
             for name, value in values.items():

@@ -95,6 +95,19 @@ class ReminderStatusTextTests(unittest.TestCase):
 
 
 class ReminderViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_or_whitespace_description_is_omitted_from_discord_payload(self) -> None:
+        service = ReminderService(None, None, None)
+        for description in (None, "", " \n\t　"):
+            with self.subTest(description=description), patch.object(service, "describe", return_value=description):
+                view = ReminderView(service, make_records(1), "11")
+                self.addCleanup(view.stop)
+                select = next(item for item in view.children if isinstance(item, ReminderCancelSelect))
+                self.assertIsNone(select.options[0].description)
+                option = view.to_components()[0]["components"][0]["options"][0]
+                self.assertNotIn("description", option)
+                self.assertEqual(option["value"], "1")
+                self.assertTrue(option["label"])
+
     async def test_all_records_remain_selectable_and_hidden_record_can_be_canceled(self) -> None:
         records = make_records(REMINDER_MAX_PENDING_PER_USER, body="😀" * 200)
         service = ReminderService(None, None, None)

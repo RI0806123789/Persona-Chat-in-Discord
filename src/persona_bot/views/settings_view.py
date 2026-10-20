@@ -140,7 +140,7 @@ class ConfirmButton(ui.Button):
         begin_panel_operation(view, interaction)
 
         # ペルソナのファイル存在チェック
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not await run_in_thread(lambda: resolve_prompt_path(view.temp_persona).exists()):
             await edit_panel_message(interaction, deferred=True,
                 content=f"エラー: ファイル「{view.temp_persona}」が見つかりませんでした。設定は変更されていません。",

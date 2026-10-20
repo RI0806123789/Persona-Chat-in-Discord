@@ -89,7 +89,8 @@ class InsightsScriptTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def insights(self, env: dict | None = None, *, responses=None, journal=None, journal_code=0, sudo=False) -> dict:
+    def insights(self, env: dict | None = None, *, responses=None, journal=None, journal_code=0,
+                 journal_grep_code=None, journal_stderr="private journal detail", sudo=False) -> dict:
         # 子プロセス内で外部境界だけを差し替え、スクリプト全体を実行する
         prelude = ""
         if responses is not None or journal is not None:
@@ -110,7 +111,8 @@ def _fake_run(command, **kwargs):
         if '-g' in command:
             values = [row for row in values if isinstance(row, dict) and str(row.get('MESSAGE', '')).startswith('User (')][-1:]
         output = '\\n'.join(json.dumps(row) for row in values)
-        return subprocess.CompletedProcess(command, {journal_code!r}, output, 'private journal detail')
+        code = {journal_grep_code!r} if '-g' in command else None
+        return subprocess.CompletedProcess(command, {journal_code!r} if code is None else code, output, {journal_stderr!r})
     if command[0] == 'systemctl':
         return subprocess.CompletedProcess(command, 0, '', '')
     raise AssertionError('許可していない外部コマンド')
@@ -226,6 +228,27 @@ subprocess.run = _fake_run
         data = self.insights(journal=[], journal_code=1)
         self.assertTrue(any("読み取り" in error or "journal_sudo" in error for error in data["errors"]))
         self.assertNotIn("private journal detail", self.stdout)
+
+    def test_no_matching_conversation_is_empty_without_permission_warning(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        data = self.insights(journal=[], journal_grep_code=1, journal_stderr="")
+        self.assertEqual(data["errors"], [])
+        self.assertEqual(data["activity"]["conversations"], 0)
+        self.assertIsNone(data["activity"]["last_conversation_at"])
+
+    def test_empty_grep_failure_with_stderr_is_still_reported(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        data = self.insights(journal=[], journal_grep_code=1)
+        self.assertTrue(any("journal_sudo" in error for error in data["errors"]))
+        self.assertNotIn("private journal detail", self.stdout)
+
+    def test_other_journal_failures_are_not_treated_as_no_matches(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        for code, grep_code in ((1, 1), (0, 2)):
+            with self.subTest(code=code, grep_code=grep_code):
+                data = self.insights(journal=[], journal_code=code,
+                                     journal_grep_code=grep_code, journal_stderr="")
+                self.assertTrue(any("journal_sudo" in error for error in data["errors"]))
 
     def test_voice_rate_limit_keeps_guilds_and_marks_voice_unknown(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)

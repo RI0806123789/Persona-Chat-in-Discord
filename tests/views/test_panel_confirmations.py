@@ -94,7 +94,7 @@ class SettingsConfirmTests(unittest.IsolatedAsyncioTestCase):
             (self.persona, self.model, self.mode),
         )
         self.settings.persist.assert_awaited_once()
-        interaction.response.defer.assert_awaited_once()
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
         self.assertIsNone(interaction.edit_original_response.await_args.kwargs["view"])
         self.assertTrue(self.view.is_finished())
 
@@ -107,6 +107,7 @@ class SettingsConfirmTests(unittest.IsolatedAsyncioTestCase):
             self.before,
         )
         self.settings.persist.assert_not_awaited()
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
         content = interaction.edit_original_response.await_args.kwargs["content"]
         self.assertIn("見つかりませんでした", content)
         self.assertIn("設定は変更されていません", content)

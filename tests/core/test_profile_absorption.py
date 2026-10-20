@@ -36,7 +36,7 @@ class ProfileAbsorptionTests(unittest.TestCase):
         self.assertTrue(any("profile.json" in str(call) and "保持" in str(call) for call in log.call_args_list))
 
     def test_empty_user_profiles_are_preserved_when_nothing_is_absorbed(self) -> None:
-        original = self.write_profile({"test-user": {}})
+        original = self.write_profile({"11": {}})
         with patch("builtins.print") as log:
             self.db.initialize()
         self.assertEqual(self.profile_path.read_bytes(), original)
@@ -44,19 +44,19 @@ class ProfileAbsorptionTests(unittest.TestCase):
 
     def test_per_user_profiles_merge_and_reset_after_success(self) -> None:
         self.db.initialize()
-        self.db.profile_merge("test-user", {"趣味": "以前の架空の趣味", "好物": "架空のお菓子"})
-        self.write_profile({"test-user": {"趣味": "架空の工作"}, "other-user": {"趣味": "架空の読書"}})
+        self.db.profile_merge("11", {"趣味": "以前の架空の趣味", "好物": "架空のお菓子"})
+        self.write_profile({"11": {"趣味": "架空の工作"}, "22": {"趣味": "架空の読書"}})
         self.db.initialize()
         self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
-        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作", "好物": "架空のお菓子"})
-        self.assertEqual(self.db.profile_load("other-user"), {"趣味": "架空の読書"})
+        self.assertEqual(self.db.profile_load("11"), {"趣味": "架空の工作", "好物": "架空のお菓子"})
+        self.assertEqual(self.db.profile_load("22"), {"趣味": "架空の読書"})
         self.db.initialize()
-        self.assertEqual(self.db.profile_load("other-user"), {"趣味": "架空の読書"})
+        self.assertEqual(self.db.profile_load("22"), {"趣味": "架空の読書"})
 
     def test_bom_profile_is_absorbed_and_reset(self) -> None:
-        self.profile_path.write_text('{"test-user": {"趣味": "架空の工作"}}', encoding="utf-8-sig")
+        self.profile_path.write_text('{"11": {"趣味": "架空の工作"}}', encoding="utf-8-sig")
         self.db.initialize()
-        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(self.db.profile_load("11"), {"趣味": "架空の工作"})
         self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
 
     def test_shared_profile_with_owner_is_still_imported(self) -> None:
@@ -67,23 +67,50 @@ class ProfileAbsorptionTests(unittest.TestCase):
         self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
 
     def test_database_failure_preserves_source_for_retry(self) -> None:
-        original = self.write_profile({"test-user": {"趣味": "架空の工作"}})
+        original = self.write_profile({"11": {"趣味": "架空の工作"}})
         with patch.object(self.db, "profile_merge", side_effect=RuntimeError("架空のDB書込エラー")):
             self.db.initialize()
         self.assertEqual(self.profile_path.read_bytes(), original)
         self.db.initialize()
-        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(self.db.profile_load("11"), {"趣味": "架空の工作"})
 
     def test_reset_replace_failure_preserves_source_and_retries(self) -> None:
-        original = self.write_profile({"test-user": {"趣味": "架空の工作"}})
+        original = self.write_profile({"11": {"趣味": "架空の工作"}})
         with patch.object(storage.os, "replace", side_effect=OSError("架空の置換エラー")) as replace:
             self.db.initialize()
         replace.assert_called_once()
         self.assertEqual(self.profile_path.read_bytes(), original)
-        self.assertEqual(self.db.profile_load("test-user"), {"趣味": "架空の工作"})
+        self.assertEqual(self.db.profile_load("11"), {"趣味": "架空の工作"})
         self.assertEqual(list(self.directory.glob(".profile.json.*.tmp")), [])
         self.db.initialize()
         self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
+
+    def test_dictionary_only_legacy_profile_without_owner_is_not_imported_or_erased(self) -> None:
+        data = {"profile": {"name": "架空の利用者"}, "likes": {"color": "blue"}}
+        original = self.write_profile(data)
+        with patch("builtins.print") as log:
+            self.db.initialize()
+        self.assertEqual(self.profile_path.read_bytes(), original)
+        self.assertEqual(self.db.profile_load("profile"), {})
+        self.assertEqual(self.db.profile_load("likes"), {})
+        self.assertTrue(any("保持" in str(call) for call in log.call_args_list))
+
+    def test_dictionary_only_legacy_profile_with_owner_keeps_structure(self) -> None:
+        self.db._legacy_owner_id = "legacy-user"
+        data = {"profile": {"name": "架空の利用者"}, "likes": {"color": "blue"}}
+        self.write_profile(data)
+        self.db.initialize()
+        self.assertEqual(self.db.profile_load("legacy-user"), data)
+        self.assertEqual(self.db.profile_load("profile"), {})
+        self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
+
+    def test_every_key_and_value_must_match_the_per_user_format(self) -> None:
+        for key, value in (("", {}), ("１２", {}), ("²", {}), ("named-user", {}), ("22", "架空の値")):
+            with self.subTest(key=key, value=value), patch("builtins.print"):
+                original = self.write_profile({"11": {"趣味": "架空の工作"}, key: value})
+                self.db.initialize()
+                self.assertEqual(self.profile_path.read_bytes(), original)
+                self.assertEqual(self.db.profile_load("11"), {})
 
     def test_invalid_json_or_non_object_is_kept(self) -> None:
         for text in ('{"趣味":', '["架空のデータ"]'):

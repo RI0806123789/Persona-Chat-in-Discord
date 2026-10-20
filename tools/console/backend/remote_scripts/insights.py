@@ -326,7 +326,9 @@ def journal(arguments):
     except (OSError, subprocess.SubprocessError):
         note("journalctl を実行できませんでした。ログの読み取り権限を確認してください。")
         return []
-    if completed.returncode != 0:
+    # -g の該当行なしは終了コード1。stderr があるときは権限・sudo 等の失敗として残す。
+    no_matches = completed.returncode == 1 and "-g" in arguments and not completed.stderr.strip()
+    if completed.returncode != 0 and not no_matches:
         note("ログを取得できませんでした。adm / systemd-journal グループ、または journal_sudo の設定を確認してください。")
     entries = []
     for line in completed.stdout.splitlines():
