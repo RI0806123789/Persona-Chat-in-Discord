@@ -969,22 +969,21 @@ class Database:
                 ),
             )
 
-    def feedback_delete(self, message_id: int, user_id: str, rating: int) -> None:
-        """フィードバックを1件削除する（リアクションを外したときに呼ぶ）。
+    def feedback_delete(self, message_id: int, user_id: str) -> None:
+        """その人のその返信への評価を消す（👍👎 を両方とも外したときに呼ぶ）。
 
-        該当行が無くても何も起きない（他人のメッセージや対象外の絵文字を
-        外したときにも呼ばれうるため、存在しないことを異常としない）。
+        該当行が無くても何も起きない（存在しないことを異常としない）。
 
-        **rating を条件に含めること。** Discord は 👍 と 👎 の同時付与を禁じて
-        いないため、両方を押したユーザーが片方を外す操作がありうる。主キー
-        （message_id, user_id）だけで消すと、まだ付いている側の評価まで
-        巻き添えで消えて集計が過小になる。「外した絵文字と保存済みの評価が
-        一致するときだけ消す」ことで、残っている側の記録を守る。
+        👍 と 👎 の両方を付けた人が片方だけ外した場合に、どちらを残すかは
+        FeedbackService が「いま付いている絵文字と付けた順」から決め、残る側を
+        feedback_record で書き直す。この行には採用中の1票しか載っていないので、
+        外した絵文字と保存済みの rating を照合して消す方式では、採用中の側を
+        外したときに残っている側の票まで消えてしまう（ここでは判断しない）。
         """
         with self._lock, self._conn:
             self._conn.execute(
-                "DELETE FROM feedback WHERE message_id = ? AND user_id = ? AND rating = ?",
-                (int(message_id), str(user_id), int(rating)),
+                "DELETE FROM feedback WHERE message_id = ? AND user_id = ?",
+                (int(message_id), str(user_id)),
             )
 
     def feedback_summary(self, guild_id: int) -> list[dict[str, Any]]:

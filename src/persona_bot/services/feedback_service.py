@@ -24,6 +24,18 @@
 判断できるため）。ただし「評価者（user_id）」と「返信の宛先（target_user_id）」は
 別々に保存し、後から当事者だけで絞り込める余地を残す。
 
+■ 押し替え・両方押し・取り消し
+Discord は 👍 と 👎 の同時付与を禁じていないが、DB には (message_id, user_id) ごとに
+1行（＝1票）しか持たない。そこで評価者ごとに「いま付いている絵文字と付けた順」を
+メモリ（_votes）に持ち、**最後に付けた方**を採用して DB へ反映する。片方を外したら
+残っている側を採用し直し、両方とも外したら行を消す（DB の行だけを見て消すと、
+採用中の側を外したときに残っている側の票まで消えてしまう）。
+
+イベントは届いた順に状態へ反映し（ここまで await を挟まない）、DB への反映は
+評価者ごとのロックの下で「その時点の最新の状態」を書く。保存は別スレッドで行うため、
+イベントごとに独立して書くと確定の順序が入れ替わり、先に届いた追加が後に届いた
+取り消しや押し替えを上書きしてしまう。別の評価者・別の返信の保存は並行してよい。
+
 ■ 付与の間引き（クールダウン）
 👍👎 の付与は返信ごとに Discord への API 呼び出しを2回増やす。この経路は
 チャンネル単位のレート制限が厳しく、待たされるとチャット全体の応答が遅くなる。
@@ -38,9 +50,10 @@ FEEDBACK_REACTION_COOLDOWN_SECONDS 以内に同じチャンネルへ付与して
 （間引いた分がそのままデータの損失にはならない）。
 """
 
+import asyncio
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import discord
@@ -77,6 +90,31 @@ class _TrackedReply:
     prompt_file: str
 
 
+@dataclass
+class _VoteState:
+    """1人の評価者が1件の返信へ付けている 👍👎 と、DB への反映状況。
+
+    reactions は「評価値 → 付けた時刻」。挿入順が付けた順なので、最後の要素が
+    採用中の評価になる（同じ絵文字を付け直したら末尾へ移す）。
+    version は DB へ書く必要のある変化を受け付けるたびに増やし、saved_version は
+    DB へ反映し終えた版（両者が等しければ DB は最新の状態と一致している）。
+    lock は同じ評価者の保存を1つずつ行うためのもの。保存の待ち合わせがこのオブジェクトを
+    握っているため、評価が空になっても作り直さない（作り直すとロックが2つになり、順序が崩れる）。
+    """
+
+    reactions: dict[int, str] = field(default_factory=dict)
+    version: int = 0
+    saved_version: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def adopted(self) -> tuple[int, str] | None:
+        """採用中の評価と、それを付けた時刻を返す（何も付いていなければ None）。"""
+        if not self.reactions:
+            return None
+        rating = next(reversed(self.reactions))
+        return rating, self.reactions[rating]
+
+
 def _rating_of(emoji: Any) -> int | None:
     """リアクションの絵文字を評価値（👍=1 / 👎=-1）に直す。対象外なら None。
 
@@ -107,6 +145,9 @@ class FeedbackService:
         self._db = db
         # メッセージID → 評価対象の情報。古い順に捨てられるよう OrderedDict を使う。
         self._tracked: "OrderedDict[int, _TrackedReply]" = OrderedDict()
+        # メッセージID → 評価者のユーザーID → いま付いている 👍👎（モジュールの docstring
+        # 「押し替え・両方押し・取り消し」を参照）。_tracked から外れた返信の分は一緒に捨てる。
+        self._votes: dict[int, dict[str, _VoteState]] = {}
         # チャンネルID → 最後に 👍👎 を付与した時刻（time.monotonic 基準）。
         # 付与を間引くクールダウンの判定だけに使う。単調増加する時計を使うのは、
         # システム時刻が変更されてもクールダウンが飛んだり固まったりしないため。
@@ -155,7 +196,9 @@ class FeedbackService:
         )
         # 上限を超えた分は古いものから捨てる（放っておくとメモリを食い続けるため）。
         while len(self._tracked) > FEEDBACK_TRACKED_MESSAGES_MAX:
-            self._tracked.popitem(last=False)
+            evicted_id, _ = self._tracked.popitem(last=False)
+            # 追跡を外れた返信へのイベントは数えないので、評価者ごとの状態も要らない。
+            self._votes.pop(evicted_id, None)
 
         if not self._claim_reaction_slot(channel_id):
             return
@@ -240,21 +283,66 @@ class FeedbackService:
             if member is not None and member.bot:
                 return
 
-            await run_in_thread(
-                self._db.feedback_record,
-                message_id=int(payload.message_id),
-                user_id=str(payload.user_id),
-                guild_id=entry.guild_id,
-                channel_id=entry.channel_id,
-                target_user_id=entry.target_user_id,
-                model_name=entry.model_name,
-                prompt_file=entry.prompt_file,
-                rating=rating,
-                created_at=utc_now_iso(),
-            )
+            message_id = int(payload.message_id)
+            user_id = str(payload.user_id)
+            voters = self._votes.setdefault(message_id, {})
+            vote = voters.get(user_id)
+            if vote is None:
+                vote = voters[user_id] = _VoteState()
+            before = vote.adopted()
+            # 付け直しなら末尾へ移す（最後に付けた方を採用するため）。
+            vote.reactions.pop(rating, None)
+            vote.reactions[rating] = utc_now_iso()
+            await self._save_vote(message_id, user_id, entry, vote, before)
             # 古い記録の間引きはここでは行わない（prune_stored の docstring を参照）。
         except Exception as error:
             print(f"フィードバック: 評価の記録に失敗しました: {error}")
+
+    async def _save_vote(
+        self,
+        message_id: int,
+        user_id: str,
+        entry: _TrackedReply,
+        vote: _VoteState,
+        before: tuple[int, str] | None,
+    ) -> None:
+        """評価者の状態の変化を、イベントを受け付けた順のとおりに DB へ反映する。
+
+        呼び出し側は状態を書き換えてから、await を挟まずにここへ来ること（版の番号が
+        イベントの到着順になる）。ロックを取れたら、自分の版ではなく**その時点の最新の
+        状態**を書く。後のイベントが先にロックを取っても、遅れた側が古い状態で
+        上書きすることはない（保存済みの版が自分の版以上なら書かずに戻る）。
+        保存の失敗・キャンセルでは saved_version を進めないので、次のイベントが最新の
+        状態を書き直す。ロックは async with が必ず外す（同期処理の完了待ちは run_in_thread）。
+        """
+        if vote.adopted() == before and vote.saved_version == vote.version:
+            # 採用していない側を外したなど DB に載る評価が変わらず、これまでの状態も
+            # 反映済み。前の保存が失敗・キャンセルで未反映なら、ここで最新を書き直す。
+            return
+        vote.version += 1
+        version = vote.version
+        async with vote.lock:
+            if vote.saved_version >= version:
+                return
+            latest = vote.version
+            adopted = vote.adopted()
+            if adopted is None:
+                await run_in_thread(self._db.feedback_delete, message_id, user_id)
+            else:
+                rating, created_at = adopted
+                await run_in_thread(
+                    self._db.feedback_record,
+                    message_id=message_id,
+                    user_id=user_id,
+                    guild_id=entry.guild_id,
+                    channel_id=entry.channel_id,
+                    target_user_id=entry.target_user_id,
+                    model_name=entry.model_name,
+                    prompt_file=entry.prompt_file,
+                    rating=rating,
+                    created_at=created_at,
+                )
+            vote.saved_version = latest
 
     async def prune_stored(self) -> None:
         """古いフィードバック記録を間引く（bot.py の定期ループから呼ぶ）。
@@ -276,29 +364,33 @@ class FeedbackService:
             print(f"フィードバック: 古い記録の整理に失敗しました: {error}")
 
     async def handle_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
-        """👍/👎 が外されたときに記録を削除する（on_raw_reaction_remove から呼ぶ）。
+        """👍/👎 が外されたときに評価を取り消す（on_raw_reaction_remove から呼ぶ）。
 
         押し間違えを取り消せるようにするための処理。対象外の絵文字を外した
-        だけで評価が消えないよう、ここでも絵文字を確認してから削除する。
+        だけで評価が消えないよう、ここでも絵文字を確認する。👍👎 の両方を
+        付けていた人が片方を外したときは、残っている側を評価として採用し直す
+        （モジュールの docstring「押し替え・両方押し・取り消し」を参照）。
         なお削除イベントには member が付かない（Discord が送らない）ため、
         ボット判定は payload.user_id の照合だけで行う。
         """
         try:
-            if self._resolve_vote_target(payload) is None:
+            entry = self._resolve_vote_target(payload)
+            if entry is None:
                 return
             rating = _rating_of(payload.emoji)
             if rating is None:
                 return
 
-            # 外した絵文字に対応する評価だけを消す。👍👎 の両方を押している
-            # ユーザーが片方だけ外したときに、残っている側の記録まで
-            # 消えてしまわないようにするため（feedback_delete の注記を参照）。
-            await run_in_thread(
-                self._db.feedback_delete,
-                int(payload.message_id),
-                str(payload.user_id),
-                rating,
-            )
+            message_id = int(payload.message_id)
+            user_id = str(payload.user_id)
+            vote = self._votes.get(message_id, {}).get(user_id)
+            if vote is None or rating not in vote.reactions:
+                # 追加を受け付けていない絵文字（他のボットの自動リアクションなど）。
+                # この評価者の記録は変わらない。
+                return
+            before = vote.adopted()
+            del vote.reactions[rating]
+            await self._save_vote(message_id, user_id, entry, vote, before)
         except Exception as error:
             print(f"フィードバック: 評価の取り消しに失敗しました: {error}")
 
