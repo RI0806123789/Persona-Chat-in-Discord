@@ -1,0 +1,122 @@
+"""入力の違反が3回でブロック・保存・一覧・再読込まで一致することを確かめる（#173）。
+
+保存に失敗した違反は回数に数えず、「あと N 回」のような成功の通知も出さないこと、
+ボット自身の応答のNG・不適切判定を利用者の違反として数えないことも確かめる。
+"""
+
+import asyncio
+from contextlib import redirect_stdout
+import io
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+from persona_bot.config.constants import BLACKLIST_MAX_VIOLATIONS
+from tests.helpers.ng_pipeline import FICTIONAL_NG_WORD, NgPipeline
+
+NG_TEXT = f"{FICTIONAL_NG_WORD}を含む架空の質問です。"
+
+
+class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.pipeline = NgPipeline(self)
+
+    async def send(self, text: str = NG_TEXT, *, user_id: int = 11):
+        message = self.pipeline.message(text, mention=True, user_id=user_id)
+        await self.pipeline.handler.on_message(message)
+        return message
+
+    def assert_blocked_everywhere(self, user_id: int = 11) -> None:
+        self.assertTrue(self.pipeline.blacklist.is_blocked(user_id))
+        self.assertEqual(
+            [record["user_id"] for record in self.pipeline.blacklist.get_all_blocked_users()], [user_id],
+        )
+        reloaded = self.pipeline.reloaded_blacklist()
+        self.assertTrue(reloaded.is_blocked(user_id))
+        self.assertEqual(reloaded.get_violation_count(user_id), BLACKLIST_MAX_VIOLATIONS)
+
+    async def test_three_local_ng_inputs_block_and_log_each_recorded_count(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            for _ in range(BLACKLIST_MAX_VIOLATIONS):
+                await self.send()
+        self.assert_blocked_everywhere()
+        log = output.getvalue()
+        # 検出ログだけでなく、記録できた回数もログで追える
+        self.assertIn(f"1/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました", log)
+        self.assertIn(f"2/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました", log)
+        self.assertIn("ブラックリストに登録しました", log)
+
+    async def test_three_ai_unsafe_inputs_block(self) -> None:
+        self.pipeline.moderator.check_and_route.return_value = (False, "架空の理由", "none", None)
+        replies = []
+        for _ in range(BLACKLIST_MAX_VIOLATIONS):
+            message = await self.send("架空の不適切な質問です。")
+            replies.append(message.reply.call_args.args[0])
+        self.assertTrue(all("不適切な内容" in reply for reply in replies[:-1]))
+        self.assertIn("ブラックリストに登録されました", replies[-1])
+        self.assert_blocked_everywhere()
+
+    async def test_concurrent_ng_inputs_block_once_without_extra_warning(self) -> None:
+        messages = [self.pipeline.message(NG_TEXT, mention=True) for _ in range(BLACKLIST_MAX_VIOLATIONS)]
+        await asyncio.gather(*(self.pipeline.handler.on_message(message) for message in messages))
+        self.assert_blocked_everywhere()
+        replies = [m.reply.call_args.args[0] for m in messages if m.reply.await_count]
+        self.assertEqual(sum("ブラックリストに登録されました" in reply for reply in replies), 1)
+        self.assertFalse(any("あと0回" in reply for reply in replies))
+
+    async def test_save_failure_is_not_reported_as_a_counted_violation(self) -> None:
+        output = io.StringIO()
+        with patch.object(self.pipeline.blacklist, "_save", side_effect=PermissionError("架空の保存拒否")), \
+                redirect_stdout(output):
+            messages = [await self.send() for _ in range(BLACKLIST_MAX_VIOLATIONS)]
+
+        for message in messages:
+            # 発言は処理しないことだけを伝え、事実と食い違う残り回数・登録の案内は出さない
+            message.reply.assert_awaited_once()
+            reply = message.reply.call_args.args[0]
+            self.assertIn("NGワードが含まれている", reply)
+            self.assertNotIn("あと", reply)
+            self.assertNotIn("ブラックリストに登録されました", reply)
+        self.assertIn("保存に失敗したため、今回の違反は回数に数えていません", output.getvalue())
+        self.assertIn("PermissionError", output.getvalue())
+        self.assertFalse(self.pipeline.blacklist.is_blocked(11))
+        self.assertEqual(self.pipeline.blacklist.get_violation_count(11), 0)
+        self.assertFalse(self.pipeline.blacklist_path.exists())
+        self.pipeline.gemini.generate.assert_not_awaited()
+
+        # 保存が直った後は、保存できた分から数え直す（未保存の違反は持ち越さない）
+        message = await self.send()
+        self.assertIn(f"あと{BLACKLIST_MAX_VIOLATIONS - 1}回", message.reply.call_args.args[0])
+        self.assertEqual(self.pipeline.reloaded_blacklist().get_violation_count(11), 1)
+
+    async def test_bot_response_ng_or_unsafe_output_is_not_counted_against_user(self) -> None:
+        self.pipeline.gemini.generate.return_value = (f"{FICTIONAL_NG_WORD}を含む架空の応答です。", None, [])
+        self.pipeline.moderator.check.return_value = (False, "架空の応答の不適切判定")
+        for _ in range(BLACKLIST_MAX_VIOLATIONS):
+            await self.send("架空の普通の質問です。")
+        self.assertEqual(self.pipeline.blacklist.get_violation_count(11), 0)
+        self.assertFalse(self.pipeline.blacklist.is_blocked(11))
+        sent_text = self.pipeline.send_long_reply.call_args.args[1]
+        self.assertIn("適切な応答を生成できませんでした", sent_text)
+
+    async def test_blocked_user_is_ignored_and_unblock_starts_counting_again(self) -> None:
+        for _ in range(BLACKLIST_MAX_VIOLATIONS):
+            await self.send()
+        ignored = await self.send()
+        ignored.reply.assert_not_awaited()
+        self.assertEqual(self.pipeline.blacklist.get_violation_count(11), BLACKLIST_MAX_VIOLATIONS)
+
+        self.assertTrue(await self.pipeline.blacklist.unblock(11))
+        self.assertFalse(self.pipeline.reloaded_blacklist().is_blocked(11))
+        again = await self.send()
+        self.assertIn(f"あと{BLACKLIST_MAX_VIOLATIONS - 1}回", again.reply.call_args.args[0])
+        self.assertEqual(self.pipeline.reloaded_blacklist().get_violation_count(11), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

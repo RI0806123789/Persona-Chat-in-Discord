@@ -18,7 +18,8 @@ from persona_bot.services.content_moderator import screen_bot_response
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
     fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
-    close_image_attachments, is_supported_message_channel, load_image_attachments, send_long_reply,
+    close_image_attachments, is_connected_voice_chat, is_supported_message_channel,
+    load_image_attachments, send_long_reply,
 )
 from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
@@ -61,9 +62,27 @@ class MessageHandler:
     feedback: FeedbackService
 
     async def notify_violation(self, message: discord.Message, notice: str) -> None:
-        """違反を1回記録し、ブロック状況に応じた警告をユーザーに返信する。"""
-        count, just_blocked = await self.blacklist.record_violation(message.author.id, str(message.author))
+        """違反を1回記録し、ブロック状況に応じた警告をユーザーに返信する。
+
+        記録の成否はログにも残す。「NGワード検出」のログは記録より前に出るため、
+        それだけでは違反が数えられたのか分からない（#173）。
+        """
+        user_id = message.author.id
+        try:
+            count, just_blocked = await self.blacklist.record_violation(user_id, str(message.author))
+        except Exception as error:
+            # ★ 保存できなかった違反は回数に数えない。BlacklistService は保存に成功してから
+            # メモリ上の記録を差し替えるため、ここで失敗した違反はどこにも残っていない。
+            # 「あと N 回」は事実と食い違うので出さず、発言を処理しないことだけを伝える。
+            # 再試行もしない（同じ障害で失敗し続ける保存を、発言のたびに積み増さないため）。
+            print(
+                f"違反記録: 保存に失敗したため、今回の違反は回数に数えていません "
+                f"(user_id={user_id}): {type(error).__name__}: {error}"
+            )
+            await message.reply(f"⚠️ {notice}")
+            return
         if just_blocked:
+            print(f"違反記録: {count}回目の違反でブラックリストに登録しました (user_id={user_id})")
             await message.reply(
                 f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
                 "以降のメッセージは無視されます。"
@@ -74,8 +93,18 @@ class MessageHandler:
             # ような食い違った警告も二重の案内も出さない（ブロック中の発言は黙って破棄する）。
             print(f"違反記録: 既にブロック済みのため警告を省略します (user_id={message.author.id})")
         else:
+            print(f"違反記録: {count}/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました (user_id={user_id})")
             remaining = BLACKLIST_MAX_VIOLATIONS - count
             await message.reply(f"⚠️ {notice}（あと{remaining}回で応答を停止します）")
+
+    async def _reject_ng_input(self, message: discord.Message, question: str, notice: str) -> bool:
+        """入力にNGワードがあれば違反として記録し、True を返す（Gemini は呼ばない）。"""
+        if not question or not self.ng_filter.contains_ng_word(question):
+            return False
+        detected = self.ng_filter.find_ng_words(question)
+        print(f"NGワード検出 (ユーザー入力): {detected}")
+        await self.notify_violation(message, notice)
+        return True
 
     async def on_message(self, message: discord.Message) -> None:
         if self.client.user is None:
@@ -117,16 +146,21 @@ class MessageHandler:
         # からの発言はコメントとして認めない（idea.md）ので、判定はチャンネル一致で行う。
         is_autonomous_comment = self.autonomous.is_comment_channel(message.channel.id, guild_id)
         if not accepts_normally and not is_autonomous_comment:
+            # 返信しない発言でも、ボットがいま接続しているボイス/ステージの付属チャットだけは
+            # ローカルのNGワード判定にかける（#172）。「返信する条件」と「NG判定の対象」を分け、
+            # ボットが居合わせている通話のチャットを見守る。AI判定は呼ばない（宛先でない
+            # 発言ごとに Gemini を呼ぶとコストが発散する）。他のチャンネルへは広げない。
+            if is_connected_voice_chat(message.guild, message.channel.id):
+                await self._reject_ng_input(
+                    message, clean_message_content(message, self.client.user), "NGワードが含まれています。",
+                )
             return
 
         question = clean_message_content(message, self.client.user)
         if not question and not message.attachments:
             return
 
-        if question and self.ng_filter.contains_ng_word(question):
-            detected = self.ng_filter.find_ng_words(question)
-            print(f"NGワード検出 (ユーザー入力): {detected}")
-            await self.notify_violation(message, "NGワードが含まれているため、メッセージを処理できません。")
+        if await self._reject_ng_input(message, question, "NGワードが含まれているため、メッセージを処理できません。"):
             return
 
         # コメントの受付枠はGeminiを呼ぶ前に、同期的に確保する。

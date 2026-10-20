@@ -15,6 +15,7 @@ from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
 from persona_bot.services.stats_service import StatsService
+from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
 
 
@@ -51,6 +52,8 @@ def register_commands(
     stats: StatsService,
     reminders: ReminderService,
     autonomous: AutonomousService,
+    *,
+    voice_guard: VoiceGuard | None = None,
 ) -> None:
 
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
@@ -122,8 +125,15 @@ def register_commands(
                 # （自律行動の配信だった場合は、上の stop_session が接続ごと片付けている。）
                 if (isinstance(voice_client, discord.VoiceClient) and voice_client.is_connected()
                         and getattr(voice_client.channel, "id", None) == voice_channel.id):
+                    # 移された先で /join された場合も、ここを意図した接続先にする（元へ戻さない）。
+                    if voice_guard is not None:
+                        voice_guard.adopt(guild.id, voice_channel.id)
                     await announce_voice_join(interaction, voice_channel, already_connected=True)
                     return
+                # 切り替えの前に保護を解く。移動を戻している最中の処理が、切る予定の接続を
+                # 元のチャンネルへ動かそうとしないようにする。
+                if voice_guard is not None:
+                    voice_guard.release(guild.id)
                 try:
                     await voice_client.disconnect(force=True)
                 except Exception as error:
@@ -161,6 +171,9 @@ def register_commands(
             print(f"接続エラー ({type(error).__name__}): {error}")
             await interaction.followup.send(f"⚠️ 接続に失敗しました（{type(error).__name__}: {error}）。")
         else:
+            # 接続イベントでも登録されるが、人が選んだ接続先を明示的に意図した接続先にする。
+            if voice_guard is not None and guild is not None:
+                voice_guard.adopt(guild.id, voice_channel.id)
             await announce_voice_join(interaction, voice_channel)
 
     @tree.command(
@@ -176,6 +189,9 @@ def register_commands(
             return
 
         await interaction.response.defer()
+        # 退出の後に、移動を戻す処理が元のチャンネルへ入り直さないよう先に保護を解く。
+        if voice_guard is not None:
+            voice_guard.release(guild.id)
 
         # 自律行動で自分から入っている場合は、締めの投稿・ステージ枠の後片付け・
         # セッション記録の破棄・切断までをサービス側がまとめて行う

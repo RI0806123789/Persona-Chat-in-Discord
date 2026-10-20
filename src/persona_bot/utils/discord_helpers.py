@@ -28,6 +28,20 @@ def is_supported_message_channel(channel: Any) -> TypeGuard[SupportedMessageChan
     return isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel, discord.DMChannel))
 
 
+def is_connected_voice_chat(guild: Any, channel_id: int) -> bool:
+    """ボットがいま接続しているボイス/ステージチャンネルの付属チャットかどうかを返す。
+
+    接続の情報源は常に `guild.voice_client` とし、呼ばれるたびにその場で確かめる。
+    ボットが別のチャンネルへ移された・切断された場合も、判定が自然に追従する
+    （接続先を別に覚えておくと、実態と食い違った範囲を見続けてしまう）。
+    DM（guild が None）や、ボイス接続を持たないサーバーでは False。
+    """
+    voice_client = getattr(guild, "voice_client", None)
+    if not isinstance(voice_client, discord.VoiceClient) or not voice_client.is_connected():
+        return False
+    return getattr(voice_client.channel, "id", None) == channel_id
+
+
 def is_supported_document_attachment(attachment: discord.Attachment) -> bool:
     return Path(attachment.filename).suffix.lower() in SUPPORTED_DOCUMENT_EXTENSIONS
 

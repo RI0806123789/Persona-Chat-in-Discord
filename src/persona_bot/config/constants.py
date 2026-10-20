@@ -383,6 +383,20 @@ WELCOME_MESSAGE_ENABLED = True
 # 同じ値だが、調整できるよう明示している（UDP が遮断された環境では、ここで打ち切られて
 # タイムアウトの案内を返す）。自律行動の接続は AUTONOMOUS_CONNECT_TIMEOUT_SECONDS を使う。
 VOICE_CONNECT_TIMEOUT_SECONDS = 30.0
+# ボイス接続先の保護（voice_guard.py）。管理者などがボットを別のボイスチャンネルへ
+# 移したとき、/join の接続は元のチャンネルへ戻し、自律行動の配信は畳んで退出する。
+# Discord の権限では管理者による移動そのものを拒否できないため、移動を検知した後に戻す。
+# False にすると従来どおり移動先に留まる（自律行動の配信は毎分の見回りで終了する）。
+VOICE_MOVE_GUARD_ENABLED = True
+# 移動を検知してから接続の状態を確かめるまでの間隔（秒）。移動直後は discord.py が
+# 音声の接続を張り直していることがあり、すぐに移動し直すと処理がぶつかるため少し待つ。
+VOICE_MOVE_GUARD_SETTLE_SECONDS = 1.0
+# 張り直しの完了を確かめる回数の上限。この回数待っても接続が戻らなければ退出する。
+VOICE_MOVE_GUARD_SETTLE_RETRIES = 10
+# VOICE_MOVE_GUARD_WINDOW_SECONDS の間に、この回数戻しても移され続けたら戻るのをやめて
+# 移動先から退出する（戻す→移されるの往復を無限に続けないための歯止め）。
+VOICE_MOVE_GUARD_MAX_RETURNS = 3
+VOICE_MOVE_GUARD_WINDOW_SECONDS = 300
 # 退避先の gTTS に渡す言語コード（主エンジンの edge-tts は話者名で言語が決まる）。
 TTS_LANG = "ja"
 # 読み上げる最大文字数。超過分は切り捨てて末尾に TTS_TRUNCATION_NOTICE を付ける。
