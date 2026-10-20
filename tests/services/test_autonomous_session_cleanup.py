@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
 
+from persona_bot.config import constants
 from persona_bot.core.app_state import AutonomousSession, BotState
 from persona_bot.services import autonomous_service
 from persona_bot.services import autonomous_stage
@@ -86,6 +87,45 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.voice.disconnect.assert_awaited_once_with(force=True)
         self.notice.assert_not_awaited()
         self.assert_cleared()
+
+    async def test_external_move_closes_the_session_with_the_moved_notice(self) -> None:
+        # 接続は生きたまま、管理者に別のチャンネルへ移された（#171）
+        self.voice.is_connected.return_value = True
+        self.voice.channel = Mock(spec=discord.VoiceChannel, id=20)
+        self.assertTrue(self.service.manages_connection(1))
+        for name, close in {
+            "移動の直後（voice_guard から）": lambda: self.service.handle_external_move(self.guild),
+            "毎分の見回り（取りこぼしの受け皿）": lambda: self.service._tend_session(self.guild, self.settings),
+        }.items():
+            with self.subTest(case=name):
+                self.settings.autonomous_session = self.make_session()
+                self.voice.disconnect.reset_mock()
+                self.notice.reset_mock()
+                await close()
+                self.notice.assert_awaited_once()
+                self.assertEqual(self.notice.call_args.args[1], constants.AUTONOMOUS_CLOSING_NOTICE_MOVED)
+                self.voice.disconnect.assert_awaited_once_with(force=True)
+                self.assert_cleared()
+        self.assertFalse(self.service.manages_connection(1))
+
+    async def test_external_move_check_leaves_unmoved_and_starting_sessions_alone(self) -> None:
+        self.voice.is_connected.return_value = True
+        self.service.stop_session = AsyncMock(return_value=True)
+        # 配信のチャンネルに居るまま（移動ではない）
+        await self.service.handle_external_move(self.guild)
+        # 開始待機中は、開始処理自身の照合（再試行の待ち時間つき）に任せる
+        self.voice.channel = Mock(spec=discord.VoiceChannel, id=20)
+        self.settings.autonomous_session = None
+        self.service._starting[1] = autonomous_service._StartAttempt()
+        self.assertTrue(self.service.manages_connection(1))
+        await self.service.handle_external_move(self.guild)
+        self.service.stop_session.assert_not_awaited()
+
+        self.service._starting.clear()
+        self.assertFalse(self.service.manages_connection(1))
+        # 設定の無いサーバーを問い合わせても、設定を作らない
+        self.assertFalse(self.service.manages_connection(2))
+        self.assertNotIn(2, self.state.guild_settings)
 
     async def test_shutdown_closes_owned_stage_without_sending_notice(self) -> None:
         await self.service.stop_all_sessions()

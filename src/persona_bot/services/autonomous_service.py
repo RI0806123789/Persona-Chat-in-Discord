@@ -408,17 +408,9 @@ class AutonomousService:
             await self.stop_session(guild.id, reason="ボイス接続が失われた")
             return
 
-        # 管理者にドラッグで別のチャンネルへ移されることがある。接続は生きたままなので
-        # 上の判定では気づけず、放置すると「テキストは移動前のチャンネルへ投稿し、
-        # 音声だけ移動後のチャンネルで流れる」というちぐはぐな状態になる
-        # （コメントの受付口も移動前のままになる）。追従はしない —— セッションは
-        # 開いたステージ枠を channel_id で覚えているため、行き先を差し替えると
-        # 元の枠を閉じられなくなる。素直に畳んで、必要ならまた出直す。
-        current_channel = getattr(voice_client, "channel", None)
-        if current_channel is not None and current_channel.id != session.channel_id:
-            await self.stop_session(
-                guild.id, reason="別のチャンネルへ移動された", notice=AUTONOMOUS_CLOSING_NOTICE_MOVED
-            )
+        # 別のチャンネルへ移された配信を畳む。通常は voice_guard が移動の直後に
+        # handle_external_move から畳むので、ここはイベントを取りこぼした場合などの受け皿。
+        if await self._stop_if_moved(guild, session):
             return
 
         now = datetime.now(timezone.utc)
@@ -454,6 +446,48 @@ class AutonomousService:
         # 停止判定まで遅れるため、裏へ逃がす（多重起動は busy フラグで防ぐ）。
         session.busy = True
         spawn(self._speak_monologue(guild, guild_settings, session), label="自律行動の独り言")
+
+    async def _stop_if_moved(self, guild: discord.Guild, session: AutonomousSession) -> bool:
+        """接続が配信のチャンネルから別のチャンネルへ移されていれば、配信を畳む。
+
+        管理者にドラッグで別のチャンネルへ移されることがある。接続は生きたままなので
+        接続の有無だけでは気づけず、放置すると「テキストは移動前のチャンネルへ投稿し、
+        音声だけ移動後のチャンネルで流れる」というちぐはぐな状態になる
+        （コメントの受付口も移動前のままになる）。追従はしない —— セッションは
+        開いたステージ枠を channel_id で覚えているため、行き先を差し替えると
+        元の枠を閉じられなくなる。素直に畳んで、必要ならまた出直す。
+        """
+        current_channel = getattr(guild.voice_client, "channel", None)
+        if current_channel is None or current_channel.id == session.channel_id:
+            return False
+        await self.stop_session(
+            guild.id, reason="別のチャンネルへ移動された", notice=AUTONOMOUS_CLOSING_NOTICE_MOVED
+        )
+        return True
+
+    def manages_connection(self, guild_id: int) -> bool:
+        """このサーバーのボイス接続を配信（開始待機を含む）が使っているか。
+
+        voice_guard が、移された接続を「元へ戻す」か「配信側に畳ませる」かを決めるのに使う。
+        """
+        if guild_id in self._starting:
+            return True
+        guild_settings = self._state.guild_settings.get(guild_id)
+        return guild_settings is not None and guild_settings.autonomous_session is not None
+
+    async def handle_external_move(self, guild: discord.Guild) -> None:
+        """外部から別のチャンネルへ移された配信を、毎分の見回りを待たずに畳む（#171）。
+
+        開始待機中は何もしない。開始処理自身の照合（_can_finish_start）が移動に気づいて
+        接続ごと片付け、再試行の待ち時間も記録する（ここで停止要求を出すと「利用者の停止」
+        扱いになって待ち時間が入らず、毎分の再挑戦と移動が繰り返されうる）。
+        """
+        if guild.id in self._starting:
+            return
+        session = self._state.get_guild(guild.id).autonomous_session
+        if session is None:
+            return
+        await self._stop_if_moved(guild, session)
 
     # ==========================================================================
     # 配信の開始・終了
