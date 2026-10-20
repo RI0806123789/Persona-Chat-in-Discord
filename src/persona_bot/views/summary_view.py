@@ -252,7 +252,7 @@ class RunSummaryButton(ui.Button):
                 # 結果を全員に: チャンネルへ投稿し、パネルは完了表示にする。
                 # 投稿の失敗だけは原因に合わせて案内する（権限不足か、途中まで投稿されたか）。
                 try:
-                    await send_long_message(channel, text)
+                    await send_long_message(channel, text, allowed_mentions=discord.AllowedMentions.none())
                 # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること。
                 except discord.Forbidden as error:
                     print(f"要約: チャンネルへの投稿を拒否されました: {error}")

@@ -33,9 +33,24 @@ python -B tests/core/test_bot_reply_settings.py -v
 
 `utils/test_timeutil.py`は、別プロセスでOSのタイムゾーンDBを無効にし、依存の`tzdata`で`Asia/Tokyo`を解決できることを確認する。UTCから日本時間への9時間の変換と日付境界を検証し、WindowsだけでなくLinuxのCIでもOSのDBに依存した見逃しを防ぐ。
 
-Windows・Python 3.13.3・tzdata 2026.5で全672件が成功。154ファイルの構文・Python 3.10文法、XML・メッセージ分割・`pip check`も成功した。Linux／Python 3.10での実行と実サービス接続は未確認。
+Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonファイルの構文・Python 3.10文法・compileall、XML・メッセージ分割・`pip check`も成功した。Linux／Python 3.10での実行と実サービス接続は未確認。
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
+
+## Issue #148〜#150の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #148 | `views/test_panel_confirmations.py`・`views/test_reminder_view.py`・`views/test_summary_view.py`・`utils/test_shared_helpers.py` | 設定確定は非公開で応答保留し、空の選択肢説明は送信内容から省略。会話要約の公開先と非公開の追加応答を分離したまま、公開投稿の全チャンクでメンション通知を無効化 |
+| #148 | `audio/test_voice.py`・`audio/test_voice_playback_lifecycle.py` | 実際の`VoiceClient.play/stop`・`AudioPlayer.run/after/cleanup`を使い、通信・codecだけを代用。期限超過・繰り返しキャンセル・完了通知後のcleanup・既存の再生と一時停止・同時再生で、スレッド終了までストリームを開いたまま保持し、最後に回収 |
+| #149 | `core/test_profile_absorption.py`・`core/test_database_json_values.py`・`core/test_guild_settings_persist.py`・`services/test_affinity_service.py`・`services/test_stats_service.py` | 辞書だけの旧プロフィールをownerあり／なしで保持・移行し、ASCII数字以外・混在形式・BOM・保存失敗を検証。移行と通常保存の`None`、感情値の上下限、最後のタグ採用と複合タグ除去、`bool`や選択肢外の間隔、Python 3.10の末尾`Z`制約を再現 |
+| #150 | コンソール`tests/test_ssh_integration.py`・`tests/test_remote_scripts.py`・画面`tests/log-stream.test.mjs` | SSHの鍵・known_hosts不在時の具体的な案内、検索該当なしと実際の権限・コマンド失敗の区別、WebSocketのエラー／終了理由の維持と自動再接続の停止、手動再接続・接続先切替・古いイベントの無視・一時停止中の行保持 |
+
+Git管理外のローカル`deploy/bot.service`は別の一時フォルダへ退避し、`WorkingDirectory`の末尾`index`だけを`src`へ変更した。他の内容とLF改行を保持し、実設定はコミットに含めない。Windowsから本番systemdへの配置・再起動は実行していない。
+
+Chromeでは実際の`LogsPage`を架空の接続エラー状態で描画し、切断理由・手動再接続ボタン・受信済みの行の表示を確認した。操作と通信イベントはフックの自動テストで検証し、実サーバーとのブラウザ通信は未確認。
+
+Windows・Python 3.13.3でボット706件・管理コンソールバックエンド174件、Node.js 24.16.0で画面45件とTypeScript・Viteビルドが成功。両仮想環境の`pip check`、全158 Pythonファイルの構文・Python 3.10文法・compileall、構成図XMLと参照整合性・メッセージ分割・`git diff --check`も成功。
 
 ## Issue #151・#152・#157の確認
 
@@ -134,6 +149,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | core | [test_bot_reply_settings.py](core/test_bot_reply_settings.py) |
 | core | [test_command_blacklist.py](core/test_command_blacklist.py) |
 | core | [test_database.py](core/test_database.py) |
+| core | [test_database_json_values.py](core/test_database_json_values.py) |
 | core | [test_guild_settings_persist.py](core/test_guild_settings_persist.py) |
 | core | [test_join_command.py](core/test_join_command.py) |
 | core | [test_message_gates.py](core/test_message_gates.py) |
@@ -143,6 +159,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | core | [test_voice_chat_ng_gate.py](core/test_voice_chat_ng_gate.py) |
 | audio | [test_voice.py](audio/test_voice.py) |
 | audio | [test_voice_dsp.py](audio/test_voice_dsp.py) |
+| audio | [test_voice_playback_lifecycle.py](audio/test_voice_playback_lifecycle.py) |
 | audio | [test_voice_session.py](audio/test_voice_session.py) |
 | services | [test_affinity_service.py](services/test_affinity_service.py) |
 | services | [test_auto_topic_service.py](services/test_auto_topic_service.py) |

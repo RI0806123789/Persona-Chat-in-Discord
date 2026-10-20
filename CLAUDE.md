@@ -121,6 +121,8 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## 開発者用ダッシュボード (`tools/console/`)
 
+SSH設定由来の`SshError`は対象ファイルと対処方法を維持して返す。ログのWebSocket切断後は理由と受信済みの行を残し、自動再接続せず手動再接続を待つ。`journalctl -g`の終了コード1・標準エラーなしだけは検索結果0件とし、実際の取得失敗は警告する。
+
 ```text
 tools/console/
 ├── backend/             # API・SSH・デプロイ（ボットとは別の仮想環境）
@@ -174,6 +176,8 @@ SSH 経由でボットを見守り、サービス操作・デプロイを行う�
 
 ### ギルド単位の設定 (`app_state.py`)
 
+保存済みの自発会話間隔は`AUTO_TOPIC_INTERVAL_CHOICES`にある整数だけを復元し、`bool`や選択肢外は既定値へ戻す。
+
 同じボットを複数の Discord サーバーへ招待しても設定が混ざらないよう、可変設定は**サーバー（ギルド）ごとに分離**されている。
 
 - **`GuildSettings`**: ペルソナ（`current_prompt_file`）・モデル（`current_model_name`）・応答モード（`current_respond_mode`）・グラウンディング（`grounding_enabled`）・会話リセット地点（`channel_reset_points`）・自発会話の設定と監視状態（`auto_topic_*`）・自律行動の設定と配信状態（`autonomous_*`）・記念日の投稿記録（`anniversary_posted_dates`）を持つ。
@@ -214,7 +218,7 @@ SQLite（`memory/bot.db`、WAL モード）が構造化データの永続化先�
 - **旧 JSON からの取り込み**: 初回起動時、旧ファイル（`affinity.json`/`user_stats.json`/`queue.json`/`pending_log.txt`）が残っていれば DB へ取り込み、`<元の名前>.imported.bak` に改名する（バックアップ兼二重取り込み防止）。JSON として読めない・最上位が object でない（`queue.json` は `tasks` が配列でない）ファイルは `_load_legacy_json_object` が例外にするので、取り込まず改名もせずに残して警告し、次回起動時に再試行する。**`_json_loads_or` で `{}` 扱いに戻さないこと** — 戻すと、取り込めなかったファイルが「取り込み済み」として改名され、誰も気づけない。
 旧`pending_log.txt`は元バイト列のSHA-256とファイル名を`legacy_imports`へ、会話と同じトランザクションで保存する。改名だけ失敗した場合は次回に取り込みを省いて改名を再試行する。内容が異なる元ファイルや、元ファイル内・通常会話の同文の発言は削除しない。取り込み自体が失敗すれば会話と記録をともにロールバックする。
 
-- **profile.json は手書き追加用の受け皿**: 毎起動時、`profile.json` に中身があれば `profile` テーブルへマージ（同名キーはファイル側が勝つ）し、取り込めた場合だけ `write_json_file` で原子的に `{}` に戻す。ユーザー別記憶に対応するため形式は `{ユーザーID: {キー: 値, ...}, ...}`（値が dict でない旧・全体共有形式は owner へ取り込む後方互換あり）。JSON として読めない場合や、旧形式の owner が未設定・全ユーザーの内容が空などで1件も取り込めない場合は、ファイルを残して警告する。DB保存やリセットの失敗時も原本を保持し、次回起動時に再試行する（手書きミスやI/O障害でデータを失わない）。
+- **profile.json は手書き追加用の受け皿**: 毎起動時、`profile.json` に中身があれば `profile` テーブルへマージ（同名キーはファイル側が勝つ）し、取り込めた場合だけ `write_json_file` で原子的に `{}` に戻す。ユーザー別記憶に対応するため形式は `{ユーザーID: {キー: 値, ...}, ...}`（全キーがASCII数字のユーザーID、全値がdictの場合だけユーザー別と判定。それ以外の旧・全体共有形式はownerへ取り込む後方互換あり）。JSON として読めない場合や、旧形式の owner が未設定・全ユーザーの内容が空などで1件も取り込めない場合は、ファイルを残して警告する。DB保存やリセットの失敗時も原本を保持し、次回起動時に再試行する（手書きミスやI/O障害でデータを失わない）。
 - **並行処理**: 各サービスが `run_in_thread`（＝別スレッド）から呼ぶため、接続は `check_same_thread=False` + 内部の `threading.Lock` で直列化。書き込みはトランザクションで原子的（旧 JSON 方式と違い、書き込み途中のクラッシュでデータが壊れない）。`close()` も同じロックを取り、実行中の読み書きが終わってから閉じる（何度呼んでもよい）。終了時は `PersonaClient.close()` が文書ワーカー停止・遠隔ファイル回収を待ってから Discord → Gemini → DB の順に閉じる（DB を最後にするのは、終了処理中の保存が使うため）。
 
 ### JSONファイルの保存 (`storage.py`)
@@ -263,15 +267,17 @@ Geminiのテキストは `storage.safe_response_text` から取得する。空�
 
 ユーザーごとの2次元感情（valence/arousal、30分の半減期で 50 へ減衰）に加えて、緩やかに変動する親密度。DB の `affinity` テーブルに永続化される。モデルには返信の末尾に `[V:X, A:Y]` タグを付けるよう指示しており、`handle_chat_message` がタグを抽出・除去し、親密度・感情を更新して対象ユーザー分の保存を開始する。本文はその後にモデレーション・送信される。保存は `asyncio.Lock` で直列化される。
 
+旧JSON・通常保存の数値`None`は既定値を使い、親密度・機嫌・テンションは`AFFINITY_MIN`〜`AFFINITY_MAX`へ収める。統計・文書キューの数値`None`も0、空の文字列項目は空文字、キュー状態は`pending`を使う。
+
 通常の保存は `AffinityService.save_background(user_id)` → `Database.affinity_upsert(user_id, entry)` で対象1行だけを更新する。`affinity_save_all` は明示的な全件置換用で、返信ごとの保存には使わない。旧 JSON の取り込みを含む3か所の保存パラメータ（列順・欠けた値の既定値）は `database._affinity_row_params` に集約してある。列を足すときはこの関数と3か所の INSERT 文をそろえて直すこと。ロック内で対象の現在値だけをコピーし、キャンセル時も `run_in_thread` の完了までロックを保持する。親密度・機嫌・テンション・`last_interaction` の4項目を保存・復元し、半減期・中立値・上下限・親密度の増減しきい値は `AFFINITY_*` から参照する。
 
-**感情タグを扱うコードはこのモジュールに集約すること。** `[V:X, A:Y]` の正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置く（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）。`extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。読み上げ用の `strip_speech_tags(text)` はこれを再利用し、`_SPEECH_EMOTION_TAG_PATTERN` で感情名（happy / sad / angry / neutral / excited / calm / surprised / scared）と arousal / valence / affinity の数値タグも除去する。一般の角括弧付き本文は保持する。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
+**感情タグを扱うコードはこのモジュールに集約すること。** `[V:X, A:Y]` の正規表現は `_AFFINITY_TAG_PATTERN` の1か所だけに置く（空白と大文字・小文字のゆらぎを許容する。`[v:+5, a:-10]` も抽出・除去する）。`extract_affinity_changes(text)` は `(本文, (機嫌の変化量, テンションの変化量))` を返し（複数あれば最後のタグの変化量を採用。タグが無ければ変化量は `None`、本文は無加工）、`strip_affinity_tag(text)` は除去だけを行う（自発的な会話・記念日のお祝い・会話要約のように、特定の相手への返信ではなく親密度を更新しない経路で使う）。読み上げ用の `strip_speech_tags(text)` はこれを再利用し、`_SPEECH_EMOTION_TAG_PATTERN` で感情名（happy / sad / angry / neutral / excited / calm / surprised / scared）と arousal / valence / affinity の数値タグも除去する（カンマ区切りの複合形式を含む）。一般の角括弧付き本文は保持する。以前は同じ正規表現が `bot.py` / `auto_topic_service.py` / `summary_view.py` に3重定義されており、空白の許容などに差異が生まれるとタグがそのままユーザーへ露出する不具合に直結していた。
 
 ### ボイス / TTS (`voice.py`, `voice_dsp.py`)
 
 gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`TTS_GTTS_READ_TIMEOUT_SECONDS` を渡す。外側の合成期限や停止・キャンセルでも同期ワーカーを放置せず、処理完了とバッファの回収を待つ。複数のHTTP要求を含む退避処理では合成期限を超えて終了を待つ場合があるため、通信期限を外さない。
 
-`_play_pcm` は再生待ちのキャンセル時にも`stop()`を試し、音声ソースの`cleanup()`と所有するPCMバッファの`close()`を終えてからキャンセルを伝播する。`PCMAudio.cleanup()`だけでは入力ストリームは閉じないため、バッファの回収も維持する。
+`_play_pcm` は接続単位の弱参照ロックで再生・停止・回収を直列化し、再生中・一時停止中の既存音声を停止する。再生待ちのキャンセル時にも`stop()`を試し、再生スレッドの終了を待ってから音声ソースの`cleanup()`と所有するPCMバッファの`close()`を行う。固定版discord.pyの`_player`参照は`_get_audio_player`へ隔離する。`stop()`はスレッドをjoinせず、`after`はスレッド内のcleanupより先に呼ばれるため、どちらも終了の代わりにはならない。繰り返しのキャンセルでもjoinを終えてから伝播する。切断時はdiscord.py内部の接続待機期限まで回収を待つことがある。`PCMAudio.cleanup()`だけでは入力ストリームは閉じないため、バッファの回収も維持する。
 
 `play_tts_response(message, response_text, prompt_file)` は、**ボットがボイスチャンネルに接続している間だけ**（`/join` で呼ばれたときと、自律行動で自分から入っているとき）AI の返信を読み上げる。未接続・DM・整形後に本文が残らない場合は黙って何もしない（no-op）。チャット本体は読み上げの成否に影響されないフェイルオープン設計。`prompt_file` は `MessageHandler` が今回の応答に使った `ResponseSettings.prompt_file` を渡す（サービス層に `BotState` を読ませない規約どおり、値だけを渡す）。
 
@@ -329,6 +335,8 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 `/functions` のハブ（`functions_view.py` の `FunctionsView`、エフェメラル）から **⚙️ キャラ設定** を選ぶと、同じメッセージが `SettingsView` に変身する（ペルソナ/モデル/応答モードのセレクト + 確定/戻る/リセットボタン、120秒タイムアウト）。一時的な選択値は View 上に保持され、**確定 (Confirm)** ボタンを押したときにのみ `GuildSettings`（`/functions` 実行時に `interaction.guild_id` から解決したもの）に書き込まれる — それまでは共有状態を一切変更しない。Google検索（グラウンディング）のトグルはハブ側にあり、こちらは押した瞬間に `GuildSettings` へ反映される（ハブは「その場で実行」系のため）。**各 View は `BotState` ではなく `GuildSettings` を受け取る** ため、設定変更の影響はそのサーバー内（DM の場合は全 DM）に閉じる。`choices.py` はペルソナ/モデル/モード、および要約期間（`SUMMARY_PERIOD_CHOICES`）の選択肢リストと表示名マップの唯一の情報源。
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
+
+設定パネルの確定は`defer(ephemeral=True)`で応答する。リマインダー選択肢の空説明は`None`で省略し、会話要約の全体公開は`AllowedMentions.none()`を分割投稿にも引き継ぐ。
 
 `PanelView`は同じメッセージを共有するパネルの表示先・操作世代・編集ロックを引き継ぐ。DB等の待機前に`begin_panel_operation`で世代を確保し、画面更新は`edit_panel_message`を使う（保留後の確定更新は`deferred=True`）。古い操作の画面更新を破棄しても、受付済みの保存は最後まで待つ。遷移では実際に表示していたViewと不採用の遷移先を停止し、旧タイマーが最新画面へ触れないようにする。長時間処理の結果も同じ操作世代で確認する。
 
@@ -415,6 +423,8 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 - **権限**: `/functions` → **⏰ リマインダー** で一覧・取り消し。表示は本人の分だけで、`reminder_cancel` は SQL の条件にも `user_id` を含めるため他人のものは操作できない。
 
 ### ユーザー別会話統計 (`stats_service.py`, `stats_view.py`, `stats_privacy_view.py`)
+
+解析キャッシュの日時は`parse_iso_datetime`で読み、末尾`Z`もPython 3.10で扱う。
 
 `RunStatsButton` の説明文は `split_message` で分割し、最初を元パネル、続きを本人だけのfollowupへ送る。画像のFile・バッファは引き続き `finally` で回収する。`FeedbackButton` は権限・サーバー・サービスの確認後、集計より前に本人限定の応答をdeferし、結果を分割してfollowupへ送る。集計後も管理者権限を再確認し、失敗は本人だけへ案内する。
 

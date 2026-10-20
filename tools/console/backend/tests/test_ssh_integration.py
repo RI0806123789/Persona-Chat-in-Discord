@@ -161,6 +161,33 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["discord"]["ok"])
         self.assertEqual(len(data["discord"]["guilds"]), 3)
 
+    async def test_missing_key_keeps_specific_error_in_response_and_history(self):
+        missing = self.key_dir / "missing_client_key"
+        with self.assertRaises(SshError) as context:
+            await self.session.connect(replace(self.profile, key_path=str(missing)))
+        expected = f"秘密鍵が見つかりません: {missing}"
+        self.assertEqual(str(context.exception), expected)
+        self.assertEqual(self.session.last_error, expected)
+        self.assertEqual(self.session.history_list()[0]["error"], expected)
+        self.assertFalse(self.session.connected)
+
+    async def test_missing_known_hosts_keeps_path_and_remedy(self):
+        missing = self.key_dir / "missing_known_hosts"
+        with self.assertRaises(SshError) as context:
+            await self.session.connect(replace(self.profile, known_hosts=str(missing)))
+        self.assertIn(f"known_hosts が見つかりません: {missing}", str(context.exception))
+        self.assertIn("profiles.json", str(context.exception))
+        self.assertFalse(self.session.connected)
+
+    async def test_missing_default_known_hosts_keeps_registration_guidance(self):
+        home = self.key_dir / "empty_home"
+        with mock.patch("ssh_session.Path.home", return_value=home):
+            with self.assertRaises(SshError) as context:
+                await self.session.connect(replace(self.profile, known_hosts=None))
+        self.assertIn(str(home / ".ssh/known_hosts"), str(context.exception))
+        self.assertIn("フィンガープリント", str(context.exception))
+        self.assertFalse(self.session.connected)
+
     async def test_rejects_unknown_host_key(self):
         """known_hosts に別の鍵が書かれていたら、接続してはいけない（なりすまし対策）。"""
         other_key = asyncssh.generate_private_key("ssh-ed25519").export_public_key().decode().split()

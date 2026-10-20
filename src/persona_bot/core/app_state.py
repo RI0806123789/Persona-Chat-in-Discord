@@ -3,7 +3,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from persona_bot.config.choices import MODEL_CHOICES, PERSONA_CHOICES, RESPOND_MODE_CHOICES
+from persona_bot.config.choices import (
+    AUTO_TOPIC_INTERVAL_CHOICES,
+    MODEL_CHOICES,
+    PERSONA_CHOICES,
+    RESPOND_MODE_CHOICES,
+)
 from persona_bot.config.paths import resolve_prompt_path
 from persona_bot.config.constants import (
     DEFAULT_AUTO_TOPIC_INTERVAL_HOURS,
@@ -177,8 +182,12 @@ class GuildSettings:
         if values.get("autonomous_enabled") is not None:
             self.autonomous_enabled = bool(values["autonomous_enabled"])
         interval = values.get("auto_topic_interval_hours")
-        if isinstance(interval, int) and interval > 0:
+        if (isinstance(interval, int) and not isinstance(interval, bool)
+                and any(choice.value == interval for choice in AUTO_TOPIC_INTERVAL_CHOICES)):
             self.auto_topic_interval_hours = interval
+        elif interval is not None:
+            print("サーバー設定: 保存済みの auto_topic_interval_hours が無効なため既定値へ戻します。")
+            self.auto_topic_interval_hours = DEFAULT_AUTO_TOPIC_INTERVAL_HOURS
 
     async def persist(self) -> None:
         """現在の設定値を DB へ保存する。設定を変更した UI 側が変更確定後に呼ぶ。
