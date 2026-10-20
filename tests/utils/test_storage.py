@@ -42,6 +42,16 @@ class JsonStorageTests(unittest.TestCase):
         self.assertEqual(load_json_file(self.path, {}), self.original)
         self.assertEqual(list(self.root.iterdir()), [self.path])
 
+    def test_bom_prefixed_file_is_read_like_plain_utf8(self) -> None:
+        # メモ帳の「UTF-8 (BOM 付き)」保存を想定。BOM だけを理由に退避しない（#153）。
+        self.path.write_bytes(b"\xef\xbb\xbf" + self.original_bytes)
+        with patch("builtins.print") as log:
+            loaded = load_json_file(self.path, {"users": {}})
+        self.assertEqual(loaded, self.original)
+        self.assertEqual(self.path.read_bytes(), b"\xef\xbb\xbf" + self.original_bytes)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
+        log.assert_not_called()
+
     def test_atomic_replacement_occurs_after_fsync(self) -> None:
         self.seed()
         original_replace = os.replace
@@ -134,7 +144,10 @@ class JsonStorageTests(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [self.path])
 
     def test_corrupt_file_is_backed_up_before_default_can_be_saved(self) -> None:
-        broken_documents = [b'{"users": ', b"", b"  \n", b"[]", b"null", b"\xff"]
+        # BOM を吸収しても、BOM の後ろが壊れている・空・object 以外なら従来どおり退避する。
+        bom = b"\xef\xbb\xbf"
+        broken_documents = [b'{"users": ', b"", b"  \n", b"[]", b"null", b"\xff",
+                            bom, bom + b'{"users": ', bom + b"[]", bom + b"\xff"]
         for broken in broken_documents:
             with self.subTest(content=broken):
                 self.path.write_bytes(broken)

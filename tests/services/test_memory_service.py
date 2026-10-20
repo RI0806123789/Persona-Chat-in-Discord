@@ -52,6 +52,17 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.service._load_projects_wrapper(), result)
                 self.assertEqual(load_json_file(self.projects_path, {}), result)
 
+    async def test_bom_prefixed_projects_file_keeps_user_memory(self) -> None:
+        # 手で直して「UTF-8 (BOM 付き)」で保存した projects.json でも記憶を空にしない（#153）。
+        wrapper = {"_schema": "per_user_v1", "users": {"test-user": {"計画": "架空の計画"}}}
+        for encoding in ("utf-8", "utf-8-sig"):
+            with self.subTest(encoding=encoding):
+                self.projects_path.write_text(json.dumps(wrapper, ensure_ascii=False), encoding=encoding)
+                context, _ = await self.service.build_contexts("projects", "test-user")
+                self.assertEqual(json.loads(context), {"計画": "架空の計画"})
+                self.assertEqual(list(self.projects_path.parent.glob("projects.json.corrupt-*.bak")), [])
+                self.assertEqual(json.loads(self.projects_path.read_text(encoding="utf-8-sig")), wrapper)
+
     async def check_user_failure_isolation(self, boundary):
         wrapper = default_projects_memory()
         wrapper["users"] = {"user-a": {"note": "元の計画"}, "user-b": {"note": "別の計画"}}

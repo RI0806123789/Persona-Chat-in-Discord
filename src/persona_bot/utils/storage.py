@@ -12,9 +12,15 @@ from uuid import uuid4
 
 
 def load_json_file(path: Path, default_value: dict[str, Any]) -> dict[str, Any]:
-    """未作成なら初期値、破損時は原本の退避に成功した場合だけ初期値を返す。"""
+    """未作成なら初期値、破損時は原本の退避に成功した場合だけ初期値を返す。
+
+    手で直すファイル（projects.json・blacklist.json）は、メモ帳の「UTF-8 (BOM 付き)」で
+    保存されうる。先頭の BOM は json.loads が拒否し、正しい中身ごと破損扱いで退避して
+    記憶を空にしてしまうため、utf-8-sig で読んで BOM だけを吸収する（BOM 無しも同じ結果）。
+    書き込みは従来どおり BOM 無しの UTF-8 のまま。
+    """
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return deepcopy(default_value)
     except (json.JSONDecodeError, UnicodeDecodeError):

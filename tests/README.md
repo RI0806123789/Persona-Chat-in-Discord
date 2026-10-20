@@ -37,6 +37,14 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #153〜#155の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #153 | `utils/test_storage.JsonStorageTests`・`services/test_memory_service.DocumentSummaryCompactionTests` | BOM付きUTF-8の正しいJSONをBOM無しと同じ内容で読み、改名・退避・ログ出力をしない。`build_contexts` でもプロジェクト記憶が空にならない。BOMだけ・BOMの後ろが壊れたJSON・object以外・不正UTF-8は従来どおり原本を退避する |
+| #154 | `services/test_feedback_votes.py` | 先行する追加の保存を同期処理の手前で止めても、後続の取り消しで評価が復活せず、後続の👎を古い👍で上書きしない。待機中のイベントは最新の状態だけを書く。保存の失敗・キャンセル（実行中・待機中）でロックを残さず、未反映の分は次のイベントが書き直す |
+| #155 | `services/test_feedback_votes.py` | 👍→👎→👎取消で👍、👎→👍→👍取消で👎が1票残る。採用していない側だけを外しても採用中の評価を保ち、DBへ書かない。両方付けても1票、両方外すと0票。モデル／ペルソナ別の集計、自ボット・他のボット・対象外の絵文字・追跡外の返信の除外、追跡を外れた返信の状態の破棄を維持する |
+
 ## Issue #148〜#150の確認
 
 | Issue | テスト | 確認内容 |
@@ -175,6 +183,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | services | [test_document_recovery.py](services/test_document_recovery.py) |
 | services | [test_document_service.py](services/test_document_service.py) |
 | services | [test_document_shutdown.py](services/test_document_shutdown.py) |
+| services | [test_feedback_votes.py](services/test_feedback_votes.py) |
 | services | [test_gemini_service.py](services/test_gemini_service.py) |
 | services | [test_genai_client.py](services/test_genai_client.py) |
 | services | [test_llm_value_validation.py](services/test_llm_value_validation.py) |
