@@ -37,7 +37,7 @@ VoiceClient を持たせない。持たせると、管理者にキックされ�
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -104,6 +104,8 @@ class _StartAttempt:
     """開始待機中の停止要求。接続そのものは保持せず、同時開始も抑止する。"""
 
     stopped: bool = False
+    task: asyncio.Task | None = None
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class AutonomousService:
@@ -208,6 +210,7 @@ class AutonomousService:
         *,
         claimed_session: AutonomousSession | None = None,
         response_settings: ResponseSettings | None = None,
+        image_objects: list | None = None,
     ) -> str | None:
         """配信中のチャンネルに届いたコメントへ、配信者のように応答する。
 
@@ -226,9 +229,6 @@ class AutonomousService:
             # 入力判定を待っている間に、別の配信へ差し替わった予約は使わない。
             if session is not claimed_session:
                 return None
-        elif not self._claim_comment_slot(session):
-            # この関数を直接呼ぶ経路でも、従来どおり流量制限を適用する。
-            return None
 
         if response_settings is None:
             response_settings = guild_settings.snapshot_response()
@@ -237,12 +237,17 @@ class AutonomousService:
             # 本文が無く画像だけのコメントは、そのまま渡すと「空のコメントへの返事」を
             # 生成してしまう。通常のチャット経路と同じように、代わりの文を置いたうえで
             # 画像そのものもモデルへ渡す（配信中だけ画像を見なくなるのを避ける）。
-            images = await load_image_attachments(message.attachments)
+            images = image_objects if image_objects is not None else await load_image_attachments(message.attachments)
             try:
                 comment_text = question.strip()
                 if not comment_text and images:
                     comment_text = AUTONOMOUS_IMAGE_ONLY_COMMENT
                 if not comment_text:
+                    return None
+                if not self._is_current_session(guild_settings, session):
+                    return None
+                if claimed_session is None and not self._claim_comment_slot(session):
+                    # 直接呼ぶ場合も、有効な入力を確認してから枠を取る。
                     return None
 
                 persona_prompt = await self._load_persona(response_settings)
@@ -295,7 +300,9 @@ class AutonomousService:
                 session.last_spoke_at = datetime.now(timezone.utc)
                 return response_text
             finally:
-                close_image_attachments(images)
+                # 事前に検証された画像は呼出元が所有し、未使用時もそちらで回収する。
+                if image_objects is None:
+                    close_image_attachments(images)
 
     def _claim_comment_slot(self, session: AutonomousSession) -> bool:
         """入力AI判定の前に受付枠を確保し、同時に受付時刻を記録する。
@@ -456,12 +463,13 @@ class AutonomousService:
         """開始要求を登録し、未登録セッションへの停止要求と多重開始を扱う。"""
         if guild.id in self._starting or guild_settings.autonomous_session is not None:
             return
-        attempt = _StartAttempt()
+        attempt = _StartAttempt(task=asyncio.current_task())
         self._starting[guild.id] = attempt
         try:
             await self._connect_session(guild, guild_settings, attempt)
         finally:
             self._starting.pop(guild.id, None)
+            attempt.finished.set()
 
     async def _connect_session(
         self, guild: discord.Guild, guild_settings: GuildSettings, attempt: _StartAttempt,
@@ -655,6 +663,10 @@ class AutonomousService:
             if starting is not None:
                 self._clear_session(guild_settings)
                 print(f"自律行動: 配信の開始を中止します（guild={guild_id} / 理由: {reason}）。")
+                # /joinが開始途中の接続を再利用する前に、元の接続と所有枠を片付ける。
+                # 開始処理自身からの中止要求だけは、自分の終了を待たない。
+                if starting.task is not asyncio.current_task():
+                    await wait_for_cleanup(starting.finished.wait(), label="自律行動の開始中止待機")
                 return True
             return False
 

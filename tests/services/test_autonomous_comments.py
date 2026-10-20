@@ -14,10 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
 from persona_bot.core.app_state import AutonomousSession, BotState
+from persona_bot.core import message_handler
 from persona_bot.services import autonomous_service
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core.background import spawn
-from persona_bot.config.constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES
+from persona_bot.config.constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES, MAX_IMAGE_SIZE_BYTES
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, is_supported_document_attachment,
     is_supported_message_channel,
@@ -182,6 +183,84 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.service._load_persona.assert_not_called()
         autonomous_service.fetch_channel_history_text.assert_not_awaited()
         self.gemini.generate.assert_not_awaited()
+        self.assertIsNone(self.session.last_comment_reply_at)
+
+    async def test_stream_comment_does_not_register_reminders_stats_or_documents(self) -> None:
+        self.handler.reminders.create_from_request = AsyncMock(return_value="架空の登録確認")
+        self.handler.documents.enqueue_from_message = AsyncMock()
+        self.moderator.check_and_route.return_value = (
+            True, "", "projects", {"remind_at": "2026-01-02", "message": "架空の予定"},
+        )
+        self.message.attachments = [SimpleNamespace(filename="fictional.pdf", content_type="application/pdf", size=10)]
+        await self.on_message(self.message)
+        self.handler.reminders.create_from_request.assert_not_awaited()
+        self.handler.documents.enqueue_from_message.assert_not_awaited()
+        self.handler.stats.record.assert_not_awaited()
+        self.handler.memory.build_contexts.assert_not_called()
+        self.message.reply.assert_not_awaited()
+        self.normal_reply.assert_not_awaited()
+        self.sent.assert_awaited_once()
+
+    async def test_stream_comment_with_text_ignores_unsupported_attachments(self) -> None:
+        self.message.attachments = [SimpleNamespace(filename="fictional.zip", content_type="application/zip", size=10)]
+        await self.on_message(self.message)
+        self.message.reply.assert_not_awaited()
+        self.handler.stats.record.assert_not_awaited()
+        self.sent.assert_awaited_once()
+
+    async def test_unusable_attachment_only_comments_do_not_consume_timers(self) -> None:
+        last_spoke_at = self.session.last_spoke_at
+        self.message.content = ""
+        attachments = [
+            SimpleNamespace(filename="fictional.zip", content_type="application/zip", size=10),
+            SimpleNamespace(filename="fictional.pdf", content_type="application/pdf", size=10),
+            SimpleNamespace(filename="fictional.mp4", content_type="video/mp4", size=10),
+            SimpleNamespace(filename="fictional.png", content_type="image/png", size=MAX_IMAGE_SIZE_BYTES + 1),
+            SimpleNamespace(filename="broken.png", content_type="image/png", size=10,
+                            read=AsyncMock(return_value=b"fictional invalid image")),
+        ]
+        for attachment in attachments:
+            with self.subTest(filename=attachment.filename):
+                self.message.attachments = [attachment]
+                await self.on_message(self.message)
+                self.assertIsNone(self.session.last_comment_reply_at)
+                self.assertEqual(self.session.last_spoke_at, last_spoke_at)
+        self.message.attachments = []
+        await self.on_message(self.message)  # スタンプのみ等、本文・添付の両方が無い場合。
+        self.moderator.check_and_route.assert_not_awaited()
+        self.message.reply.assert_not_awaited()
+        self.message.content = "直後の架空のコメント"
+        await self.on_message(self.message)
+        self.sent.assert_awaited_once()
+
+    async def test_preloaded_image_only_comments_are_reused_and_closed(self) -> None:
+        from PIL import Image
+
+        self.message.content = ""
+        self.message.attachments = [SimpleNamespace(filename="fictional.png")]
+        for case in ("success", "cooldown", "cancel", "typing_failure"):
+            with self.subTest(case=case):
+                self.session.last_comment_reply_at = self.now if case == "cooldown" else None
+                image = Image.new("RGB", (2, 2))
+                self.sent.reset_mock()
+                self.gemini.generate.reset_mock()
+                if case == "typing_failure":
+                    self.message.channel.typing.side_effect = RuntimeError("架空の入力中表示失敗")
+                self.service._load_persona.side_effect = asyncio.CancelledError if case == "cancel" else None
+                with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=[image])) as loader:
+                    if case in ("cancel", "typing_failure"):
+                        with self.assertRaises(asyncio.CancelledError if case == "cancel" else RuntimeError):
+                            await self.on_message(self.message)
+                    else:
+                        await self.on_message(self.message)
+                    loader.assert_awaited_once()
+                with self.assertRaises(ValueError):
+                    image.getpixel((0, 0))
+                if case == "success":
+                    self.sent.assert_awaited_once()
+                    self.assertEqual(self.gemini.generate.await_args.kwargs["images"], [image])
+                elif case == "cooldown":
+                    self.gemini.generate.assert_not_awaited()
 
     async def test_concurrent_comments_share_one_admission_slot(self) -> None:
         async def check(*args):
@@ -288,6 +367,26 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.normal_reply.assert_not_awaited()
         self.gemini.generate.assert_not_awaited()
         self.sent.assert_not_awaited()
+
+    async def test_session_end_during_image_validation_preserves_normal_mention(self) -> None:
+        from PIL import Image
+
+        self.message.content = "<@99>"
+        self.message.mentions = [self.client.user]
+        self.message.attachments = [SimpleNamespace(filename="fictional.png", content_type="image/png", size=10)]
+        image = Image.new("RGB", (2, 2))
+
+        async def load(*args):
+            self.settings.autonomous_session = None
+            return [image]
+
+        with patch.object(message_handler, "load_image_attachments", AsyncMock(side_effect=load)):
+            await self.on_message(self.message)
+        self.normal_reply.assert_awaited_once()
+        self.gemini.generate.assert_not_awaited()
+        self.assertIsNone(self.session.last_comment_reply_at)
+        with self.assertRaises(ValueError):
+            image.getpixel((0, 0))
 
     async def test_replaced_session_does_not_reuse_old_admission(self) -> None:
         replacement = self.new_session()

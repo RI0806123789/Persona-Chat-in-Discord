@@ -291,6 +291,96 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
         replacement.disconnect.assert_not_awaited()
         target.connect.assert_awaited_once()
 
+    async def test_same_channel_join_waits_for_start_and_owned_stage_cleanup(self) -> None:
+        commands = self.make_commands()
+        entered, release = asyncio.Event(), asyncio.Event()
+        cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
+        replacement = self.make_voice(self.channel)
+        self.channel.permissions_for.return_value = SimpleNamespace(connect=True, speak=True, mute_members=True)
+        interaction = SimpleNamespace(
+            guild=self.guild,
+            user=Mock(spec=discord.Member, voice=SimpleNamespace(channel=self.channel)),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        async def prepare(*args):
+            entered.set()
+            await release.wait()
+            return self.instance.id
+
+        async def disconnect(**kwargs):
+            cleanup_entered.set()
+            await cleanup_release.wait()
+            self.guild.voice_client = None
+            self.voice.is_connected.return_value = False
+
+        async def connect(**kwargs):
+            self.guild.voice_client = self.voice if self.channel.connect.await_count == 1 else replacement
+            return self.guild.voice_client
+
+        self.channel.connect.side_effect = connect
+        self.voice.disconnect.side_effect = disconnect
+        with patch.object(autonomous_stage, "prepare_stage", AsyncMock(side_effect=prepare)), patch(
+            "persona_bot.core.commands.announce_voice_join", new_callable=AsyncMock,
+        ) as announce:
+            start = spawn(self.start(), label="ステージ準備待機の検証")
+            join = None
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                join = spawn(commands["join"](interaction), label="同一チャンネルjoinの検証")
+                await asyncio.sleep(0)
+                self.assertFalse(join.done())
+                announce.assert_not_awaited()
+                release.set()
+                await asyncio.wait_for(cleanup_entered.wait(), 2)
+                self.assertFalse(join.done())
+                cleanup_release.set()
+                await asyncio.wait_for(asyncio.gather(start, join), 2)
+            finally:
+                release.set()
+                cleanup_release.set()
+                await asyncio.gather(start, *([join] if join else []), return_exceptions=True)
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        replacement.disconnect.assert_not_awaited()
+        self.assertIs(self.guild.voice_client, replacement)
+        self.assert_not_started()
+        self.assertEqual(self.channel.connect.await_count, 2)
+        announce.assert_awaited_once()
+
+    async def test_stop_waits_for_pending_connect_despite_repeated_cancellation(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def connect(**kwargs):
+            entered.set()
+            await release.wait()
+            self.guild.voice_client = self.voice
+            return self.voice
+
+        self.channel.connect.side_effect = connect
+        start = spawn(self.start(), label="接続待機中止の検証")
+        stop = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            stop = spawn(self.service.stop_session(1, reason="架空の停止"), label="開始中止待機の検証")
+            await asyncio.sleep(0)
+            stop.cancel()
+            await asyncio.sleep(0)
+            stop.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(stop.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(stop, 2)
+            await start
+        finally:
+            release.set()
+            await asyncio.gather(start, *([stop] if stop else []), return_exceptions=True)
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        self.assertEqual(self.service._starting, {})
+        self.assert_not_started()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from persona_bot.services.affinity_service import extract_affinity_changes
-from persona_bot.core.app_state import BotState, ResponseSettings
+from persona_bot.core.app_state import BotState, GuildSettings, ResponseSettings
 from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.constants import (
     BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
@@ -129,10 +129,31 @@ class MessageHandler:
             await self.notify_violation(message, "NGワードが含まれているため、メッセージを処理できません。")
             return
 
+        # 本文の無いコメントはデコードまで確認し、使えない添付で受付枠を消費しない。
+        image_objects = None
+        if is_autonomous_comment and not question:
+            image_objects = await load_image_attachments(message.attachments)
+        try:
+            if image_objects is not None and not image_objects:
+                return
+            await self._process_accepted_message(
+                message, question, guild_settings, accepts_normally=accepts_normally,
+                is_autonomous_comment=is_autonomous_comment, image_objects=image_objects,
+            )
+        finally:
+            if image_objects is not None:
+                close_image_attachments(image_objects)
+
+    async def _process_accepted_message(
+        self, message: discord.Message, question: str, guild_settings: GuildSettings, *,
+        accepts_normally: bool, is_autonomous_comment: bool, image_objects: list | None,
+    ) -> None:
+        guild_id = message.guild.id if message.guild is not None else None
+        is_dm = isinstance(message.channel, discord.DMChannel)
         # コメントの受付枠はGeminiを呼ぶ前に、同期的に確保する。
         # 見送る分も活動観測は上の mark_activity で済ませている。
         claimed_comment_session = None
-        if is_autonomous_comment:
+        if is_autonomous_comment and self.autonomous.is_comment_channel(message.channel.id, guild_id):
             claimed_comment_session = self.autonomous.claim_comment_slot(message.channel.id, guild_id)
             if claimed_comment_session is None:
                 return
@@ -155,6 +176,24 @@ class MessageHandler:
         # 「配信のコメント欄」だった場所へ延々とテキストの話題が投稿される。
         if not is_dm and not is_autonomous_comment:
             self.auto_topic.watch_channel(message.channel.id, guild_id)
+
+        # モデレーション後の配信状態を取り直し、通常チャットの副作用より先に振り分ける。
+        if self.autonomous.is_comment_channel(message.channel.id, guild_id):
+            comment_session = guild_settings.autonomous_session
+            response_settings = guild_settings.snapshot_response()
+            response_text = await self.autonomous.handle_comment(
+                message, question, guild_settings, claimed_session=claimed_comment_session,
+                response_settings=response_settings, image_objects=image_objects,
+            )
+            if response_text and self.autonomous.can_speak_session(message.guild, guild_settings, comment_session):
+                await play_tts_response(
+                    message, response_text, response_settings.prompt_file,
+                    is_valid=lambda: self.autonomous.can_speak_session(message.guild, guild_settings, comment_session),
+                )
+            return
+        if not accepts_normally:
+            print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
+            return
 
         document_attachments = [
             attachment
@@ -204,44 +243,14 @@ class MessageHandler:
                 await message.reply(confirmation)
                 return
 
-        # 配信中のコメントは、通常のチャットではなく配信者としての応答へ回す。
-        # 長期記憶・親密度・👍👎 の登録を行わない点が handle_chat_message と違う
-        # （理由は autonomous_service のモジュール冒頭の説明を参照）。
-        #
-        # **ここで配信中かどうかを取り直すこと。** 入口で調べてからモデレーション
-        # （Gemini 呼び出し）を挟んでいる間に配信が終わっていることがある。古い判定の
-        # まま handle_comment を呼ぶと、セッションが無いので None が返り、通常経路にも
-        # 回らないまま発言が黙って捨てられる（メンション付きの発言まで無視されてしまう）。
-        if self.autonomous.is_comment_channel(message.channel.id, guild_id):
-            comment_session = guild_settings.autonomous_session
-            response_settings = guild_settings.snapshot_response()
-            response_text = await self.autonomous.handle_comment(
-                message, question, guild_settings, claimed_session=claimed_comment_session,
-                response_settings=response_settings,
-            )
-            # コメント返信の送信待機中に終了・移動した配信は、別通話へ読み上げない。
-            if response_text and self.autonomous.can_speak_session(message.guild, guild_settings, comment_session):
-                await play_tts_response(
-                    message, response_text, response_settings.prompt_file,
-                    is_valid=lambda: self.autonomous.can_speak_session(message.guild, guild_settings, comment_session),
-                )
-            return
-        elif accepts_normally:
-            # 配信が終わっていても、通常のチャットとして受け付けられる発言なら普通に答える。
-            response_settings = guild_settings.snapshot_response()
-            response_text = await self.handle_chat_message(
-                message, question, memory_category, response_settings=response_settings
-            )
-            tts_prompt_file = response_settings.prompt_file
-        else:
-            # 配信の終了と入れ違いに届いた、メンションの無い発言。配信が続いていれば
-            # コメントとして拾えたが、終わった今は通常経路の条件も満たさないので何もしない。
-            print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
-            return
+        response_settings = guild_settings.snapshot_response()
+        response_text = await self.handle_chat_message(
+            message, question, memory_category, response_settings=response_settings
+        )
         if response_text:
             # ボイス接続中なら、自律行動による参加中も読み上げる（未接続なら no-op）。
             # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
-            await play_tts_response(message, response_text, tts_prompt_file)
+            await play_tts_response(message, response_text, response_settings.prompt_file)
 
     async def handle_chat_message(
         self,
