@@ -61,6 +61,21 @@ class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
         await self.button.callback(self.interaction)
         self.assertEqual(self.last_panel(), summary_view._FORBIDDEN_NOTICE)
 
+    async def test_every_public_summary_chunk_disables_all_mentions(self) -> None:
+        from persona_bot.utils.discord_helpers import send_long_message
+
+        text = "架空の要約 @everyone @here <@11> <@&22>" * 100
+        channel = SimpleNamespace(send=AsyncMock())
+        self.interaction.channel = channel
+        self.generate.return_value = (True, text)
+        with patch.object(summary_view, "send_long_message", send_long_message):
+            await self.button.callback(self.interaction)
+        self.assertGreater(channel.send.await_count, 1)
+        self.assertEqual([call.args[0] for call in channel.send.await_args_list], summary_view.split_message(text))
+        for call in channel.send.await_args_list:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+        self.assertEqual(self.last_panel(), "✅ 要約をチャンネルに投稿しました。")
+
     async def test_private_display_keeps_shown_summary_and_reports_by_followup(self) -> None:
         self.view.temp_private = True
         self.generate.return_value = (True, "あ" * 2500)

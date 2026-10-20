@@ -134,6 +134,20 @@ class AffinityPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db._conn.total_changes, before_changes)
         self.assertEqual(self.db.affinity_load_all(), before)
 
+    async def test_every_save_path_bounds_affinity_and_emotions(self) -> None:
+        import json
+
+        for value, expected in ((-9, 0), (109, 100), ("125", 100)):
+            with self.subTest(value=value):
+                entry = dict.fromkeys(("affinity", "valence", "arousal"), value)
+                legacy = self.path.parent / "fictional-affinity.json"
+                legacy.write_text(json.dumps({"legacy-user": entry}), encoding="utf-8")
+                self.db.affinity_save_all({"explicit-user": entry})
+                self.db.affinity_upsert("new-user", entry)
+                self.db._import_affinity_json(legacy)
+                for data in self.db.affinity_load_all().values():
+                    self.assertEqual((data["affinity"], data["valence"], data["arousal"]), (expected,) * 3)
+
     async def test_independent_users_keep_both_updates(self) -> None:
         first = self.service.update_emotion("user-0", 15, -5).copy()
         second = self.service.update_emotion("user-1", -20, 30).copy()
@@ -275,6 +289,26 @@ class AffinityTagTests(unittest.TestCase):
     def test_text_without_tag_is_returned_unchanged(self) -> None:
         text = f" {self.BODY}[x:1, y:2] "
         self.assertEqual(affinity_service.extract_affinity_changes(text), (text, None))
+
+    def test_trailing_metadata_overrides_tags_quoted_in_body(self) -> None:
+        text = "タグ[V:+5, A:+5]は表記例です。\n[V:-1, A:0] \n"
+        self.assertEqual(affinity_service.extract_affinity_changes(text), ("タグは表記例です。", (-1, 0)))
+
+    def test_last_metadata_tag_wins_when_multiple_tags_are_emitted(self) -> None:
+        text = self.BODY + "[V:1, A:2][v: -3, a: +4]"
+        self.assertEqual(affinity_service.extract_affinity_changes(text), (self.BODY, (-3, 4)))
+
+    def test_speech_removes_combined_numeric_emotion_tags(self) -> None:
+        for tag in (
+            "[Valence: +5, Arousal: 0]", "[ arousal:-2, valence:3 ]",
+            "[Affinity:50, Valence: +5, Arousal: -1]", "[Valence:0]", "[happy]", "[V:1, A:2]",
+        ):
+            with self.subTest(tag=tag):
+                self.assertEqual(affinity_service.strip_speech_tags(self.BODY + tag), self.BODY)
+
+    def test_speech_preserves_ordinary_bracketed_text(self) -> None:
+        text = "[Python]で[Valence: は数値の説明]と[Valence: 5, 本文]を扱います。"
+        self.assertEqual(affinity_service.strip_speech_tags(text), text)
 
 
 if __name__ == "__main__":

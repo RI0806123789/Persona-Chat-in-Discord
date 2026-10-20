@@ -20,6 +20,34 @@ from persona_bot.config.constants import STATS_PERSONALITY_MIN_SAMPLES, STATS_RE
 from persona_bot.core.database import Database
 from persona_bot.services import stats_service
 from persona_bot.services.stats_service import StatsService
+from persona_bot.utils import timeutil
+
+
+class StatsCacheTimestampTests(unittest.TestCase):
+    def test_cache_freshness_accepts_z_on_python310_and_other_iso_formats(self) -> None:
+        now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+        class Python310DateTime(datetime):
+            @classmethod
+            def fromisoformat(cls, text):
+                # Python3.10の境界を再現し、新しいPythonだけで通る検証にしない。
+                if text.endswith("Z"):
+                    raise ValueError("Python3.10では末尾Zを直接解釈できません")
+                return super().fromisoformat(text)
+
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.astimezone(tz)
+
+        service = StatsService.__new__(StatsService)
+        with patch.object(stats_service, "datetime", Python310DateTime), patch.object(timeutil, "datetime", Python310DateTime):
+            for text in ("2026-01-01T23:00:00Z", "2026-01-01T23:00:00+00:00",
+                         "2026-01-02T08:00:00+09:00", "2026-01-01T23:00:00"):
+                with self.subTest(text=text):
+                    self.assertTrue(service._is_fresh(text))
+            for text in (None, "", "架空の無効な日時", "2020-01-01T00:00:00Z"):
+                with self.subTest(text=text):
+                    self.assertFalse(service._is_fresh(text))
 
 
 class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):

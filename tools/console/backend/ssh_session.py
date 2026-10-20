@@ -286,10 +286,7 @@ class SshSession:
 def _describe_connect_error(error: Exception, profile: Profile) -> str:
     """接続エラーを「何が起きて、どうすればよいか」の日本語にする。"""
     if isinstance(error, SshError):
-        return (
-            "SSH 接続の設定を確認してください。秘密鍵と known_hosts が存在するか確認し、"
-            "初回は PowerShell の ssh でフィンガープリントを確かめてホスト鍵を登録してください。"
-        )
+        return str(error)
     if isinstance(error, asyncssh.HostKeyNotVerifiable):
         return (
             "サーバーのホスト鍵を確認できませんでした（known_hosts に未登録、または鍵が変わっています）。"

@@ -28,7 +28,8 @@ _AFFINITY_TAG_PATTERN = re.compile(
 # 読み上げ用。一般の角括弧表記まで消さないよう、感情名と数値タグだけを扱う。
 _SPEECH_EMOTION_TAG_PATTERN = re.compile(
     r"\[\s*(?:(?:happy|sad|angry|neutral|excited|calm|surprised|scared)"
-    r"|(?:arousal|valence|affinity)\s*:\s*[+-]?\d+)\s*\]",
+    r"|(?:arousal|valence|affinity)\s*:\s*[+-]?\d+"
+    r"(?:\s*,\s*(?:arousal|valence|affinity)\s*:\s*[+-]?\d+)*)\s*\]",
     re.IGNORECASE,
 )
 
@@ -40,9 +41,11 @@ def extract_affinity_changes(text: str) -> tuple[str, tuple[int, int] | None]:
         (本文, (機嫌の変化量, テンションの変化量))。タグが無ければ変化量は None を返し、
         本文は元のまま（余計な strip をしない）。
     """
-    match = _AFFINITY_TAG_PATTERN.search(text)
-    if match is None:
+    # 本文がタグの表記を引用していても、末尾側に付いたメタデータを採用する。
+    matches = list(_AFFINITY_TAG_PATTERN.finditer(text))
+    if not matches:
         return text, None
+    match = matches[-1]
     cleaned = _AFFINITY_TAG_PATTERN.sub("", text).strip()
     return cleaned, (int(match.group(1)), int(match.group(2)))
 

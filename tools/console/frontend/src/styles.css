@@ -1463,6 +1463,14 @@ code {
   border-top: 1px solid var(--md-sys-color-outline-variant);
 }
 
+.log-reconnect {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 16px;
+}
+
 .m3-inline-error {
   display: flex;
   align-items: flex-start;

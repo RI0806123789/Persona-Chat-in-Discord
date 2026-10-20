@@ -52,7 +52,7 @@ class ReminderCancelSelect(ui.Select):
                     # description も本文を含むので、同じく1行にしてから切り詰める
                     label=select_option_text(record.get("message"), fallback="（本文なし）"),
                     value=str(record.get("reminder_id")),
-                    description=select_option_text(service.describe(record)),
+                    description=select_option_text(service.describe(record)) or None,
                 )
             )
         super().__init__(placeholder="🗑️ 取り消すリマインダーを選択…", options=options, row=0)

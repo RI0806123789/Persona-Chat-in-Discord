@@ -49,6 +49,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from persona_bot.config.constants import (
+    AFFINITY_MAX,
+    AFFINITY_MIN,
     AFFINITY_NEUTRAL,
     REMINDER_MAX_PENDING_PER_USER,
     STATS_HOURLY_BUCKETS,
@@ -279,17 +281,20 @@ def _affinity_row_params(user_id: Any, entry: dict[str, Any]) -> tuple[str, Any,
 
     旧 JSON の取り込み・1行の保存・全件置換の3か所で同じ既定値を使うため、ここに集約する。
     列を足すときはこの関数と3か所の INSERT 文の列を合わせて直すこと。
-    None・欠けた値は中立値（最終会話時刻は 0.0）として保存する。
+    None・欠けた値は中立値（最終会話時刻は 0.0）とし、感情値は有効範囲に収める。
     """
     def value_or(key: str, default: Any) -> Any:
         value = entry.get(key)
         return default if value is None else value
 
+    def bounded_value(key: str) -> int:
+        return max(AFFINITY_MIN, min(AFFINITY_MAX, int(value_or(key, AFFINITY_NEUTRAL))))
+
     return (
         str(user_id),
-        value_or("affinity", AFFINITY_NEUTRAL),
-        value_or("valence", AFFINITY_NEUTRAL),
-        value_or("arousal", AFFINITY_NEUTRAL),
+        bounded_value("affinity"),
+        bounded_value("valence"),
+        bounded_value("arousal"),
         value_or("last_interaction", 0.0),
     )
 
@@ -454,11 +459,11 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(user_id),
-                        str(entry.get("user_name", "")),
-                        int(entry.get("total_count", 0)),
+                        str(entry.get("user_name") or ""),
+                        int(entry.get("total_count") or 0),
                         json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
-                        str(entry.get("first_seen", "")),
-                        str(entry.get("last_seen", "")),
+                        str(entry.get("first_seen") or ""),
+                        str(entry.get("last_seen") or ""),
                         json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
                         json.dumps(analysis, ensure_ascii=False) if analysis else None,
                     ),
@@ -479,14 +484,14 @@ class Database:
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(task.get("task_id")),
-                        str(task.get("status", "pending")),
-                        int(task.get("channel_id", 0)),
-                        int(task.get("message_id", 0)),
-                        int(task.get("author_id", 0)),
-                        str(task.get("question", "")),
-                        int(task.get("attachment_count", 0)),
-                        str(task.get("created_at", "")),
-                        str(task.get("updated_at", "")),
+                        str(task.get("status") or "pending"),
+                        int(task.get("channel_id") or 0),
+                        int(task.get("message_id") or 0),
+                        int(task.get("author_id") or 0),
+                        str(task.get("question") or ""),
+                        int(task.get("attachment_count") or 0),
+                        str(task.get("created_at") or ""),
+                        str(task.get("updated_at") or ""),
                         task.get("finished_at"),
                         task.get("error"),
                     ),
@@ -552,7 +557,7 @@ class Database:
 
         ユーザー別記憶に対応するため、形式は {ユーザーID: {キー: 値, ...}, ...}。
         各ユーザーごとにトップレベルキー単位でマージ（同名キーはファイル側が勝つ）し、
-        ファイルを {} に戻す。トップレベル値が dict でないもの（旧・全体共有形式の
+        ファイルを {} に戻す。数字のユーザーIDと dict の組でないもの（旧・全体共有形式の
         手書き）は owner のプロフィールとして取り込む（後方互換）。
         JSON として読めない場合はファイルを壊さず残し、警告だけ出してスキップする
         （手書きミスでデータを失わないため）。
@@ -568,10 +573,12 @@ class Database:
             if not isinstance(data, dict) or not data:
                 return
 
-            # 値が dict のトップレベルキー ＝ ユーザーID とみなす。
-            # 値が dict でないキーが1つでもあれば「旧・全体共有形式の手書き」と判断し、
-            # 全体を owner のプロフィールとして取り込む。
-            looks_per_user = all(isinstance(value, dict) for value in data.values())
+            # 全キーがASCII数字のID、全値がdictのときだけユーザー別形式とみなす。
+            # 旧形式では値がすべてdictのこともあるため、名前や全角数字をIDにしない。
+            looks_per_user = all(
+                user_id.isascii() and user_id.isdigit() and isinstance(value, dict)
+                for user_id, value in data.items()
+            )
             absorbed: dict[str, list[str]] = {}
             if looks_per_user:
                 for user_id, profile in data.items():
@@ -1120,11 +1127,11 @@ class Database:
             " analysis = excluded.analysis, stats_opt_out = excluded.stats_opt_out",
             (
                 str(user_id),
-                str(entry.get("user_name", "")),
-                int(entry.get("total_count", 0)),
+                str(entry.get("user_name") or ""),
+                int(entry.get("total_count") or 0),
                 json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
-                str(entry.get("first_seen", "")),
-                str(entry.get("last_seen", "")),
+                str(entry.get("first_seen") or ""),
+                str(entry.get("last_seen") or ""),
                 json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
                 json.dumps(analysis, ensure_ascii=False) if analysis else None,
                 int(bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))),
@@ -1142,15 +1149,15 @@ class Database:
                 "  attachment_count, created_at, updated_at, finished_at, error)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    str(task.get("task_id", "")),
-                    str(task.get("status", "pending")),
-                    int(task.get("channel_id", 0)),
-                    int(task.get("message_id", 0)),
-                    int(task.get("author_id", 0)),
-                    str(task.get("question", "")),
-                    int(task.get("attachment_count", 0)),
-                    str(task.get("created_at", "")),
-                    str(task.get("updated_at", "")),
+                    str(task.get("task_id") or ""),
+                    str(task.get("status") or "pending"),
+                    int(task.get("channel_id") or 0),
+                    int(task.get("message_id") or 0),
+                    int(task.get("author_id") or 0),
+                    str(task.get("question") or ""),
+                    int(task.get("attachment_count") or 0),
+                    str(task.get("created_at") or ""),
+                    str(task.get("updated_at") or ""),
                     task.get("finished_at"),
                     task.get("error"),
                 ),

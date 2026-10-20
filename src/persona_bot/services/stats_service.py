@@ -30,7 +30,7 @@ from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to
 from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_stats_analysis_prompt
 from persona_bot.utils.storage import extract_json_object
-from persona_bot.utils.timeutil import resolve_timezone, timezone_label, utc_now_iso
+from persona_bot.utils.timeutil import parse_iso_datetime, resolve_timezone, timezone_label, utc_now_iso
 
 # ビッグファイブの軸（英語キー → 日本語表示名）。レーダーチャートの軸ラベルに使う。
 BIG_FIVE_LABELS = {
@@ -318,7 +318,7 @@ class StatsService:
         if not computed_at:
             return False
         try:
-            when = datetime.fromisoformat(computed_at)
+            when = parse_iso_datetime(computed_at)
         except ValueError:
             return False
         if when.tzinfo is None:

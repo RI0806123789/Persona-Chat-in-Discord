@@ -25,7 +25,9 @@ import asyncio
 from dataclasses import dataclass
 import io
 import re
+import threading
 from typing import Any, Callable, Mapping
+from weakref import WeakKeyDictionary
 
 import discord
 import edge_tts
@@ -218,7 +220,35 @@ async def _synthesize_pcm(text: str, profile: Mapping[str, Any]) -> bytes:
     return await run_in_thread(_decode_to_pcm, mp3_bytes, profile)
 
 
+_playback_locks: WeakKeyDictionary[discord.VoiceClient, asyncio.Lock] = WeakKeyDictionary()
+
+
+def _get_audio_player(voice_client: discord.VoiceClient) -> threading.Thread | None:
+    """stop() が参照を消す前に、今回の再生スレッドを確保する。"""
+    # discord.py 2.7.1 の stop() は _player=None とするだけで、join はしない。
+    # after も run() の finally 内の cleanup より先に呼ばれるため、終了通知だけでは
+    # ストリームの所有権を取り戻せない。スレッド自体の終了を待つ必要がある。
+    player = getattr(voice_client, "_player", None)
+    return player if isinstance(player, threading.Thread) else None
+
+
 async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
+    """同じ接続の停止・再生・解放を直列化する。"""
+    lock = _playback_locks.setdefault(voice_client, asyncio.Lock())
+    async with lock:
+        previous_player = _get_audio_player(voice_client)
+        try:
+            # pause 中も AudioPlayer が入力を所有しているため停止対象に含める。
+            if voice_client.is_playing() or voice_client.is_paused():
+                voice_client.stop()
+        finally:
+            if previous_player is not None:
+                # is_playing() が False でも終了処理中のスレッドは残りうる。
+                await run_in_thread(previous_player.join)
+        await _play_pcm_locked(voice_client, pcm)
+
+
+async def _play_pcm_locked(voice_client: discord.VoiceClient, pcm: bytes) -> None:
     """PCM を再生し、再生が終わる（または失敗する）まで待つ。
 
     完了待ちには必ず上限を設ける。`after` コールバックはボイス接続が正常な
@@ -243,8 +273,10 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
 
     pcm_stream = io.BytesIO(pcm)
     audio_source = discord.PCMAudio(pcm_stream)
+    player = None
     try:
         voice_client.play(audio_source, after=after_playing)
+        player = _get_audio_player(voice_client)
         await asyncio.wait_for(finished.wait(), timeout=timeout_seconds)
     except asyncio.CancelledError:
         try:
@@ -270,12 +302,18 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
             pass
     finally:
         try:
-            audio_source.cleanup()
-        except Exception as error:
-            print(f"TTS: 音声ストリームの解放に失敗しました: {type(error).__name__}")
+            if player is not None:
+                # stop() も after もスレッドの終了そのものではない。
+                # 繰り返しキャンセルでも join の完了まで待ち、読み取りとの競合を防ぐ。
+                await run_in_thread(player.join)
         finally:
-            # PCMAudio.cleanup() は入力ストリームを閉じないため、所有する側で解放する。
-            pcm_stream.close()
+            try:
+                audio_source.cleanup()
+            except Exception as error:
+                print(f"TTS: 音声ストリームの解放に失敗しました: {type(error).__name__}")
+            finally:
+                # PCMAudio.cleanup() は入力ストリームを閉じないため、所有する側で解放する。
+                pcm_stream.close()
 
 
 # ギルドIDごとの読み上げ待ちキュー。再生中に届いた返信を捨てずに順番に読むために持つ。

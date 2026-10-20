@@ -41,6 +41,29 @@ class BlockingDatabase:
 
 
 class GuildSettingsRestoreValidationTests(unittest.TestCase):
+    def test_every_allowed_auto_topic_interval_is_restored(self) -> None:
+        for choice in choices.AUTO_TOPIC_INTERVAL_CHOICES:
+            with self.subTest(interval=choice.value):
+                settings = GuildSettings()
+                settings.apply_persisted({"auto_topic_interval_hours": choice.value})
+                self.assertEqual(settings.auto_topic_interval_hours, choice.value)
+
+    def test_invalid_auto_topic_intervals_use_default_without_logging_values(self) -> None:
+        for interval in (True, False, 0, -1, 2, 25, 1.0, "1", [], {"架空": "設定"}):
+            with self.subTest(interval=interval), patch("builtins.print") as logging:
+                settings = GuildSettings(auto_topic_interval_hours=24)
+                settings.apply_persisted({"auto_topic_interval_hours": interval})
+                self.assertEqual(settings.auto_topic_interval_hours, constants.DEFAULT_AUTO_TOPIC_INTERVAL_HOURS)
+                logging.assert_called_once()
+                self.assertNotIn(str(interval), str(logging.call_args_list))
+
+    def test_missing_auto_topic_interval_keeps_current_value(self) -> None:
+        for values in ({}, {"auto_topic_interval_hours": None}):
+            with self.subTest(values=values):
+                settings = GuildSettings(auto_topic_interval_hours=24)
+                settings.apply_persisted(values)
+                self.assertEqual(settings.auto_topic_interval_hours, 24)
+
     def test_allowed_settings_restore_with_existing_prompt(self) -> None:
         values = {
             "prompt_file": choices.PERSONA_CHOICES[0].value,
