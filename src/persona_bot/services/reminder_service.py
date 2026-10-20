@@ -34,9 +34,9 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.database import Database
 from persona_bot.core.background import run_in_thread
-from persona_bot.utils.discord_helpers import send_long_message
+from persona_bot.utils.discord_helpers import can_bot_send_messages, send_long_message
 from persona_bot.services.ng_word_service import NgWordFilter
-from persona_bot.utils.timeutil import parse_iso_datetime, format_weekday, resolve_timezone
+from persona_bot.utils.timeutil import parse_iso_datetime, format_weekday, resolve_timezone, utc_now
 from persona_bot.utils.normalization import normalize_recurrence
 
 # LLM が返す日時のゆらぎを吸収するため、複数の形式を順に試す。
@@ -53,9 +53,10 @@ def _utc_now() -> datetime:
     """秒精度の現在時刻（UTC）。保存する時刻はすべてこの精度に揃える。
 
     remind_at の期限判定は ISO 8601 文字列の比較で行うため、桁数が混ざらないよう
-    マイクロ秒を落として形式を統一する。
+    マイクロ秒を落として形式を統一する（精度は timeutil.utc_now に集約）。
+    テストが時計を固定するための差し替え口として、この名前を残している。
     """
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return utc_now()
 
 
 def _format_local(iso_utc: str, tz: Any) -> str:
@@ -434,14 +435,11 @@ class ReminderService:
 
         guild = getattr(channel, "guild", None)
         if guild is not None:
-            bot_member = guild.me
-            if bot_member is None:
+            # 判定は自発会話・記念日と同じ共通関数で行う（スレッドは「スレッドで送信」を見る）。
+            if guild.me is None:
                 print("リマインダー: ボットの権限を確認できないため通知を見送りました。")
                 return
-            permissions = channel.permissions_for(bot_member)
-            can_send = (permissions.send_messages_in_threads if isinstance(channel, discord.Thread)
-                        else permissions.send_messages)
-            if not permissions.view_channel or not can_send:
+            if not can_bot_send_messages(channel, guild.me):
                 print("リマインダー: 閲覧・送信権限が不足しているため通知を見送りました。")
                 return
 

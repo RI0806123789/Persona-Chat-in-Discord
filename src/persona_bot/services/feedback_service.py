@@ -41,7 +41,6 @@ FEEDBACK_REACTION_COOLDOWN_SECONDS 以内に同じチャンネルへ付与して
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 import discord
@@ -59,6 +58,7 @@ from persona_bot.config.constants import (
     FEEDBACK_TRACKED_MESSAGES_MAX,
 )
 from persona_bot.core.database import Database
+from persona_bot.utils.timeutil import utc_now_iso
 
 
 @dataclass
@@ -75,11 +75,6 @@ class _TrackedReply:
     target_user_id: str
     model_name: str
     prompt_file: str
-
-
-def _utc_now_iso() -> str:
-    """記録時刻（UTC・秒精度の ISO 8601）。他テーブルと桁数を揃える。"""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _rating_of(emoji: Any) -> int | None:
@@ -255,7 +250,7 @@ class FeedbackService:
                 model_name=entry.model_name,
                 prompt_file=entry.prompt_file,
                 rating=rating,
-                created_at=_utc_now_iso(),
+                created_at=utc_now_iso(),
             )
             # 古い記録の間引きはここでは行わない（prune_stored の docstring を参照）。
         except Exception as error:

@@ -29,7 +29,7 @@ from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to
 from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_stats_analysis_prompt
 from persona_bot.utils.storage import extract_json_object
-from persona_bot.utils.timeutil import resolve_timezone, timezone_label
+from persona_bot.utils.timeutil import resolve_timezone, timezone_label, utc_now_iso
 
 # ビッグファイブの軸（英語キー → 日本語表示名）。レーダーチャートの軸ラベルに使う。
 BIG_FIVE_LABELS = {
@@ -140,7 +140,7 @@ class StatsService:
 
     @staticmethod
     def _new_entry(user_name: str) -> dict:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now_iso()
         return {
             "user_name": user_name,
             "total_count": 0,
@@ -183,7 +183,7 @@ class StatsService:
                     hourly = [0] * STATS_HOURLY_BUCKETS
                     entry["hourly"] = hourly
                 hourly[self._to_local_hour(when)] += 1
-                entry["last_seen"] = datetime.now(timezone.utc).isoformat()
+                entry["last_seen"] = utc_now_iso()
                 text = (text or "").strip()
                 if text:
                     samples = entry.get("recent_samples")
@@ -257,7 +257,7 @@ class StatsService:
             entry = self.cache.get(user_id)
             if entry is None:
                 return True
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = utc_now_iso()
             entry["user_name"] = ""
             entry["total_count"] = 0
             entry["hourly"] = [0] * STATS_HOURLY_BUCKETS
@@ -378,7 +378,7 @@ class StatsService:
                 "big_five": normalize_big_five(parsed.get("big_five")) if enough else {},
                 "personality": personality.strip() if enough and isinstance(personality, str) else "",
                 "sample_count": len(samples),
-                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "computed_at": utc_now_iso(),
             }
             if not self._analysis_usable(analysis, len(samples)):
                 print("会話統計: 話題または性格値が不足したため解析結果を保存しません。")
