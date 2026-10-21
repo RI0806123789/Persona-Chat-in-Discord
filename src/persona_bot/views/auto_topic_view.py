@@ -97,7 +97,7 @@ def _build_status_text(
     lines.append(
         f"{autonomous_notice}"
         f"コメントが {AUTONOMOUS_IDLE_STOP_MINUTES:.0f}分 途絶えると自動で退出します"
-        "（`/leave` でいつでも止められます）。"
+        "。権限・発言者状態を失った場合も退出します（`/leave` でいつでも停止）。"
     )
     return "\n".join(lines)
 

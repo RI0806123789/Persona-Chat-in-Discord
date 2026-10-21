@@ -277,6 +277,8 @@ AUTONOMOUS_CLOSING_NOTICE_QUIET = "🎙️ 夜も遅いので、今日はここ�
 AUTONOMOUS_CLOSING_NOTICE_DISABLED = "🎙️ 設定が変わったので、この配信はここまでにします。またね。"
 # 別のチャンネルへ移動させられて終了したときの文言（元のチャンネルのチャットへ残す）。
 AUTONOMOUS_CLOSING_NOTICE_MOVED = "🎙️ 別のチャンネルへ移動になったので、この配信はここで終わりにします。"
+# 権限・発言者状態を失って終了するとき、チャットへ投稿できる場合だけ残す文言。
+AUTONOMOUS_CLOSING_NOTICE_PERMISSIONS = "🎙️ このチャンネルで発言できなくなったので、配信を終了します。"
 
 # 記念日・誕生日の自動お祝い用
 # profile 記憶の特別キー名。値は [{"label": "誕生日", "month": 1〜12, "day": 1〜31}, ...] の形式。

@@ -80,6 +80,30 @@ def can_use_stage(channel: discord.StageChannel, bot_member: discord.Member) -> 
     return True
 
 
+def missing_session_permissions(channel: VocalChannel, bot_member: discord.Member) -> list[str]:
+    """開始用の管理権限とは分けて、配信の継続に足りない権限・発言者状態を返す。"""
+    permissions = channel.permissions_for(bot_member)
+    missing = []
+    if not permissions.view_channel:
+        missing.append("チャンネルを見る")
+    if not permissions.send_messages:
+        missing.append("メッセージを送信")
+
+    # 接続中なので connect は再要求しない。ボイスの発言は、暗黙の拒否も
+    # 反映される permissions_for の実効権限に従う。
+    if isinstance(channel, discord.StageChannel):
+        # ステージは SPEAK ではなく suppress で発言者かどうかが決まる。
+        # https://docs.discord.com/developers/resources/stage-instance#definitions
+        # 管理権限は枠の作成・昇格時にだけ必要。観客へ戻された場合は終了する。
+        # ボイス状態が未取得・別チャンネルの古い状態なら、権限不足と決めつけない。
+        voice = bot_member.voice
+        if voice is not None and getattr(voice.channel, "id", None) == channel.id and voice.suppress:
+            missing.append("ステージの発言者")
+    elif not permissions.speak:
+        missing.append("発言")
+    return missing
+
+
 async def prepare_stage(guild: discord.Guild, channel: discord.StageChannel) -> int | None:
     """ステージで発言できる状態にし、自分で開いた枠のIDを返す。
 
