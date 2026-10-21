@@ -14,7 +14,7 @@ from persona_bot.config.constants import (
     BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT, IMAGE_ONLY_QUESTION, MAX_DOCUMENT_SIZE_BYTES,
 )
-from persona_bot.services.content_moderator import screen_bot_response
+from persona_bot.services.content_moderator import screen_bot_response_with_status
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
     fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
@@ -79,11 +79,12 @@ class MessageHandler:
                 f"違反記録: 保存に失敗したため、今回の違反は回数に数えていません "
                 f"(user_id={user_id}): {type(error).__name__}: {error}"
             )
-            await message.reply(f"⚠️ {notice}")
+            await self._send_violation_notice(message, f"⚠️ {notice}")
             return
         if just_blocked:
             print(f"違反記録: {count}回目の違反でブラックリストに登録しました (user_id={user_id})")
-            await message.reply(
+            await self._send_violation_notice(
+                message,
                 f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
                 "以降のメッセージは無視されます。"
             )
@@ -95,7 +96,15 @@ class MessageHandler:
         else:
             print(f"違反記録: {count}/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました (user_id={user_id})")
             remaining = BLACKLIST_MAX_VIOLATIONS - count
-            await message.reply(f"⚠️ {notice}（あと{remaining}回で応答を停止します）")
+            await self._send_violation_notice(message, f"⚠️ {notice}（あと{remaining}回で応答を停止します）")
+
+    @staticmethod
+    async def _send_violation_notice(message: discord.Message, text: str) -> None:
+        """違反の保存結果は保持し、通知の送信失敗をイベントへ漏らさない。"""
+        try:
+            await message.reply(text)
+        except discord.DiscordException as error:
+            print(f"違反通知: 送信に失敗しました: {type(error).__name__}")
 
     async def _reject_ng_input(self, message: discord.Message, question: str, notice: str) -> bool:
         """入力にNGワードがあれば違反として記録し、True を返す（Gemini は呼ばない）。"""
@@ -338,7 +347,7 @@ class MessageHandler:
                     question,
                     affinity_prompt=self.affinity.build_dynamic_prompt(str(message.author.id))
                 )
-                response_text, usage_info, grounding_sources = await self.gemini.generate(
+                response_text, usage_info, grounding_sources, generated_model = await self.gemini.generate_with_metadata(
                     full_prompt,
                     response_settings.model_name,
                     image_objects,
@@ -352,12 +361,8 @@ class MessageHandler:
 
                 self.usage.log_snapshot("直接会話", question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info)
 
-                # --- タグ抽出とAffinity更新 ---
+                # タグの抽出だけ先に行い、親密度の更新はモデレーション通過後に行う。
                 response_text, emotion_changes = extract_affinity_changes(response_text)
-                if emotion_changes is not None:
-                    v_change, a_change = emotion_changes
-                    self.affinity.update_emotion(str(message.author.id), v_change, a_change)
-                    spawn(self.affinity.save_background(user_id), label="親密度の保存")
 
                 # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
                 # （モデルが感情タグだけを返したケース）。
@@ -366,38 +371,45 @@ class MessageHandler:
                     await message.reply("申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。")
                     return None
 
-                response_text = await screen_bot_response(response_text, self.ng_filter, self.moderator, log_label="Bot応答")
+                response_text, accepted = await screen_bot_response_with_status(
+                    response_text, self.ng_filter, self.moderator, log_label="Bot応答",
+                )
+                if accepted and emotion_changes is not None:
+                    v_change, a_change = emotion_changes
+                    self.affinity.update_emotion(user_id, v_change, a_change)
+                    spawn(self.affinity.save_background(user_id), label="親密度の保存")
 
                 # 参考リンクは送信用テキストにのみ追記する
                 # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
                 reply_text = response_text
-                if grounding_sources:
+                if accepted and grounding_sources:
                     reply_text += format_grounding_sources(grounding_sources)
 
                 # 送信の失敗は呼出元へ伝える（送れていない返信を読み上げない）。
                 sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
                 # ★ ここから先は送信済みの返信に付随する処理。どれが失敗しても、送った本文は
                 # 呼出元の読み上げへ返す（#157）。再生成・再送はしない（二重返信になるため）。
-                self._track_reply_for_feedback(sent, user_id, response_settings)
-                if await self._remember_reply(user_id, question, response_text):
+                if accepted:
+                    self._track_reply_for_feedback(sent, user_id, response_settings, generated_model)
+                if accepted and await self._remember_reply(user_id, question, response_text):
                     spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
                 return response_text
             finally:
                 close_image_attachments(image_objects)
 
     def _track_reply_for_feedback(
-        self, sent: discord.Message, user_id: str, response_settings: ResponseSettings,
+        self, sent: discord.Message, user_id: str, response_settings: ResponseSettings, generated_model: str,
     ) -> None:
         """送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
 
-        生成中・送信中に設定が変わっても、今回の生成に使った値を渡す。登録の失敗は
+        実際の生成モデルと今回のペルソナを渡し、待機中の設定変更を混ぜない。登録の失敗は
         評価を取りこぼすだけなので、ログに残して記憶・読み上げへ進む。
         """
         try:
             self.feedback.track_reply(
                 sent,
                 target_user_id=user_id,
-                model_name=response_settings.model_name,
+                model_name=generated_model,
                 prompt_file=response_settings.prompt_file,
             )
         except Exception as error:

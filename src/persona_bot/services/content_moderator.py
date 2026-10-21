@@ -211,11 +211,9 @@ class ContentModerator:
             # SDKの応答差異や空候補を各呼出側で処理せず、共通入口で安全に読む。
             result_text = safe_response_text(response)
             if result_text is None:
-                # candidates が空 = Gemini が応答を生成できなかった
-                # プロンプトにブロック理由がある場合は上で処理済みなので、
-                # ここに来るのは原因不明のケース → unsafe 扱い
-                print(f"[モデレーション] テキスト取得失敗 ({direction}) — unsafe 扱い")
-                return False, "AIモデレーション応答の取得に失敗", None
+                # 明示的なプロンプトブロックは上で判定済み。本文の欠落だけでは違反としない。
+                print(f"[モデレーション] テキスト取得失敗 ({direction}) — 通過扱い")
+                return True, "", None
 
             parsed = extract_json_object(result_text, required_keys=("safe",))
             if parsed is None:
@@ -326,6 +324,20 @@ async def screen_bot_response(
     NG ワードは ● でマスクし、モデレーションで不適切と判定された場合は
     定型の謝罪文に差し替える。チャット応答と文書応答で共通の後処理。
     """
+    text, _accepted = await screen_bot_response_with_status(
+        response_text, ng_filter, moderator, log_label=log_label,
+    )
+    return text
+
+
+async def screen_bot_response_with_status(
+    response_text: str,
+    ng_filter: NgWordFilter | None,
+    moderator: "ContentModerator | None",
+    *,
+    log_label: str = "Bot応答",
+) -> tuple[str, bool]:
+    """表示本文と判定の成否を返し、謝罪文の記憶保存や親密度更新を防ぐ。"""
     if ng_filter is not None:
         response_text = ng_filter.mask_with_log(response_text, label=log_label)
 
@@ -333,6 +345,6 @@ async def screen_bot_response(
         is_safe, reason = await moderator.check(response_text, direction="Bot応答")
         if not is_safe:
             print(f"{log_label}モデレーション: {reason}")
-            response_text = "申し訳ありませんが、適切な応答を生成できませんでした。"
+            return "申し訳ありませんが、適切な応答を生成できませんでした。", False
 
-    return response_text
+    return response_text, True

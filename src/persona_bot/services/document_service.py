@@ -20,7 +20,7 @@ from persona_bot.config.constants import (
     QUEUE_MAX_FINISHED_TASKS,
     TEXT_VALIDATION_PREVIEW_BYTES,
 )
-from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
+from persona_bot.services.content_moderator import ContentModerator, screen_bot_response_with_status
 from persona_bot.core.database import Database
 from persona_bot.utils.discord_helpers import (
     clean_message_content,
@@ -239,13 +239,13 @@ class DocumentService:
                 usage_info,
             )
 
-            response_text = await screen_bot_response(
+            response_text, accepted = await screen_bot_response_with_status(
                 response_text, self._ng_filter, self._moderator, log_label="文書応答"
             )
 
             # 参考リンクは送信用テキストにのみ追記する（長期記憶にはノイズになるため含めない）
             reply_text = response_text
-            if grounding_sources:
+            if accepted and grounding_sources:
                 reply_text += format_grounding_sources(grounding_sources)
 
             await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
@@ -272,8 +272,9 @@ class DocumentService:
 
         # 回答は送信済み。保存の失敗を処理失敗や二重のエラー返信へ変えない。
         try:
-            await self._memory.append_pending_log(author_id, question, response_text)
-            spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
+            if accepted:
+                await self._memory.append_pending_log(author_id, question, response_text)
+                spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
         except Exception as error:
             print(f"文書タスク: 回答後の記憶追記に失敗しました: {type(error).__name__}")
         try:

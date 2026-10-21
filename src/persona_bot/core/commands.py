@@ -19,6 +19,34 @@ from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
 
 
+async def handle_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError,
+) -> None:
+    """コマンドの失敗を応答状態に合わせて本人へ通知する。例外本文は公開しない。"""
+    original = getattr(error, "original", error)
+    print(f"スラッシュコマンドの実行に失敗しました: {type(original).__name__}")
+    if isinstance(error, app_commands.NoPrivateMessage):
+        notice = "このコマンドはサーバー内で実行してください。"
+    elif (
+        isinstance(error, (app_commands.MissingPermissions, app_commands.BotMissingPermissions))
+        or isinstance(original, discord.Forbidden)
+    ):
+        notice = "⚠️ コマンドの実行に必要な権限がありません。サーバーとチャンネルの権限設定を確認してください。"
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        notice = "⚠️ 操作の間隔が短すぎます。しばらく待ってからもう一度お試しください。"
+    elif isinstance(error, app_commands.CheckFailure):
+        notice = "⚠️ このコマンドを実行する条件を満たしていません。"
+    else:
+        notice = "⚠️ コマンドの実行中にエラーが発生しました。しばらく待ってからもう一度お試しください。"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(notice, ephemeral=True)
+        else:
+            await interaction.response.send_message(notice, ephemeral=True)
+    except discord.DiscordException as send_error:
+        print(f"スラッシュコマンドの失敗通知を送信できませんでした: {type(send_error).__name__}")
+
+
 async def announce_voice_join(
     interaction: discord.Interaction, channel: discord.VoiceChannel | discord.StageChannel,
     *, already_connected: bool = False,
@@ -55,6 +83,7 @@ def register_commands(
     *,
     voice_guard: VoiceGuard | None = None,
 ) -> None:
+    tree.on_error = handle_command_error
 
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
     async def functions(interaction: discord.Interaction) -> None:
@@ -93,7 +122,10 @@ def register_commands(
         if bot_member is not None:
             permissions = voice_channel.permissions_for(bot_member)
             missing_permissions = [
-                name for name, allowed in (("接続", permissions.connect), ("発言", permissions.speak))
+                name for name, allowed in (
+                    ("チャンネルを見る", permissions.view_channel),
+                    ("接続", permissions.connect), ("発言", permissions.speak),
+                )
                 if not allowed
             ]
             if is_stage and not permissions.mute_members:

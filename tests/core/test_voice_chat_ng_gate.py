@@ -29,7 +29,7 @@ class VoiceChatNgGateTests(unittest.IsolatedAsyncioTestCase):
 
     def assert_no_ai_or_reply(self, message) -> None:
         self.pipeline.moderator.check_and_route.assert_not_awaited()
-        self.pipeline.gemini.generate.assert_not_awaited()
+        self.pipeline.gemini.generate_with_metadata.assert_not_awaited()
         message.reply.assert_not_awaited()
 
     async def test_unaddressed_ng_in_connected_voice_chat_blocks_on_third_violation(self) -> None:
@@ -48,7 +48,7 @@ class VoiceChatNgGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.pipeline.reloaded_blacklist().is_blocked(11))
         # 宛先でない発言のために Gemini を呼ばず、通常の返信もしない
         self.pipeline.moderator.check_and_route.assert_not_awaited()
-        self.pipeline.gemini.generate.assert_not_awaited()
+        self.pipeline.gemini.generate_with_metadata.assert_not_awaited()
 
     async def test_safe_unaddressed_message_adds_no_ai_call_or_reply(self) -> None:
         message = self.pipeline.message(SAFE_TEXT)

@@ -2,7 +2,7 @@ import asyncio
 from math import ceil
 from pathlib import Path
 from time import monotonic
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 from google.genai import types
 
@@ -57,6 +57,15 @@ def _grounding_quota_exhausted(status_code: Any) -> bool:
     return status_code == 429
 
 
+class GenerationResult(NamedTuple):
+    """本文と採用した生成のメタデータ。選択設定とは独立して保持する。"""
+
+    text: str | None
+    usage: Any | None
+    sources: list[dict[str, str]]
+    model_name: str | None
+
+
 class GeminiService:
     """共有クライアントを使い、呼び出し元が選んだモデルで非同期生成する。"""
 
@@ -71,6 +80,19 @@ class GeminiService:
         timeout: float | None = None,
         grounding: bool = False,
     ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
+        """本文・使用量・出典を返す既存の入口。生成モデルが必要なら別の入口を使う。"""
+        result = await self.generate_with_metadata(prompt, model_name, images, timeout, grounding)
+        return result.text, result.usage, result.sources
+
+    async def generate_with_metadata(
+        self,
+        prompt: str,
+        model_name: str,
+        images: Sequence[Any] | None = None,
+        timeout: float | None = None,
+        grounding: bool = False,
+    ) -> GenerationResult:
+        """採用した本文の生成モデルも返す。失敗時のモデルは未設定とする。"""
         # フォールバックのたびに待ち時間をリセットせず、生成全体で予算を共有する。
         budget = GROUNDING_REQUEST_TIMEOUT_SECONDS if grounding and timeout is None else timeout
         deadline = monotonic() + budget if budget is not None else None
@@ -83,7 +105,7 @@ class GeminiService:
             return result
         except asyncio.TimeoutError:
             print("Gemini生成: 制限時間に達したため打ち切りました。")
-            return None, None, []
+            return GenerationResult(None, None, [], None)
 
     async def _generate(
         self,
@@ -92,7 +114,7 @@ class GeminiService:
         images: Sequence[Any] | None,
         deadline: float | None,
         grounding: bool,
-    ) -> tuple[str | None, Any | None, list[dict[str, str]]]:
+    ) -> GenerationResult:
         contents: list[Any] = [prompt]
         if images:
             contents.extend(images)
@@ -125,12 +147,15 @@ class GeminiService:
                     )
                     if regenerations_left <= 0:
                         print("Gemini生成: 再生成の上限に達したため、応答を返しません。")
-                        return None, None, []
+                        return GenerationResult(None, None, [], None)
                     regenerations_left -= 1
                     # 同じ条件で生成し直す（index は進めない）。待ち時間は生成全体の残りから使う。
                     continue
                 sources = self._grounding_sources(response) if use_grounding else []
-                return text, getattr(response, "usage_metadata", None), sources
+                return GenerationResult(
+                    text, getattr(response, "usage_metadata", None), sources,
+                    effective_model if text is not None else None,
+                )
             except asyncio.TimeoutError:
                 raise
             except Exception as error:
@@ -145,8 +170,8 @@ class GeminiService:
                     continue
                 # 通信・認証・サーバー障害と、検索なしの生成の利用枠超過では追加のAPI呼び出しを行わない。
                 print(f"Gemini生成エラー: {error}")
-                return None, None, []
-        return None, None, []
+                return GenerationResult(None, None, [], None)
+        return GenerationResult(None, None, [], None)
 
     @staticmethod
     def _grounding_sources(response: Any) -> list[dict[str, str]]:

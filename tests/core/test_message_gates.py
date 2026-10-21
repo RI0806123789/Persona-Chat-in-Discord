@@ -46,7 +46,7 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.blacklist = SimpleNamespace(is_blocked=Mock(return_value=False), record_violation=AsyncMock())
         self.moderator = SimpleNamespace(check_and_route=AsyncMock(return_value=(True, "", "none", None)))
-        self.gemini = SimpleNamespace(generate=AsyncMock(return_value=(None, None, [])))
+        self.gemini = SimpleNamespace(generate_with_metadata=AsyncMock(return_value=(None, None, [], None)))
         self.images = AsyncMock(return_value=[])
         self.handler = make_message_handler({
             "client": SimpleNamespace(user=SimpleNamespace(id=99)), "state": self.state,
@@ -102,7 +102,7 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         self.message.attachments = [self.attachment("broken.png", "image/png")]
         await self.handler.on_message(self.message)
         self.images.assert_awaited_once()
-        self.gemini.generate.assert_not_awaited()
+        self.gemini.generate_with_metadata.assert_not_awaited()
         self.message.reply.assert_awaited_once()
         reply = self.message.reply.call_args.args[0]
         self.assertIn("画像を読み込めませんでした", reply)
@@ -114,16 +114,16 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         self.message.content = ""
         self.message.attachments = [self.attachment("fictional.png", "image/png")]
         await self.handler.on_message(self.message)
-        self.gemini.generate.assert_awaited_once()
-        prompt, _model, images = self.gemini.generate.call_args.args
+        self.gemini.generate_with_metadata.assert_awaited_once()
+        prompt, _model, images = self.gemini.generate_with_metadata.call_args.args
         self.assertIn(constants.IMAGE_ONLY_QUESTION, prompt)
         self.assertEqual(images, [image])
 
     async def test_question_with_unreadable_image_still_answers_text(self) -> None:
         self.message.attachments = [self.attachment("broken.png", "image/png")]
         await self.handler.on_message(self.message)
-        self.gemini.generate.assert_awaited_once()
-        self.assertIn("架空の質問です。", self.gemini.generate.call_args.args[0])
+        self.gemini.generate_with_metadata.assert_awaited_once()
+        self.assertIn("架空の質問です。", self.gemini.generate_with_metadata.call_args.args[0])
 
     # ---- 違反警告 --------------------------------------------------------------
 
@@ -156,7 +156,7 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("画像（", reply)
         self.assertIn("png", reply)
         self.assertIn("pdf", reply)
-        self.gemini.generate.assert_not_awaited()
+        self.gemini.generate_with_metadata.assert_not_awaited()
 
 
 if __name__ == "__main__":

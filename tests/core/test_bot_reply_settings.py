@@ -9,6 +9,7 @@ import io
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import ANY, AsyncMock, Mock, patch
@@ -20,14 +21,16 @@ import discord
 from google.genai import errors, types
 from persona_bot.services.affinity_service import extract_affinity_changes
 from persona_bot.core.app_state import BotState
+from persona_bot.core.database import Database
 from persona_bot.core.background import spawn
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.config.constants import (
     GEMINI_RESPONSE_TIMEOUT_SECONDS, GROUNDING_MODEL_NAME, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES,
 )
-from persona_bot.services.content_moderator import screen_bot_response
+from persona_bot.services.content_moderator import screen_bot_response_with_status
 from persona_bot.services.gemini_service import GeminiService
+from persona_bot.services.feedback_service import FeedbackService
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, format_grounding_sources,
     is_supported_document_attachment, is_supported_message_channel,
@@ -87,7 +90,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         async def generate(*args, **kwargs):
             self.generations.append((args, kwargs))
             await self.switch_at("generate")
-            return self.response, None, []
+            return self.response, None, [], args[1]
 
         async def moderate(*args, **kwargs):
             await self.switch_at("moderate")
@@ -126,8 +129,11 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                 build_contexts=AsyncMock(return_value=("", "")),
                 append_pending_log=AsyncMock(), flush_if_needed=AsyncMock(),
             ),
-            "affinity": SimpleNamespace(build_dynamic_prompt=Mock(return_value="架空の親密度")),
-            "gemini": SimpleNamespace(generate=AsyncMock(side_effect=generate)),
+            "affinity": SimpleNamespace(
+                build_dynamic_prompt=Mock(return_value="架空の親密度"), update_emotion=Mock(),
+                save_background=AsyncMock(),
+            ),
+            "gemini": SimpleNamespace(generate_with_metadata=AsyncMock(side_effect=generate)),
             "usage": SimpleNamespace(log_snapshot=Mock()),
             "feedback": self.feedback, "play_tts_response": self.voice,
             "load_image_attachments": AsyncMock(side_effect=images),
@@ -139,7 +145,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             "is_supported_document_attachment": is_supported_document_attachment,
             "attachment_is_image": attachment_is_image,
             "format_grounding_sources": format_grounding_sources,
-            "screen_bot_response": screen_bot_response,
+            "screen_bot_response_with_status": screen_bot_response_with_status,
             "extract_affinity_changes": extract_affinity_changes,
             "build_full_prompt": build_full_prompt, "build_memory_sections": build_memory_sections,
             "HISTORY_LIMIT": HISTORY_LIMIT, "MAX_DOCUMENT_SIZE_BYTES": MAX_DOCUMENT_SIZE_BYTES,
@@ -198,7 +204,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                         raise RuntimeError("架空の生成失敗")
                     if case == "cancel":
                         raise asyncio.CancelledError
-                    return (None if case == "empty" else "架空の回答"), None, []
+                    return (None if case == "empty" else "架空の回答"), None, [], args[1]
 
                 with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=images)), patch.object(
                     message_handler, "load_persona_template", side_effect=FileNotFoundError if case == "prompt" else None,
@@ -207,7 +213,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                     side_effect=RuntimeError("架空の履歴失敗") if case == "history" else None, return_value="",
                 )), patch.object(message_handler, "send_long_reply", AsyncMock(
                     side_effect=RuntimeError("架空の送信失敗") if case == "send" else None,
-                )), patch.object(self.namespace["gemini"], "generate", AsyncMock(side_effect=generate)):
+                )), patch.object(self.namespace["gemini"], "generate_with_metadata", AsyncMock(side_effect=generate)):
                     call = self.handler.handle_chat_message(self.message, "" if case == "image_only" else "架空の質問")
                     if case in ("history", "generate", "send", "cancel"):
                         with self.assertRaises(asyncio.CancelledError if case == "cancel" else RuntimeError):
@@ -263,6 +269,94 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*self.tasks)
         affinity.update_emotion.assert_called_once_with("11", 1, 2)
         affinity.save_background.assert_awaited_once_with("11")
+
+    async def test_affinity_is_unchanged_while_moderation_is_pending(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        affinity = self.namespace["affinity"]
+
+        async def moderate(*args, **kwargs):
+            affinity.update_emotion.assert_not_called()
+            affinity.save_background.assert_not_awaited()
+            return True, ""
+
+        self.namespace["moderator"].check.side_effect = moderate
+        await self.on_message(self.message)
+        affinity.update_emotion.assert_called_once_with("11", 1, 2)
+
+    async def test_rejected_reply_does_not_update_affinity_memory_or_feedback(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        self.namespace["moderator"].check.side_effect = None
+        self.namespace["moderator"].check.return_value = (False, "架空の不適切判定")
+        await self.on_message(self.message)
+        await asyncio.gather(*self.tasks)
+        self.namespace["affinity"].update_emotion.assert_not_called()
+        self.namespace["affinity"].save_background.assert_not_awaited()
+        self.namespace["memory"].append_pending_log.assert_not_awaited()
+        self.namespace["memory"].flush_if_needed.assert_not_awaited()
+        self.feedback.track_reply.assert_not_called()
+        apology = "申し訳ありませんが、適切な応答を生成できませんでした。"
+        self.namespace["send_long_reply"].assert_awaited_once_with(self.message, apology, suppress_embeds=False)
+        self.voice.assert_awaited_once_with(self.message, apology, "../prompts/prompt_default.txt")
+
+    async def test_tag_only_reply_does_not_change_affinity_or_memory(self) -> None:
+        self.response = " [V:1, A:2] "
+        await self.on_message(self.message)
+        self.namespace["affinity"].update_emotion.assert_not_called()
+        self.namespace["affinity"].save_background.assert_not_awaited()
+        self.namespace["memory"].append_pending_log.assert_not_awaited()
+        self.feedback.track_reply.assert_not_called()
+
+    async def test_actual_generator_model_and_captured_persona_reach_feedback_database(self) -> None:
+        from persona_bot.core import message_handler
+
+        unsupported = errors.ClientError(400, {"error": {"message": "google_search is not supported"}})
+        cases = [
+            (True, [], "selected-model"),
+            (True, [unsupported], GROUNDING_MODEL_NAME),
+            (True, [unsupported, unsupported], "selected-model"),
+            (False, [], "selected-model"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "bot.db")
+            db.initialize()
+            try:
+                feedback = FeedbackService(SimpleNamespace(user=SimpleNamespace(id=99)), db)
+                self.handler.feedback = feedback
+                for index, (grounding, failures, expected) in enumerate(cases):
+                    with self.subTest(grounding=grounding, failures=len(failures)):
+                        self.configure_old()
+                        sdk_request = self.use_real_gemini()
+                        self.settings.current_model_name = "selected-model"
+                        self.settings.grounding_enabled = grounding
+                        responses = [*failures, sdk_text_response("架空の回答です。")]
+
+                        async def generate(**kwargs):
+                            # 生成待機中の変更を、実際の生成モデル・今回のペルソナへ混ぜない。
+                            self.settings.current_model_name = "new-model"
+                            self.settings.current_prompt_file = "../prompts/prompt_maid.txt"
+                            result = responses.pop(0)
+                            if isinstance(result, Exception):
+                                raise result
+                            return result
+
+                        sdk_request.side_effect = generate
+                        sent = SimpleNamespace(id=500 + index, guild=SimpleNamespace(id=1),
+                                               channel=SimpleNamespace(id=10))
+                        with patch.object(message_handler, "send_long_reply", AsyncMock(return_value=sent)), \
+                                patch.object(feedback, "_claim_reaction_slot", return_value=False), \
+                                patch("persona_bot.services.feedback_service.FEEDBACK_ENABLED", True):
+                            await self.on_message(self.message)
+                            await feedback.handle_reaction_add(SimpleNamespace(
+                                message_id=sent.id, user_id=11, emoji="👍", member=SimpleNamespace(bot=False),
+                            ))
+                        rows = {row["model_name"]: row for row in db.feedback_summary(1)}
+                        self.assertIn(expected, rows)
+                        self.assertTrue(all(row["prompt_file"] == "../prompts/prompt_default.txt" for row in rows.values()))
+                        self.assertEqual(feedback._tracked[sent.id].model_name, expected)
+                self.assertEqual({name: row["good"] for name, row in rows.items()},
+                                 {"selected-model": 3, GROUNDING_MODEL_NAME: 1})
+            finally:
+                db.close()
 
     # ---- 送信後の付随処理の失敗境界（#157） --------------------------------------
 
@@ -330,7 +424,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.namespace["autonomous"].handle_comment = AsyncMock(side_effect=comment)
         await self.on_message(self.message)
-        self.namespace["gemini"].generate.assert_not_awaited()
+        self.namespace["gemini"].generate_with_metadata.assert_not_awaited()
         self.feedback.track_reply.assert_not_called()
         settings = self.namespace["autonomous"].handle_comment.await_args.kwargs["response_settings"]
         self.assertEqual(settings.model_name, "old-model")

@@ -317,6 +317,16 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         await self.process_response("**要点**\n- 架空の文書の内容です。")
         self.assert_clean_response("**要点**\n- 架空の文書の内容です。")
 
+    async def test_rejected_response_is_sent_without_memory_or_sources_and_completes(self) -> None:
+        self.moderator.check.return_value = (False, "架空の不適切判定")
+        await self.process_response("架空の不適切な回答", [{"title": "架空の資料", "uri": "https://example.com/source"}])
+        self.sent.assert_awaited_once()
+        self.assertEqual(self.sent.call_args.args[1], "申し訳ありませんが、適切な応答を生成できませんでした。")
+        self.memory.append_pending_log.assert_not_awaited()
+        self.memory.flush_if_needed.assert_not_awaited()
+        self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
+        self.message.reply.assert_not_awaited()
+
     async def test_reference_links_are_sent_but_not_saved_in_memory(self) -> None:
         await self.process_response(
             "要約です。[V:1, A:2]",
@@ -344,10 +354,13 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
     async def test_tag_only_response_does_not_send_links_without_body(self) -> None:
         await self.check_tag_only_response([{"uri": "https://example.com/reference"}])
 
-    async def test_moderation_replacement_is_still_sent_and_saved(self) -> None:
+    async def test_moderation_replacement_is_sent_without_saving_the_apology(self) -> None:
         self.moderator.check.return_value = (False, "架空の判定理由")
         await self.process_response("架空の応答。[V:1, A:2]")
-        self.assert_clean_response("申し訳ありませんが、適切な応答を生成できませんでした。")
+        self.assertEqual(self.sent.call_args.args[1], "申し訳ありませんが、適切な応答を生成できませんでした。")
+        self.memory.append_pending_log.assert_not_awaited()
+        self.memory.flush_if_needed.assert_not_awaited()
+        self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
 
 
 class OptionalPdfDependencyTests(unittest.TestCase):

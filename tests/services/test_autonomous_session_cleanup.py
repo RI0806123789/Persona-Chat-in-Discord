@@ -18,6 +18,8 @@ from persona_bot.services import autonomous_service
 from persona_bot.services import autonomous_stage
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core.background import spawn
+from persona_bot.core import bot_client
+from persona_bot.core.bot_client import PersonaClient
 
 
 class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
@@ -132,6 +134,27 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.instance.delete.assert_awaited_once()
         self.voice.disconnect.assert_awaited_once_with(force=True)
         self.notice.assert_not_awaited()
+        self.assert_cleared()
+
+    async def test_client_close_waits_for_the_owned_stage_before_closing_resources(self) -> None:
+        order = []
+        db = SimpleNamespace(close=Mock(side_effect=lambda: order.append("db")))
+        client = PersonaClient(genai_client=object(), database=db, intents=discord.Intents.none())
+        client.add_shutdown_callback(self.service.stop_all_sessions)
+
+        async def delete(**kwargs):
+            self.assertTrue(client.background_tasks.stopping)
+            db.close.assert_not_called()
+            await asyncio.sleep(0)
+            order.append("stage")
+
+        self.instance.delete.side_effect = delete
+        self.voice.disconnect.side_effect = lambda **kwargs: order.append("voice")
+        with patch.object(discord.Client, "close", AsyncMock(side_effect=lambda: order.append("discord"))), \
+                patch.object(bot_client, "close_genai_client", AsyncMock(side_effect=lambda *_: order.append("gemini"))):
+            await asyncio.gather(client.close(), client.close())
+        self.assertEqual(order, ["stage", "voice", "discord", "gemini", "db"])
+        self.instance.delete.assert_awaited_once()
         self.assert_cleared()
 
     async def test_shutdown_continues_with_other_guild_after_failure(self) -> None:

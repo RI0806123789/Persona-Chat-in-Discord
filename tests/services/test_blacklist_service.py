@@ -30,6 +30,27 @@ class BlacklistFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await service.record_violation(11, "架空の利用者"), (1, False))
         self.assertEqual(self.saved(path)["11"]["count"], 1)
 
+    async def test_unblock_only_succeeds_for_a_blocked_record(self) -> None:
+        path = self.root / "blacklist.json"
+        service = BlacklistService(path)
+        await service.record_violation(11, "架空の警告中")
+        for _ in range(3):
+            await service.record_violation(22, "架空のブロック中")
+        original = path.read_bytes()
+        for user_id in (11, 33):
+            self.assertFalse(await service.unblock(user_id))
+            self.assertEqual(path.read_bytes(), original)
+        with patch.object(service, "_save", side_effect=OSError("架空の保存失敗")):
+            with self.assertRaises(OSError):
+                await service.unblock(22)
+        self.assertTrue(service.is_blocked(22))
+        self.assertEqual(path.read_bytes(), original)
+        self.assertTrue(await service.unblock(22))
+        self.assertFalse(await service.unblock(22))
+        self.assertFalse(service.is_blocked(22))
+        self.assertEqual(service.get_violation_count(22), 0)
+        self.assertEqual(self.saved(path)["11"]["count"], 1)
+
     async def test_blocked_records_with_incomplete_counts_never_return_warning_counts(self) -> None:
         path = self.root / "blacklist.json"
         path.write_text(json.dumps({"11": {"blocked": True}}), encoding="utf-8")
