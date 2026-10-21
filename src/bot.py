@@ -23,6 +23,7 @@ from persona_bot.core.background import make_guarded_loop, run_in_thread, spawn
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.core.bot_client import PersonaClient
 from persona_bot.core.commands import register_commands
+from persona_bot.core.guild_lifecycle import remove_guild_state
 from persona_bot.config.constants import (
     ANNIVERSARY_CHECK_MINUTES,
     AUTO_TOPIC_CHECK_MINUTES,
@@ -236,6 +237,11 @@ async def on_guild_join(guild: discord.Guild) -> None:
         await post_welcome_message(guild, welcome_text, state.welcomed_guild_ids)
     except Exception as error:
         print(f"ウェルカムメッセージの処理エラー（guild={guild.id}）: {error}")
+
+
+@client.event
+async def on_guild_remove(guild: discord.Guild) -> None:
+    await remove_guild_state(guild.id, state, autonomous, voice_guard)
 
 
 @client.event

@@ -138,10 +138,10 @@ class BlacklistService:
 
         Returns:
             True: ブロックが解除された。
-            False: そのユーザーはブラックリストに存在しなかった。
+            False: そのユーザーはブロックされていなかった（違反記録は保持する）。
         """
         key = str(user_id)
-        if key not in self._data:
+        if not self.is_blocked(user_id):
             return False
 
         data = deepcopy(self._data)

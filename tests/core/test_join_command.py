@@ -44,7 +44,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
     def make_channel(channel_id: int) -> Mock:
         channel = Mock(spec=discord.VoiceChannel, id=channel_id)
         channel.name = f"架空の通話{channel_id}"
-        channel.permissions_for.return_value = SimpleNamespace(connect=True, speak=True)
+        channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
         channel.connect = AsyncMock()
         return channel
 
@@ -150,7 +150,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
     def make_stage(self, *, can_promote=True):
         stage = Mock(spec=discord.StageChannel, id=40)
         stage.name = "架空のステージ"
-        stage.permissions_for.return_value = SimpleNamespace(connect=True, speak=True, mute_members=can_promote)
+        stage.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True, mute_members=can_promote)
         stage.connect = AsyncMock()
         self.interaction.user.voice.channel = stage
         self.guild.me = SimpleNamespace(voice=SimpleNamespace(channel=stage), edit=AsyncMock())
@@ -192,7 +192,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         for connect, speak in ((False, True), (True, False), (False, False)):
             with self.subTest(connect=connect, speak=speak):
                 self.interaction.response.send_message.reset_mock()
-                self.channel.permissions_for.return_value = SimpleNamespace(connect=connect, speak=speak)
+                self.channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=connect, speak=speak)
                 current = self.make_voice_client(self.make_channel(30))
                 self.guild.voice_client = current
 
@@ -210,6 +210,26 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                 current.disconnect.assert_not_awaited()
                 self.channel.connect.assert_not_awaited()
                 self.interaction.followup.send.assert_not_awaited()
+
+
+    async def test_hidden_voice_and_stage_are_rejected_before_changing_connections(self) -> None:
+        for channel in (self.channel, self.make_stage()):
+            with self.subTest(channel=channel.name):
+                self.interaction.user.voice.channel = channel
+                channel.permissions_for.return_value.view_channel = False
+                self.interaction.response.send_message.reset_mock()
+                current = self.make_voice_client(self.make_channel(30))
+                self.guild.voice_client = current
+                await self.commands["join"](self.interaction)
+                text = self.interaction.response.send_message.call_args.args[0]
+                self.assertIn("「チャンネルを見る」", text)
+                self.assertNotIn("「接続」", text)
+                self.assertNotIn("「発言」", text)
+                self.interaction.response.defer.assert_not_awaited()
+                self.autonomous.stop_session.assert_not_awaited()
+                self.voice_guard.release.assert_not_called()
+                current.disconnect.assert_not_awaited()
+                channel.connect.assert_not_awaited()
 
 
 if __name__ == "__main__":

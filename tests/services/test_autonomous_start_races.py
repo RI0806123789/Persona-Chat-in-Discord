@@ -264,7 +264,7 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
         commands = self.make_commands()
         target = Mock(spec=discord.VoiceChannel, id=20)
         target.name = "架空の通話チャンネル"
-        target.permissions_for.return_value = SimpleNamespace(connect=True, speak=True)
+        target.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True)
         replacement = self.make_voice(target)
 
         async def join_connect(**kwargs):
@@ -296,7 +296,7 @@ class AutonomousStartRaceTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
         cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
         replacement = self.make_voice(self.channel)
-        self.channel.permissions_for.return_value = SimpleNamespace(connect=True, speak=True, mute_members=True)
+        self.channel.permissions_for.return_value = SimpleNamespace(view_channel=True, connect=True, speak=True, mute_members=True)
         interaction = SimpleNamespace(
             guild=self.guild,
             user=Mock(spec=discord.Member, voice=SimpleNamespace(channel=self.channel)),

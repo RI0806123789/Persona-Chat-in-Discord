@@ -74,7 +74,9 @@ class NgPipeline:
             check_and_route=AsyncMock(return_value=(True, "", "none", None)),
             check=AsyncMock(return_value=(True, "")),
         )
-        self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("架空の応答です。", None, [])))
+        self.gemini = SimpleNamespace(generate_with_metadata=AsyncMock(
+            return_value=("架空の応答です。", None, [], "fictional-model"),
+        ))
         self.send_long_reply = AsyncMock(return_value=SimpleNamespace(id=500))
         self.handler = make_message_handler({
             "client": SimpleNamespace(user=self.bot_user), "state": self.state,

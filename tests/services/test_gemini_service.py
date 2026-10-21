@@ -65,6 +65,35 @@ class GeminiRequestFixture(unittest.IsolatedAsyncioTestCase):
 
 
 class GeminiGenerationTests(GeminiRequestFixture):
+    async def test_metadata_has_no_generator_when_generation_fails(self) -> None:
+        self.sdk_request.side_effect = RuntimeError("架空の生成失敗")
+        result = await self.service.generate_with_metadata("架空の質問", "selected-model")
+        self.assertIsNone(result.text)
+        self.assertIsNone(result.model_name)
+
+    async def test_concurrent_results_keep_their_own_generator(self) -> None:
+        first_started, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(**kwargs):
+            if kwargs["model"] == "first-model":
+                first_started.set()
+                await release.wait()
+                raise unsupported_search()
+            return self.response
+
+        self.sdk_request.side_effect = generate
+        first = asyncio.create_task(self.service.generate_with_metadata("架空の質問1", "first-model", grounding=True))
+        try:
+            await asyncio.wait_for(first_started.wait(), 2)
+            second = await self.service.generate_with_metadata("架空の質問2", "second-model")
+            release.set()
+            first_result = await asyncio.wait_for(first, 2)
+            self.assertEqual(first_result.model_name, gemini_service.GROUNDING_MODEL_NAME)
+            self.assertEqual(second.model_name, "second-model")
+        finally:
+            release.set()
+            await asyncio.gather(first, return_exceptions=True)
+
     async def test_search_preserves_selected_model_sources_and_usage(self) -> None:
         self.response.candidates[0].grounding_metadata = types.GroundingMetadata(
             grounding_chunks=[types.GroundingChunk(web=types.GroundingChunkWeb(

@@ -11,7 +11,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -152,6 +152,23 @@ class FeedbackVoteTests(unittest.IsolatedAsyncioTestCase):
             await self.remove(GOOD, message_id=999)
         record.assert_not_called()
         delete.assert_not_called()
+
+    async def test_known_bot_removals_do_not_change_an_accepted_vote(self) -> None:
+        await self.add(GOOD)
+        for source in ("member", "cache"):
+            with self.subTest(source=source):
+                payload = self.payload(GOOD, bot=True)
+                if source == "cache":
+                    payload.member = None
+                    self.service._client.get_user = Mock(return_value=SimpleNamespace(bot=True))
+                with patch.object(self.db, "feedback_delete", wraps=self.db.feedback_delete) as delete:
+                    await self.service.handle_reaction_remove(payload)
+                delete.assert_not_called()
+                self.assertEqual(self.totals(), (1, 0, 1))
+        # raw削除にmemberもキャッシュもなくても、受け付け済みの人間の取り消しは有効。
+        self.service._client.get_user.return_value = None
+        await self.remove(GOOD)
+        self.assertEqual(self.totals(), (0, 0, 0))
         self.assertEqual(self.db.feedback_summary(GUILD_ID), [])
 
     async def test_state_is_dropped_with_the_tracked_reply(self) -> None:

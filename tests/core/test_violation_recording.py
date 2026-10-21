@@ -10,12 +10,16 @@ import io
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import discord
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.config.constants import BLACKLIST_MAX_VIOLATIONS
+from persona_bot.services.content_moderator import ContentModerator
 from tests.helpers.ng_pipeline import FICTIONAL_NG_WORD, NgPipeline
 
 NG_TEXT = f"{FICTIONAL_NG_WORD}を含む架空の質問です。"
@@ -87,7 +91,7 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.pipeline.blacklist.is_blocked(11))
         self.assertEqual(self.pipeline.blacklist.get_violation_count(11), 0)
         self.assertFalse(self.pipeline.blacklist_path.exists())
-        self.pipeline.gemini.generate.assert_not_awaited()
+        self.pipeline.gemini.generate_with_metadata.assert_not_awaited()
 
         # 保存が直った後は、保存できた分から数え直す（未保存の違反は持ち越さない）
         message = await self.send()
@@ -95,7 +99,9 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pipeline.reloaded_blacklist().get_violation_count(11), 1)
 
     async def test_bot_response_ng_or_unsafe_output_is_not_counted_against_user(self) -> None:
-        self.pipeline.gemini.generate.return_value = (f"{FICTIONAL_NG_WORD}を含む架空の応答です。", None, [])
+        self.pipeline.gemini.generate_with_metadata.return_value = (
+            f"{FICTIONAL_NG_WORD}を含む架空の応答です。", None, [], "fictional-model",
+        )
         self.pipeline.moderator.check.return_value = (False, "架空の応答の不適切判定")
         for _ in range(BLACKLIST_MAX_VIOLATIONS):
             await self.send("架空の普通の質問です。")
@@ -116,6 +122,35 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
         again = await self.send()
         self.assertIn(f"あと{BLACKLIST_MAX_VIOLATIONS - 1}回", again.reply.call_args.args[0])
         self.assertEqual(self.pipeline.reloaded_blacklist().get_violation_count(11), 1)
+
+    async def test_repeated_moderation_empty_responses_never_count_as_violations(self) -> None:
+        self.pipeline.handler.moderator = ContentModerator(None, SimpleNamespace(words=[]))
+        with patch("persona_bot.services.content_moderator.generate_content", AsyncMock(return_value=None)):
+            for _ in range(BLACKLIST_MAX_VIOLATIONS + 1):
+                await self.send("架空の安全な入力")
+        self.assertEqual(self.pipeline.blacklist.get_violation_count(11), 0)
+        self.assertFalse(self.pipeline.blacklist.is_blocked(11))
+        self.assertFalse(self.pipeline.blacklist_path.exists())
+        self.assertEqual(self.pipeline.send_long_reply.await_count, BLACKLIST_MAX_VIOLATIONS + 1)
+
+    async def test_notice_failure_preserves_saved_violation_or_save_failure_result(self) -> None:
+        for error_type, status in ((discord.NotFound, 404), (discord.Forbidden, 403), (discord.HTTPException, 400)):
+            for case in ("warning", "block", "save_failure"):
+                with self.subTest(error=error_type.__name__, case=case):
+                    pipeline = NgPipeline(self)
+                    if case == "block":
+                        for _ in range(BLACKLIST_MAX_VIOLATIONS - 1):
+                            await pipeline.blacklist.record_violation(11, "架空の利用者")
+                    message = pipeline.message(NG_TEXT, mention=True)
+                    message.reply.side_effect = error_type(SimpleNamespace(status=status, reason="架空の失敗"), "架空の失敗")
+                    output = io.StringIO()
+                    with patch.object(pipeline.blacklist, "_save", wraps=pipeline.blacklist._save,
+                                      side_effect=OSError("架空の保存失敗") if case == "save_failure" else None), redirect_stdout(output):
+                        await pipeline.handler.on_message(message)
+                    expected = {"warning": 1, "block": BLACKLIST_MAX_VIOLATIONS, "save_failure": 0}[case]
+                    self.assertEqual(pipeline.blacklist.get_violation_count(11), expected)
+                    self.assertEqual(pipeline.reloaded_blacklist().get_violation_count(11), expected)
+                    self.assertIn("違反通知: 送信に失敗しました", output.getvalue())
 
 
 if __name__ == "__main__":

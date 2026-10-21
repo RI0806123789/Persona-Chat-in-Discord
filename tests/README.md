@@ -51,6 +51,20 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 Windows・Python 3.13.3（`.venv`、google-genai 2.31.0）でボット738件・コンソールバックエンド175件が成功。Git管理対象と未追跡ファイルだけを別フォルダへ写した新規取得相当の環境（`prompts/`はテンプレートだけ、`.env`・DBなし）でもボット738件が成功し、外部通信を止めた起動で作り方の案内が出て組み込みの標準プロンプトで応答することを確認した。`pip check`・全ソースの構文・`compileall`・構成図XML・メッセージ分割・`git diff --check`も成功。手元のキャラ別ファイル13件（テンプレートを含む）は追跡を外した後もSHA-256が一致した。Linux／Python 3.10での実行、実際のDiscord・Gemini・音声での確認、サーバーへのSCP転送と移行手順の実施は未確認。
 
+## Issue #156・#158・#159の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #156 | `core/test_bot_reply_settings.py`・`services/test_gemini_service.py` | 選択モデル・検索サブモデル・検索なしへの退避を実際の生成経路へ通し、生成中に設定を変えても生成モデルと今回のペルソナで評価をDB集計する。同時生成のモデル情報を分離し、失敗時に採用モデルを返さない。既存の3要素の生成結果を使う全呼出元も回帰確認 |
+| #158 | `core/test_app_lifecycle.py`・`services/test_autonomous_session_cleanup.py` | 既存の終了処理を再確認。背景タスク・同期ワーカー・所有するステージ枠と接続を回収してからDiscord・Gemini・DBを閉じ、終了要求の重複・繰り返しキャンセルでも順序を保つ |
+| #158 | `core/test_command_errors.py`・`core/test_join_command.py`・`core/test_guild_lifecycle.py` | 共通のコマンドエラーハンドラを登録し、応答前・defer後とも本人だけへ通知。閲覧権限がないボイス・ステージでは既存接続に触れない。退出時は停止完了後に当該ギルドの一時状態だけを解放し、停止失敗・キャンセル時も回収する |
+| #159 | `services/test_content_moderator.py`・`core/test_violation_recording.py` | APIの空応答・不正JSON・通信失敗で違反を数えず、明示的な不適切判定とプロンプトブロックは維持。違反通知の送信失敗（削除済み・権限不足・HTTPエラー）でも保存済み違反とログを保つ |
+| #159 | `core/test_bot_reply_settings.py`・`services/test_document_service.py`・`services/test_feedback_votes.py`・`services/test_blacklist_service.py` | 判定待ち・拒否・タグだけの応答では親密度を更新しない。通常・文書の謝罪文を会話記憶へ入れず、通常の返信保存・読み上げは維持。他のボットの削除イベントを除外し、人間のraw取り消しを保つ。未ブロック利用者の違反記録を保持し、解除成功はブロック中だった場合だけ返す |
+
+Windows・Python 3.13.3、固定済み依存の仮想環境で全760件が成功。`pip check`、全166 Pythonファイルの構文・Python 3.10文法、構成図XML、メッセージ分割、`git diff --check`も成功。
+
+Linux／Python 3.10での実行、Discord・Gemini・音声の実接続、実サーバーでの退出・停止とコマンド操作は未確認。外部通信はモック、DB・JSONは一時ディレクトリと架空のデータを使用する。
+
 ## Issue #153〜#155の確認
 
 | Issue | テスト | 確認内容 |

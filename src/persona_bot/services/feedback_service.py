@@ -371,8 +371,8 @@ class FeedbackService:
         だけで評価が消えないよう、ここでも絵文字を確認する。👍👎 の両方を
         付けていた人が片方を外したときは、残っている側を評価として採用し直す
         （モジュールの docstring「押し替え・両方押し・取り消し」を参照）。
-        なお削除イベントには member が付かない（Discord が送らない）ため、
-        ボット判定は payload.user_id の照合だけで行う。
+        削除イベントには通常 member が付かないため、既知の利用者キャッシュと
+        受け付け済みの評価状態を使う。判定のための外部通信は行わない。
         """
         try:
             entry = self._resolve_vote_target(payload)
@@ -412,6 +412,12 @@ class FeedbackService:
             return None
         if payload.user_id == bot_user.id:
             # ボット自身が付けた初期リアクション。数えると起動直後から自己投票で汚れる。
+            return None
+        member = getattr(payload, "member", None)
+        if member is None:
+            get_user = getattr(self._client, "get_user", None)
+            member = get_user(payload.user_id) if callable(get_user) else None
+        if member is not None and member.bot:
             return None
         return self._tracked.get(int(payload.message_id))
 
