@@ -79,12 +79,23 @@ class CatalogDiscoveryTests(PersonaFolderTestCase):
                 self.assertEqual(catalog.display_name(catalog.default_value), personas.BUILTIN_PERSONA_DISPLAY_NAME)
 
     def test_name_too_long_for_discord_is_skipped_with_warning(self) -> None:
-        self.write("短い.txt")
-        self.write("長" * 100 + ".txt")
+        # 保存値（"../prompts/" + ファイル名）が Discord の上限ちょうどなら出し、1文字でも超えたら外す。
+        # 上限を超える名前は ASCII で作る（Linux のファイル名は 255 バイトまでで、日本語 100 文字は 300 バイトになり作れない）
+        stem_limit = constants.DISCORD_SELECT_VALUE_MAX_LENGTH - len(constants.PERSONA_VALUE_PREFIX + ".txt")
+        fits = "a" * stem_limit + ".txt"
+        too_long = "b" * (stem_limit + 1) + ".txt"
+        # 日本語は 3 バイトでも 1 文字と数える（Discord の上限は文字数）
+        japanese = "長" * 40 + ".txt"
+        for name in (fits, too_long, japanese):
+            self.write(name)
         with patch("builtins.print") as logging:
             catalog = self.load()
-        self.assertEqual([p.name for p in catalog.personas], ["短い"])
-        self.assertIn("長すぎる", str(logging.call_args_list))
+        self.assertEqual(len(personas.persona_value(fits)), constants.DISCORD_SELECT_VALUE_MAX_LENGTH)
+        self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(fits), personas.persona_value(japanese)])
+        warnings = str(logging.call_args_list)
+        self.assertIn("長すぎる", warnings)
+        self.assertIn(too_long, warnings)
+        self.assertNotIn(fits, warnings)
 
 
 class PersonaSettingsTests(PersonaFolderTestCase):
