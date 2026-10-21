@@ -1,0 +1,24 @@
+{
+  "_説明": [
+    "personas.json の書式見本です。このファイル自体は読み込まれません。prompts/personas.json という名前でコピーし、自分のキャラに合わせて書き換えてください。",
+    "default: まだペルソナを選んでいないサーバーで使うファイル名。省略すると選択肢の先頭になります。",
+    "personas: prompts/ に置いた .txt のファイル名ごとの設定。書いた順に選択肢へ並び、書いていないファイルはその後ろにファイル名の順で続きます。",
+    "name: 表示名。省略するとファイル名（拡張子なし）になります。",
+    "voice.voice: 話者。ja-JP-NanamiNeural（女性）か ja-JP-KeitaNeural（男性）。",
+    "voice.pitch: 声の高さ。+10Hz のように符号つきの整数と Hz で書きます。Nanami は 10Hz でおよそ半音1つ分。Keita は上げると +6 半音付近で頭打ちになり、下げてもほとんど変わりません。",
+    "voice.rate: 話す速さ。+5% のように符号つきの整数と % で書きます。",
+    "voice.eq: 音色。flat（加工なし）/ bright（明るい）/ warm（落ち着いた）/ robotic（機械的）。",
+    "省略した項目は既定値（ja-JP-NanamiNeural・+0Hz・+0%・flat）になります。この _説明 は読み込み時に無視されるので、消しても残しても動きます。"
+  ],
+  "default": "my_character.txt",
+  "personas": {
+    "my_character.txt": {
+      "name": "わたしのキャラ",
+      "voice": { "voice": "ja-JP-NanamiNeural", "pitch": "+10Hz", "rate": "+5%", "eq": "bright" }
+    },
+    "my_character2.txt": {
+      "name": "もうひとりのキャラ",
+      "voice": { "voice": "ja-JP-KeitaNeural", "pitch": "+0Hz", "rate": "-5%", "eq": "warm" }
+    }
+  }
+}

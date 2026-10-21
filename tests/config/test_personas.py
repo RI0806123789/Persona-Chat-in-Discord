@@ -26,6 +26,7 @@ from persona_bot.config import constants, personas
 from persona_bot.config.constants import (
     BUILTIN_PERSONA_PROMPT,
     DISCORD_SELECT_MAX_OPTIONS,
+    PERSONA_SETTINGS_TEMPLATE_FILE_NAME,
     PROMPT_TEMPLATE_FILE_NAME,
     VOICE_PROFILE_FALLBACK,
 )
@@ -164,6 +165,44 @@ class PersonaSettingsTests(PersonaFolderTestCase):
                 self.assertEqual([p.name for p in self.load().personas], ["a"])
 
 
+class SettingsTemplateTests(PersonaFolderTestCase):
+    """公開している personas.json の見本（prompts/00_prompt_format.json）が、コピーしてそのまま使えること。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # 読むのは Git 管理対象の見本だけ（利用者のキャラ別ファイルと personas.json は読まない）
+        self.template_path = PROJECT_ROOT / "prompts" / PERSONA_SETTINGS_TEMPLATE_FILE_NAME
+        self.template = json.loads(self.template_path.read_text(encoding="utf-8"))
+
+    def test_copied_template_loads_without_warnings(self) -> None:
+        entries = self.template["personas"]
+        for name in entries:
+            self.write(name)
+        shutil.copyfile(self.template_path, self.settings_path)
+        with patch("builtins.print") as logging:
+            catalog = self.load()
+        # 説明欄（_説明）を残したままでも警告が出ず、書いた内容がそのまま反映される
+        logging.assert_not_called()
+        self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(name) for name in entries])
+        self.assertEqual([p.name for p in catalog.personas], [entry["name"] for entry in entries.values()])
+        self.assertEqual(catalog.default_value, personas.persona_value(self.template["default"]))
+        for name, entry in entries.items():
+            with self.subTest(persona=name):
+                self.assertEqual(dict(catalog.voice_profile(personas.persona_value(name))), entry["voice"])
+                self.assertIn(entry["voice"]["voice"], (constants.EDGE_TTS_VOICE_FEMALE, constants.EDGE_TTS_VOICE_MALE))
+                self.assertIn(entry["voice"]["eq"], constants.VOICE_EQ_PROFILES)
+
+    def test_template_itself_is_not_read_as_settings(self) -> None:
+        for name in self.template["personas"]:
+            self.write(name)
+        shutil.copyfile(self.template_path, self.prompts / PERSONA_SETTINGS_TEMPLATE_FILE_NAME)
+        catalog = self.load()
+        # personas.json を作るまでは見本の表示名・既定を使わず、ファイル名の順・名前のままにする
+        names = sorted(self.template["personas"])
+        self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(name) for name in names])
+        self.assertEqual([p.name for p in catalog.personas], [Path(name).stem for name in names])
+
+
 class SelectablePersonaTests(PersonaFolderTestCase):
     def test_only_existing_files_in_prompts_can_be_confirmed(self) -> None:
         self.write("架空.txt")
@@ -210,6 +249,7 @@ class SettingsPanelTests(unittest.IsolatedAsyncioTestCase):
         preview = view.build_preview()
         self.assertIn(personas.BUILTIN_PERSONA_DISPLAY_NAME, preview)
         self.assertIn(PROMPT_TEMPLATE_FILE_NAME, preview)
+        self.assertIn(PERSONA_SETTINGS_TEMPLATE_FILE_NAME, preview)
 
     async def test_select_is_capped_at_discord_limit(self) -> None:
         values = [f"../prompts/架空{index:02}.txt" for index in range(DISCORD_SELECT_MAX_OPTIONS + 5)]
@@ -292,13 +332,16 @@ class PublishedFilesTests(unittest.TestCase):
     def git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8")
 
-    def test_only_template_is_tracked_and_new_personas_are_ignored(self) -> None:
-        tracked = self.git("ls-files", "prompts").stdout.split()
-        self.assertEqual(tracked, [f"prompts/{PROMPT_TEMPLATE_FILE_NAME}"])
+    def test_only_templates_are_tracked_and_new_personas_are_ignored(self) -> None:
+        templates = sorted(f"prompts/{name}" for name in (PROMPT_TEMPLATE_FILE_NAME, PERSONA_SETTINGS_TEMPLATE_FILE_NAME))
+        tracked = sorted(self.git("ls-files", "prompts").stdout.split())
+        self.assertEqual(tracked, templates)
         for path in ("prompts/架空のキャラ.txt", "prompts/prompt_fictional.txt", "prompts/personas.json"):
             with self.subTest(path=path):
                 self.assertEqual(self.git("check-ignore", "-q", "--no-index", path).returncode, 0)
-        self.assertNotEqual(self.git("check-ignore", "-q", "--no-index", f"prompts/{PROMPT_TEMPLATE_FILE_NAME}").returncode, 0)
+        for path in templates:
+            with self.subTest(template=path):
+                self.assertNotEqual(self.git("check-ignore", "-q", "--no-index", path).returncode, 0)
 
 
 if __name__ == "__main__":

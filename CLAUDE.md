@@ -338,7 +338,7 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 ### ペルソナの一覧 (`personas.py`)
 
-キャラ別のプロンプトは公開しない（#189）。Git が管理する `prompts/` のファイルは書式見本の `00_prompt_format.txt`（`PROMPT_TEMPLATE_FILE_NAME`）だけで、キャラ別の `.txt` と任意の `personas.json`（表示名・声・既定）は利用者が各自のパソコン・サーバーで作る。`.gitignore` は `prompts/*` で直下全体を除外し、テンプレートだけを否定行で戻している。
+キャラ別のプロンプトは公開しない（#189）。Git が管理する `prompts/` のファイルは書式見本の `00_prompt_format.txt`（`PROMPT_TEMPLATE_FILE_NAME`）と、`personas.json` の書式見本の `00_prompt_format.json`（`PERSONA_SETTINGS_TEMPLATE_FILE_NAME`）だけで、キャラ別の `.txt` と任意の `personas.json`（表示名・声・既定）は利用者が各自のパソコン・サーバーで作る（JSON の見本を `personas.json` へコピーして書き換える）。`.gitignore` は `prompts/*` で直下全体を除外し、テンプレート2つだけを否定行で戻している。
 
 - **選択肢は `prompts/` の `.txt` から作る**: テンプレート・`.` で始まる名前・フォルダは除く。`personas.json` の `personas` に書いた順が先、残りはファイル名の順。表示名は `name`、無ければ拡張子なしのファイル名。`default` が無い・見つからないときは先頭、1つも無ければ空（組み込みの標準）。
 - **保存値の形は変えないこと**: `"../prompts/<ファイル名>"`（`PERSONA_VALUE_PREFIX`）。旧版の固定の選択肢と同じ形なので、ファイル名が同じなら DB の保存値をそのまま引き継げる。形を変えると全サーバーの選択が既定へ戻る。
@@ -347,8 +347,9 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 - **`persona_file_name` が prompts/ の外を読ませない関門**: 区切り文字・テンプレート・隠しファイル・`.txt` 以外を拒否する。保存値の復元（`apply_persisted`）と確定時の確認（`is_selectable_persona`）の両方で通す。確定時の確認を「ファイルがあるか」だけに戻さないこと（`../.env` を選ばせると API キーを Gemini へ送ってしまう）。
 - **一覧はスナップショット**: `reload_persona_catalog()`（`bot.py` で設定の復元より前に1回）と `refresh_persona_catalog()`（⚙️ キャラ設定を開くとき。応答を保留してから `run_in_thread` で読む）だけがファイルを読み、読み終えた一覧を差し替える。応答・読み上げ・表示は `current_persona_catalog()` を参照するだけで、イベントループ上でファイルを読まない。フォルダを読めないときは前回の一覧を保つ。`SettingsView` は開いた時点の一覧を持ち、選択肢と表示をそろえる。
 - **Discord の制限**: 選択肢は先頭の `DISCORD_SELECT_MAX_OPTIONS`（25）件まで、値が `DISCORD_SELECT_VALUE_MAX_LENGTH`（100文字）を超えるファイルは警告して選択肢から外す。1つも無いときはペルソナのセレクトを出さない（選択肢0件のセレクトは Discord に拒否され、パネルごと開けなくなる）。
-- **`personas.json` の誤りでは止めない**: 手書きのファイルなので `utf-8-sig` で読み、JSON の誤り・型の誤り・未知の項目・形式の誤った声は警告して、その部分だけ既定にする。ファイルは書き換えない（`load_json_file` の退避は使わない）。ログに `personas.json` の中身を出さない。
-- **テストで実際の `prompts/` を読まないこと**: 利用者のキャラ別ファイルが手元にあると通り、CI（テンプレートだけ）では落ちる。`tests/helpers/persona_helpers.py` の `install_persona_catalog` / `install_empty_persona_catalog` で架空の一覧に差し替える。`tests/config/test_personas.py` は Git の管理対象がテンプレートだけであることと、新しいファイル・`personas.json` が除外されることも確かめる。テンプレートの名前を変えるときは、`PROMPT_TEMPLATE_FILE_NAME`・`.gitignore` の否定行・README をそろえる。
+- **`personas.json` の誤りでは止めない**: 手書きのファイルなので `utf-8-sig` で読み、JSON の誤り・型の誤り・`voice` の未知の項目・形式の誤った声は警告して、その部分だけ既定にする。ファイルは書き換えない（`load_json_file` の退避は使わない）。ログに `personas.json` の中身を出さない。
+- **JSON の見本はそのまま読める形に保つ**: ボットが読むのは `personas.json` だけで、見本（`00_prompt_format.json`）は読まない。JSON にはコメントが書けないため、見本の説明は最上位の `_説明` に置いている。最上位は `default` と `personas` だけを使い、それ以外の項目は警告せずに無視する（コピーしたまま使っても警告を出さない）。最上位の項目に検証を足すときは `_` で始まる項目を警告しないこと。`tests/config/test_personas.py` が、見本を `personas.json` としてコピーすると警告なしで表示名・声・既定が反映されることを確かめている。`personas` の中に説明用の項目を置かないこと（ファイル名とみなされ「対応するファイルがありません」と警告される）。
+- **テストで実際の `prompts/` を読まないこと**: 利用者のキャラ別ファイルが手元にあると通り、CI（テンプレートだけ）では落ちる。`tests/helpers/persona_helpers.py` の `install_persona_catalog` / `install_empty_persona_catalog` で架空の一覧に差し替える。`tests/config/test_personas.py` は Git の管理対象がテンプレート2つだけであることと、新しいファイル・`personas.json` が除外されることも確かめる。テンプレートの名前を変えるときは、`PROMPT_TEMPLATE_FILE_NAME` / `PERSONA_SETTINGS_TEMPLATE_FILE_NAME`・`.gitignore` の否定行・README をそろえる。
 - **管理コンソールも `personas.json` を読む**: `tools/console/backend/remote_scripts/insights.py` が表示名と既定を `prompts/personas.json` から取る（旧版のサーバー向けに `choices.py` の `PERSONA_CHOICES` も読む）。形式を変えたら `insights.py` と `tests/test_remote_scripts.py` も直す。
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)

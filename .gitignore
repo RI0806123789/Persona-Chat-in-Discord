@@ -49,12 +49,14 @@ memory/*
 *temp
 
 # --- ペルソナ（キャラ別のプロンプト）---
-# 公開するのは書式見本のテンプレートだけ。キャラ別の .txt と表示名・声の設定（personas.json）は
-# 利用者が各自のパソコン・サーバーで作って管理する（README「ペルソナを作る」）。
+# 公開するのは書式見本のテンプレート（プロンプトの .txt と personas.json の .json）だけ。
+# キャラ別の .txt と表示名・声の設定（personas.json）は利用者が各自のパソコン・サーバーで
+# 作って管理する（README「ペルソナを作る」）。
 # 除外は prompts/ の直下全体にかけ、テンプレートだけを否定行で戻す（新しく作ったファイルを
 # 名前に関係なく誤ってコミットしないため）。テンプレートの名前を変えたら否定行も直すこと。
 prompts/*
 !prompts/00_prompt_format.txt
+!prompts/00_prompt_format.json
 
 # --- NG ---
 NG_WORD_private.txt
