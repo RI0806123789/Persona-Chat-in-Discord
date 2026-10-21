@@ -296,6 +296,13 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
       try {
         data = JSON.parse(event.data) as StreamMessage;
         if (!data || !["entry", "error", "end"].includes(data.type)) throw new Error();
+        if (data.type === "entry") {
+          const entry = data.entry;
+          if (!entry || !Number.isFinite(entry.ts) || typeof entry.message !== "string"
+              || typeof entry.source !== "string"
+              || (entry.priority != null && !Number.isFinite(entry.priority))
+              || (entry.pid != null && !Number.isFinite(entry.pid))) throw new Error();
+        } else if (typeof data.message !== "string") throw new Error();
       } catch {
         fail("ログの応答を読み取れませんでした。再試行してください。");
         socket.close();

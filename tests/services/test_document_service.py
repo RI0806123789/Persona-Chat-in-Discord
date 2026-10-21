@@ -43,8 +43,8 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
             filename="fictional.txt", size=10, read=AsyncMock(return_value=b"fictional text")
         )
 
-    async def process(self) -> None:
-        await self.service._process_attachment(self.attachment, "test-user", "test-model")
+    async def process(self):
+        return await self.service._process_attachment(self.attachment, "test-user", "test-model")
 
     def assert_no_files(self) -> None:
         self.assertEqual(list(self.root.iterdir()), [])
@@ -140,11 +140,11 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
             return self.uploaded
 
         self.gemini.upload_file.side_effect = upload
-        await self.process()
+        result = await self.process()
         self.assert_no_files()
-        self.memory.store_document_summary.assert_awaited_once_with(
-            "test-user", {"summary": "架空の要約"}
-        )
+        self.assertEqual(result["summary"], "架空の要約")
+        self.assertEqual(len(result["document_hash"]), 64)
+        self.memory.store_document_summary.assert_not_awaited()
         self.gemini.delete_file.assert_awaited_once_with(self.uploaded)
 
     async def test_validation_failure_removes_temporary_file(self) -> None:
@@ -241,6 +241,7 @@ class DocumentTemporaryFileTests(unittest.IsolatedAsyncioTestCase):
 class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.memory = SimpleNamespace(
+            store_document_summaries=AsyncMock(),
             route_category=AsyncMock(return_value="none"),
             build_contexts=AsyncMock(return_value=("", "")),
             append_pending_log=AsyncMock(),

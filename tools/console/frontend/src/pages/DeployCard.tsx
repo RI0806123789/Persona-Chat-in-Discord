@@ -88,7 +88,7 @@ export function DeployCard({
     >
       <div className="deploy-summary">
         <Chip icon="git" title="取り込むブランチ（profiles.json の deploy_branch）">
-          origin/{branch}
+          origin/{privacy.mask(branch)}
         </Chip>
         {git && (
           <span className="body-medium deploy-current">

@@ -118,6 +118,21 @@ class DatabaseInitializationTests(unittest.TestCase):
     def test_failure_before_version_update_rolls_back_and_retries(self) -> None:
         self.check_failed_migration(completed_statements=len(database._MIGRATIONS[6]))
 
+    def test_later_step_failure_rolls_back_an_already_updated_user_version(self) -> None:
+        self.prepare_version_five()
+        with patch.dict(database._MIGRATIONS, {7: ["SELECT * FROM fictional_missing_table"]}):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.initialize()
+        self.assert_version_five_is_intact()
+        self.assert_restart_completes_migration()
+
+    def test_empty_pending_owner_is_rejected_without_saving_any_row(self) -> None:
+        self.db.initialize()
+        for user_id in (None, "", " ", "\t\n", "　"):
+            with self.subTest(user_id=user_id), self.assertRaises(ValueError):
+                self.db.pending_append(user_id, "2026-01-01", "架空の質問", "架空の回答")
+        self.assertEqual(self.db._conn.execute("SELECT count(*) FROM pending_log").fetchone()[0], 0)
+
     def test_fresh_database_failure_rolls_back_schema_and_version(self) -> None:
         statements = [*database._MIGRATIONS[6], "SELECT * FROM fictional_missing_table"]
         with patch.dict(database._MIGRATIONS, {6: statements}):

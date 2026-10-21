@@ -42,6 +42,8 @@ def collect(db_path, blacklist_path):
                 try:
                     # 現行の複合索引(guild_id, created_at)をサーバーごとの期間検索に使う。
                     # 古い・独自スキーマにguild_idがなくても日別集計は継続する。
+                    # 旧空白区切りとISOのT区切りの両方を拾うため、索引側は日付で広く絞り、
+                    # 日本時間の厳密な7日間はdate(created_at, '+9 hours')で判定する。
                     columns = {row[1] for row in con.execute("PRAGMA table_info(feedback)")}
                     guild_filter = "guild_id IN (SELECT DISTINCT guild_id FROM feedback) AND " if "guild_id" in columns else ""
                     result["feedback_by_day"] = [
@@ -50,7 +52,7 @@ def collect(db_path, blacklist_path):
                             "SELECT date(created_at, '+9 hours') AS day, SUM(rating = 1), SUM(rating = -1) FROM feedback "
                             f"WHERE {guild_filter}"
                             "created_at >= date('now', '+9 hours', 'start of day', '-6 days', '-9 hours') "
-                            "AND created_at < date('now', '+9 hours', 'start of day', '+1 day', '-9 hours', '+1 day') "
+                            "AND created_at < date('now', '+9 hours', 'start of day', '+1 day') "
                             "AND date(created_at, '+9 hours') >= date('now', '+9 hours', '-6 days') "
                             "AND date(created_at, '+9 hours') <= date('now', '+9 hours') "
                             "GROUP BY day ORDER BY day")

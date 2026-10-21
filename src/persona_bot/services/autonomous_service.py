@@ -662,11 +662,17 @@ class AutonomousService:
 
     async def stop_all_sessions(self) -> None:
         """周期処理の終了後、所有するすべての配信枠と接続を回収する。"""
+        canceled = False
         for guild_id in list(self._state.guild_settings):
             try:
                 await self.stop_session(guild_id, reason="ボットの終了")
+            except asyncio.CancelledError:
+                # 1件の停止完了後に届いたキャンセルで、残りのサーバーを取り残さない。
+                canceled = True
             except Exception as error:
                 print(f"自律行動: 終了時の後片付けに失敗しました: {type(error).__name__}")
+        if canceled:
+            raise asyncio.CancelledError
 
     async def stop_session(
         self,
@@ -679,9 +685,10 @@ class AutonomousService:
 
         `/leave`・`/join` からも呼ばれる（人の操作による強制終了）。
 
-        **例外を外へ出さない。** 締めの投稿やステージ枠の後始末が失敗しても、
+        締めの投稿やステージ枠の後始末が失敗しても、
         ボイス接続の切断とセッション記録の破棄までは必ず進める（片付けが
         途中で止まると、接続だけが残って誰も止められなくなるため）。
+        キャンセルだけは後片付けの完了後に呼出元へ伝える。
 
         Args:
             reason: ログに残す終了理由。
@@ -754,6 +761,16 @@ class AutonomousService:
     # 発話（第一声・独り言）
     # ==========================================================================
 
+    async def _stop_failed_speech(
+        self, guild: discord.Guild, guild_settings: GuildSettings, session: AutonomousSession,
+    ) -> None:
+        """送信待機中に交代した新しい配信を停止せず、失敗した配信だけを回収する。"""
+        if self._is_current_session(guild_settings, session):
+            await wait_for_cleanup(
+                self.stop_session(guild.id, reason="配信テキストの送信失敗"),
+                label="自律行動の送信失敗後の終了",
+            )
+
     async def _speak_opening(
         self,
         guild: discord.Guild,
@@ -789,7 +806,12 @@ class AutonomousService:
 
             if not self._is_current_session(guild_settings, session):
                 return
-            await send_long_message(channel, body, allowed_mentions=_NO_MENTIONS)
+            try:
+                await send_long_message(channel, body, allowed_mentions=_NO_MENTIONS)
+            except Exception as error:
+                print(f"自律行動: 第一声の送信に失敗しました: {type(error).__name__}")
+                await self._stop_failed_speech(guild, guild_settings, session)
+                return
             # テキストの送信待機中にも /join・/leave・外部からの移動が起こりうる。
             if speech and self.can_speak_session(guild, guild_settings, session):
                 await speak_text(
@@ -838,7 +860,12 @@ class AutonomousService:
             if not self._is_current_session(guild_settings, session):
                 return
 
-            await send_long_message(channel, speech, allowed_mentions=_NO_MENTIONS)
+            try:
+                await send_long_message(channel, speech, allowed_mentions=_NO_MENTIONS)
+            except Exception as error:
+                print(f"自律行動: 独り言の送信に失敗しました: {type(error).__name__}")
+                await self._stop_failed_speech(guild, guild_settings, session)
+                return
             if not self.can_speak_session(guild, guild_settings, session):
                 return
             await speak_text(

@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
@@ -38,6 +39,55 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.db.initialize()
         self.addCleanup(self.db.close)
         self.service = MemoryService(None, None, self.db)
+
+    async def test_idle_flush_uses_each_users_persisted_latest_activity_after_restart(self):
+        now = datetime.now(timezone.utc)
+        self.db.pending_append("quiet-user", (now - timedelta(hours=2)).isoformat(), "架空の質問", "応答")
+        self.db.pending_append("active-user", (now - timedelta(hours=2)).isoformat(), "古い質問", "応答")
+        await self.service.append_pending_log("active-user", "新しい質問", "応答")
+        restarted = MemoryService(None, None, self.db)
+        restarted._compact_memory = AsyncMock(return_value=({}, {}))
+        await restarted.flush_if_needed()
+        self.assertEqual(self.db.pending_fetch_entries("quiet-user"), [])
+        self.assertEqual(len(self.db.pending_fetch_entries("active-user")), 2)
+        restarted._compact_memory.assert_awaited_once()
+
+    async def test_empty_user_is_rejected_at_service_boundary(self):
+        for user_id in (None, "", " \t", "　"):
+            with self.subTest(user_id=user_id), self.assertRaises(ValueError):
+                await self.service.append_pending_log(user_id, "架空の質問", "応答")
+        self.assertEqual(self.db.pending_distinct_user_ids(), [])
+
+    async def test_document_batch_retries_replace_same_file_and_preserve_other_users(self):
+        wrapper = default_projects_memory()
+        other = {"document_summaries": [{"document_name": "other.txt", "summary": "別の人の要約"}]}
+        wrapper["users"] = {"other-user": other}
+        write_json_file(self.projects_path, wrapper)
+        batch = [{"document_name": name, "summary": "架空の要約", "document_hash": digest}
+                 for name, digest in (("first.txt", "a" * 64), ("second.txt", "b" * 64))]
+        original = deepcopy(batch)
+        await self.service.store_document_summaries("test-user", batch)
+        await self.service.store_document_summaries("test-user", batch)
+        saved = load_json_file(self.projects_path, {})["users"]
+        self.assertEqual(len(saved["test-user"]["document_summaries"]), 2)
+        self.assertEqual(saved["other-user"], other)
+        self.assertEqual(batch, original)
+        batch[1]["summary"] = "更新した要約"
+        await self.service.store_document_summaries("test-user", batch)
+        saved = load_json_file(self.projects_path, {})["users"]["test-user"]["document_summaries"]
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[-1]["summary"], "更新した要約")
+
+    async def test_document_batch_save_failure_keeps_all_previous_summaries(self):
+        await self.service.store_document_summary("test-user", {"document_name": "old.txt", "summary": "既存"})
+        original = self.projects_path.read_bytes()
+        with patch.object(memory_service, "write_json_file", side_effect=OSError("架空の保存失敗")):
+            with self.assertRaises(OSError):
+                await self.service.store_document_summaries("test-user", [
+                    {"document_name": "first.txt", "summary": "新規1"},
+                    {"document_name": "second.txt", "summary": "新規2"},
+                ])
+        self.assertEqual(self.projects_path.read_bytes(), original)
 
     async def test_existing_users_survive_missing_or_incorrect_schema_and_repeated_load(self) -> None:
         for schema in (None, "誤った識別子"):

@@ -51,6 +51,28 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 Windows・Python 3.13.3（`.venv`、google-genai 2.31.0）でボット738件・コンソールバックエンド175件が成功。Git管理対象と未追跡ファイルだけを別フォルダへ写した新規取得相当の環境（`prompts/`はテンプレートだけ、`.env`・DBなし）でもボット738件が成功し、外部通信を止めた起動で作り方の案内が出て組み込みの標準プロンプトで応答することを確認した。`pip check`・全ソースの構文・`compileall`・構成図XML・メッセージ分割・`git diff --check`も成功。手元のキャラ別ファイル13件（テンプレートを含む）は追跡を外した後もSHA-256が一致した。Linux／Python 3.10での実行、実際のDiscord・Gemini・音声での確認、サーバーへのSCP転送と移行手順の実施は未確認。
 
+## Issue #160・#161・#162の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #160 | `core/test_database.py` | 途中まで進んだ複数段のDB移行が失敗しても、DDLと`user_version`を元の版へまとめて戻し、再起動時に再移行できる。空・空白・未設定のユーザーIDを一時ログへ保存しない |
+| #160 | `services/test_memory_service.py` | 各ユーザーの最後の保存済みログでアイドル時間を判定し、他人の発言や再起動で待ちを延ばさない。ユーザー固有の読込・保存失敗でも後続へ進む既存の保護と、全体障害時の上限を再確認 |
+| #160 | `services/test_document_lifecycle.py`・`services/test_document_service.py`・`services/test_document_shutdown.py` | 返信待機中に繰り返しキャンセルしても送信と完了記録を待つ。送信開始の記録をDBへ残し、再起動で自動再送しない。完了記録・会話ログ保存の失敗でも二重返信しない。後続添付の失敗時に先行要約だけを残さず、ファイルとアップロードを回収 |
+| #160 | `services/test_memory_service.py` | 添付群の一括保存・同名同内容の再試行・保存失敗を検証し、他ユーザーの要約と従来の要約を保持 |
+| #161 | `services/test_autonomous_speech.py`・`services/test_autonomous_session_cleanup.py` | 第一声・独り言の送信拒否で元の配信を停止し、交代した配信は維持。キャンセルは所有枠・接続の回収後に伝え、一括終了は他サーバーも回収 |
+| #161 | `services/test_autonomous_metrics.py`・`audio/test_voice.py` | UTC・時差付き・時差なし日時で同じゲージと活動窓・深夜判定。未完了コードブロックを読み上げず、旧キューワーカーのキャンセルでも新しいキューは保持 |
+| #161 | `services/test_auto_topic_service.py`・`services/test_reminder_service.py` | 記念日は本人が閲覧できるチャンネルを選び、生成中の権限剥奪にも対応。アーカイブ済みスレッドは同じ場所を再開して通知し、ロックと権限不足・再開拒否では親へ転送しない |
+| #162 | 画面`tests/log-stream.test.mjs` | 自動再接続をしない既存動作を再確認。JSON・ログ項目・終了理由の型不正でエラーにし、既読ログを残す。手動再接続と旧ソケットのイベント除外も維持 |
+| #162 | 画面`tests/connection.test.mjs`・`tests/serviceActions.test.mjs` | 接続先変更・同一接続先への再接続・切断で確認を閉じ、古い確認から要求を送らない。ブランチと操作先IDの伏せ字を表示・自由文・通知で検証し、伏せ字OFFも維持 |
+| #162 | コンソール`tests/test_remote_scripts.py` | 日別評価は複合索引の期間検索を使い、旧空白形式・ISO形式の日本時間境界、未来日の除外、旧スキーマを維持 |
+| #162 | `utils/test_shared_helpers.py` | 実際の`discord.File`が借用するバッファを使い、送信側がFileを閉じても、成功・失敗・キャンセルとも実バッファのcloseは1回だけ |
+
+DB移行の版をトランザクション外へ移す案は、現行の原子的なロールバックを壊すため採用しない。旧音声ワーカーの参照照合、ログの自動再接続停止、Fileとバッファの順序は既に実装済みのため維持する。配信停止の`CancelledError`も握りつぶさず、後片付け後に呼出元へ伝える契約を維持する。
+
+文書のDiscord送信とSQLite更新は同時に確定できない。通常のキャンセルは完了まで待つが、強制終了で`sending`が残った場合は結果不明として`failed`にし、自動再送しない。送信前に強制終了した場合は未返信の可能性があるため、履歴で確認してから再依頼する。
+
+Windows・Python 3.13.3の固定済み依存でボット780件・管理コンソールバックエンド176件、Node.js 24.16.0で画面57件とTypeScript・Viteビルドが成功。両仮想環境の`pip check`、全166 Pythonファイルの構文・Python 3.10文法・`compileall`、構成図XML・メッセージ分割・`git diff --check`も成功した。実際のDiscord・Gemini・音声・SSH接続、ブラウザ操作、Linux／Python 3.10での実行は未確認。
+
 ## Issue #156・#158・#159の確認
 
 | Issue | テスト | 確認内容 |

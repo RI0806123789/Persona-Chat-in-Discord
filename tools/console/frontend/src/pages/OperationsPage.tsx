@@ -127,7 +127,7 @@ export function OperationsPage({
                     <td className="mono nowrap">{formatDateTime(operation.at * 1000)}</td>
                     <td>{ACTION_LABELS[operation.action]}</td>
                     <td>
-                      {operation.profile_id}
+                      {privacy.mask(operation.profile_id)}
                       {operation.environment === "production" && <span className="m3-tag is-prod">本番</span>}
                     </td>
                     <td>
