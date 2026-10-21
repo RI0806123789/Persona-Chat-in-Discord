@@ -27,7 +27,7 @@ from persona_bot.config.constants import (
 from persona_bot.core.database import Database
 from persona_bot.services.genai_client import generate_content
 from persona_bot.utils.normalization import normalize_memory_category
-from persona_bot.utils.timeutil import utc_now_iso
+from persona_bot.utils.timeutil import parse_iso_datetime, utc_now_iso
 from persona_bot.services.prompting import build_memory_compaction_prompt, build_router_prompt
 from persona_bot.utils.storage import (
     extract_json_object,
@@ -168,7 +168,7 @@ class MemoryService:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         async with self.io_lock:
             await run_in_thread(
-                self._db.pending_append, str(user_id), timestamp, question, response_text
+                self._db.pending_append, user_id, timestamp, question, response_text
             )
 
     @staticmethod
@@ -212,6 +212,15 @@ class MemoryService:
             await run_in_thread(self._store_document_summary, str(user_id), summary_data)
 
     def _store_document_summary(self, user_id: str, summary_data: dict[str, Any]) -> None:
+        self._store_document_summaries(user_id, [summary_data])
+
+    async def store_document_summaries(self, user_id: str, summaries: list[dict[str, Any]]) -> None:
+        """同じ投稿の要約をまとめて保存する。後続添付の失敗で先行要約だけを残さない。"""
+        prepared = [{**summary, "created_at": utc_now_iso()} for summary in summaries]
+        async with self.io_lock:
+            await run_in_thread(self._store_document_summaries, str(user_id), prepared)
+
+    def _store_document_summaries(self, user_id: str, incoming: list[dict[str, Any]]) -> None:
         self.ensure_storage()
         wrapper = self._load_projects_wrapper()
         user_projects = wrapper["users"].setdefault(user_id, {})
@@ -221,7 +230,16 @@ class MemoryService:
         summaries = user_projects.get("document_summaries", [])
         if not isinstance(summaries, list):
             summaries = []
-        summaries.append(summary_data)
+        for summary_data in incoming:
+            # 再試行で同じファイルを再解析しても、同名・同内容の要約を重複させない。
+            digest = summary_data.get("document_hash")
+            if digest:
+                summaries = [
+                    old for old in summaries
+                    if not isinstance(old, dict) or (old.get("document_hash"), old.get("document_name"))
+                    != (digest, summary_data.get("document_name"))
+                ]
+            summaries.append(summary_data)
         user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
         write_json_file(PROJECTS_MEMORY_PATH, wrapper)
 
@@ -260,7 +278,7 @@ class MemoryService:
                         consecutive_errors = 0
                         continue
                     # _is_flush_required は同期の純粋判定なのでロックは要らない。
-                    if not force and not self._is_flush_required(len(entries)):
+                    if not force and not self._is_flush_required(len(entries), entries[-1].get("created_at")):
                         consecutive_errors = 0
                         continue
                     processed += 1
@@ -442,10 +460,19 @@ class MemoryService:
                 await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             self._compact_fail_count[user_id] = 0
 
-    def _is_flush_required(self, entry_count: int) -> bool:
+    def _is_flush_required(self, entry_count: int, last_activity: str | None = None) -> bool:
         if entry_count >= MEMORY_FLUSH_THRESHOLD_ENTRIES:
             return True
-        elapsed_seconds = (datetime.now(timezone.utc) - self._state.last_activity_timestamp).total_seconds()
+        # 他の利用者の会話で待機を延ばさない。再起動後も、その利用者の最新ログから判断する。
+        try:
+            stamp = str(last_activity or "").replace(" UTC", "+00:00")
+            last = parse_iso_datetime(stamp)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+        except ValueError:
+            # 旧形式など時刻不明のログも永久に残さず、次の巡回で圧縮する。
+            return True
+        elapsed_seconds = (datetime.now(timezone.utc) - last).total_seconds()
         return elapsed_seconds >= MEMORY_FLUSH_IDLE_SECONDS
 
     async def _compact_memory(

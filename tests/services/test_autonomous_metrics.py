@@ -40,6 +40,18 @@ class AutonomousMetricsTests(unittest.TestCase):
         self.settings.autonomous_recent_activity = [self.now]
         self.assertEqual(compute_talk_desire(self.settings, now=self.now), 0)
 
+    def test_naive_and_offset_times_are_compared_in_utc_without_mutation(self):
+        tokyo = timezone(timedelta(hours=9))
+        samples = [(self.now - timedelta(minutes=1)).replace(tzinfo=None), self.now.astimezone(tokyo)]
+        self.settings.autonomous_last_activity = (self.now - timedelta(hours=1)).replace(tzinfo=None)
+        self.settings.autonomous_recent_activity = samples
+        self.assertEqual(compute_talk_desire(self.settings, now=self.now.replace(tzinfo=None)), 54)
+        updated = updated_activity_samples(samples, now=self.now.replace(tzinfo=None))
+        self.assertEqual(updated, [self.now - timedelta(minutes=1), self.now, self.now])
+        self.assertIsNone(samples[0].tzinfo)
+        self.assertEqual(samples[1].utcoffset(), timedelta(hours=9))
+        self.assertTrue(is_quiet_hours(now=self.now.replace(hour=15, tzinfo=None), tz=tokyo, start=0, end=6))
+
     def test_silence_and_recent_activity_are_added_without_mutating_samples(self) -> None:
         samples = [self.now - timedelta(minutes=1), self.now]
         self.settings.autonomous_recent_activity = samples

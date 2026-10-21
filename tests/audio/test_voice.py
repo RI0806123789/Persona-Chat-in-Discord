@@ -52,6 +52,11 @@ class SpeechTextTests(unittest.TestCase):
         self.assertEqual(voice.build_speech_text("あ" * (voice.TTS_MAX_CHARS + 1)),
                          "あ" * voice.TTS_MAX_CHARS + voice.TTS_TRUNCATION_NOTICE)
 
+    def test_unclosed_code_block_is_not_read_aloud(self):
+        self.assertEqual(voice.build_speech_text("架空の説明\n```python\nprint('読まない')"), "架空の説明")
+        self.assertEqual(voice.build_speech_text("```未完了のコード"), "")
+        self.assertEqual(voice.build_speech_text("前```code```後```unclosed"), "前 後")
+
 
 class PcmDecodeTests(unittest.TestCase):
     def test_flat_profile_decodes_stereo_without_equalizer(self):
@@ -234,6 +239,30 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
         await voice.play_tts_response(SimpleNamespace(guild=self.guild), "[sad][arousal:+5]")
         self.assertEqual(self.workers, [])
         self.assertEqual(voice._speech_queues, {})
+
+    async def test_old_worker_cancellation_does_not_remove_replacement_queue(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def synthesize(*args):
+            entered.set()
+            await release.wait()
+            return b"pcm"
+
+        with patch.object(voice, "_synthesize_pcm", new=AsyncMock(side_effect=synthesize)):
+            await voice.speak_text(self.guild, "古い読み上げ")
+            worker = asyncio.create_task(self.workers[0])
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                replacement = asyncio.Queue()
+                voice._speech_queues[self.guild.id] = replacement
+                worker.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker
+                self.assertIs(voice._speech_queues[self.guild.id], replacement)
+            finally:
+                release.set()
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
 
     async def test_queue_overflow_drops_only_newest_request_and_keeps_requested_profiles(self):
         first, second = {"voice": "first"}, {"voice": "second"}

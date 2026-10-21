@@ -57,7 +57,7 @@ from persona_bot.services.affinity_service import strip_speech_tags
 # 読み上げに不向きな要素を落とすためのパターン群。
 # 音声で聞いて意味をなさないもの（URL・記号・コード）は読み上げる価値がないうえ、
 # 音声エンジンは URL を1文字ずつ読み上げてしまい非常に長くなるため必ず除去する。
-_CODE_BLOCK_PATTERN = re.compile(r"```.*?```", re.DOTALL)
+_CODE_BLOCK_PATTERN = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 _INLINE_CODE_PATTERN = re.compile(r"`[^`]*`")
 _URL_PATTERN = re.compile(r"https?://\S+")
 # Discord のカスタム絵文字 <:name:123> / アニメ絵文字 <a:name:123>

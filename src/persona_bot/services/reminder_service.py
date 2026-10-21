@@ -443,6 +443,21 @@ class ReminderService:
                 print("リマインダー: 閲覧・送信権限が不足しているため通知を見送りました。")
                 return
 
+        if isinstance(channel, discord.Thread) and channel.archived:
+            # 宛先を親へ変えると、非公開スレッドの内容を別の参加者へ漏らしうる。
+            # 元のスレッドだけを再開し、ロック解除や代替配送は行わない。
+            if channel.locked and not channel.permissions_for(guild.me).manage_threads:
+                print("リマインダー: ロックされたスレッドを再開する権限がありません。")
+                return
+            try:
+                channel = await channel.edit(archived=False, reason="登録済みリマインダーの通知")
+            except discord.HTTPException as error:
+                print(f"リマインダー: スレッドを再開できませんでした: {type(error).__name__}")
+                return
+            if not can_bot_send_messages(channel, guild.me):
+                print("リマインダー: スレッド再開後の送信権限が不足しています。")
+                return
+
         text = str(record.get("message", ""))
         # 本文はユーザーの発言そのものなので、投稿前に NG ワードをマスクする
         # （登録時に AI モデレーションは通過済みのため、ここでは再判定しない）。

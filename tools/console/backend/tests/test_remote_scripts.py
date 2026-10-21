@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -340,6 +341,44 @@ subprocess.run = _fake_run
 
 
 class DbSummaryScriptTests(unittest.TestCase):
+    def test_daily_feedback_uses_composite_index_and_keeps_mixed_timestamp_boundaries(self):
+        namespace = {"__name__": "test_db_summary"}
+        exec(compile(rc.DB_SUMMARY_SCRIPT, "db_summary.py", "exec"), namespace)
+        plans = []
+
+        class TracedConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("SELECT date(created_at"):
+                    plans.extend(row[3] for row in super().execute("EXPLAIN QUERY PLAN " + sql))
+                return super().execute(sql, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "bot.db"
+            con = sqlite3.connect(path)
+            try:
+                con.execute("CREATE TABLE feedback(guild_id INTEGER, created_at TEXT, rating INTEGER)")
+                con.execute("CREATE INDEX idx_feedback_guild_created ON feedback(guild_id, created_at)")
+                stamps = con.execute(
+                    "SELECT datetime('now', '+9 hours', 'start of day', '-9 hours'), "
+                    "datetime('now', '+9 hours', 'start of day', '+1 day', '-9 hours')"
+                ).fetchone()
+                for stamp, rating in ((stamps[0], 1), (stamps[1], -1)):
+                    for value in (stamp, stamp.replace(" ", "T") + "+00:00"):
+                        con.execute("INSERT INTO feedback VALUES (1, ?, ?)", (value, rating))
+                con.commit()
+            finally:
+                con.close()
+            connect = sqlite3.connect
+            with patch.object(sqlite3, "connect", side_effect=lambda *args, **kwargs: connect(
+                *args, factory=TracedConnection, **kwargs,
+            )):
+                data = namespace["collect"](str(path), str(root / "missing.json"))
+            self.assertEqual(sum(day["good"] for day in data["feedback_by_day"]), 2)
+            self.assertEqual(sum(day["bad"] for day in data["feedback_by_day"]), 0)
+        self.assertTrue(any("SEARCH feedback USING INDEX idx_feedback_guild_created" in plan
+                            and "created_at>?" in plan and "created_at<?" in plan for plan in plans), plans)
+
     def summarize(self, root):
         completed = run_script(rc.DB_SUMMARY_SCRIPT, [str(root / "bot.db"), str(root / "blacklist.json")])
         self.assertEqual(completed.returncode, 0, completed.stderr)

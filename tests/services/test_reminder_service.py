@@ -21,6 +21,35 @@ from persona_bot.utils import timeutil
 
 
 class ReminderCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_archived_thread_is_reopened_before_notifying_in_the_same_thread(self):
+        for locked, manage, fails in ((False, False, False), (True, True, False), (True, False, False), (False, True, True)):
+            with self.subTest(locked=locked, manage=manage, fails=fails):
+                channel = Mock(spec=discord.Thread, archived=True, locked=locked, send=AsyncMock())
+                channel.guild = SimpleNamespace(me=object())
+                channel.permissions_for.return_value = SimpleNamespace(
+                    view_channel=True, send_messages_in_threads=True, manage_threads=manage,
+                )
+                channel.edit = AsyncMock(return_value=channel)
+                if fails:
+                    channel.edit.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason="禁止"), "架空の再開拒否")
+                calls = Mock()
+                calls.attach_mock(channel.edit, "edit")
+                calls.attach_mock(channel.send, "send")
+                service = ReminderService(Mock(get_channel=Mock(return_value=channel)), None, Mock(
+                    mask_with_log=Mock(side_effect=lambda text, **kwargs: text),
+                ))
+                await service._notify({"channel_id": 10, "user_id": "11", "message": "架空の予定"})
+                if locked and not manage:
+                    channel.edit.assert_not_awaited()
+                else:
+                    channel.edit.assert_awaited_once_with(archived=False, reason="登録済みリマインダーの通知")
+                if fails or (locked and not manage):
+                    channel.send.assert_not_awaited()
+                else:
+                    channel.send.assert_awaited_once()
+                    self.assertEqual([call[0] for call in calls.mock_calls], ["edit", "send"])
+                channel.parent.send.assert_not_called()
+
     def test_z_dates_work_when_standard_parser_rejects_z_like_python_310(self):
         def parse(text):
             if text.endswith("Z"):
@@ -51,7 +80,8 @@ class ReminderCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 permissions = SimpleNamespace(view_channel=view, send_messages=send, send_messages_in_threads=send)
                 if kind == "thread":
                     permissions.send_messages = False
-                channel = Mock(spec=discord.Thread if kind == "thread" else discord.TextChannel, send=AsyncMock())
+                channel = Mock(spec=discord.Thread if kind == "thread" else discord.TextChannel,
+                               send=AsyncMock(), archived=False, locked=False)
                 channel.guild = None if kind == "dm" else SimpleNamespace(me=object() if member else None)
                 channel.permissions_for.return_value = permissions
                 service = ReminderService(Mock(get_channel=Mock(return_value=channel)), None, Mock(

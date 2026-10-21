@@ -120,6 +120,37 @@ test("停止はサービス名入力による確認を開き、確認前にAPI�
   assert.deepEqual(calls, []);
 });
 
+test("接続切替・同じ接続先への再接続・切断で古いサービス操作の確認を無効にする", async (t) => {
+  const original = globalThis.window;
+  globalThis.window = {setTimeout: () => 1, clearTimeout: () => {}};
+  t.after(() => { globalThis.window = original; });
+  for (const next of [connection("B"), {...connection("A"), connected_at: 2}, connection(null)]) {
+    const targets = [];
+    const harness = consoleHarness({
+      service: async (...args) => {targets.push(args); return {ok: true, message: "架空の完了"};},
+      operations: async () => ({operations: []}), status: async () => ({fetched_at: 1}),
+    });
+    harness.render().applyConnection(connection("A"));
+    harness.render().requestAction("restart");
+    const oldConfirm = harness.render().confirm;
+    harness.render().applyConnection(next);
+    assert.equal(harness.render().confirmOpen, false);
+    oldConfirm.onConfirm();
+    await Promise.resolve();
+    assert.deepEqual(targets, []);
+  }
+  const targets = [];
+  const harness = consoleHarness({
+    service: async (...args) => { targets.push(args); return {ok: true, message: "架空の完了"}; },
+    operations: async () => ({operations: []}), status: async () => ({fetched_at: 1}),
+  });
+  harness.render().applyConnection(connection("A"));
+  harness.render().requestAction("stop");
+  harness.render().confirm.onConfirm();
+  await Promise.resolve();
+  assert.deepEqual(targets, [["stop", {profile_id: "A", connected_at: 1}]]);
+});
+
 test("切り替え前に予約したサービス操作後のタイマーは新しい接続で取得しない", async () => {
   const timers = [];
   const original = globalThis.window;
@@ -224,6 +255,27 @@ test("SSH設定に任せる場合もホーム所有者・パス・ラベルを�
     assert.equal(privacy.redact(profile.label), harness.privacy.MASK);
     assert.equal(harness.privacy.createPrivacy(false, secrets).redact(path), path);
   }
+});
+
+test("接続先ID・配備先ブランチ・現在のGitブランチはメッセージ内でも隠す", () => {
+  const {privacy} = consoleHarness({});
+  const profile = {id: "fictional-profile", deploy_branch: "private/fictional-deploy"};
+  const git = {branch: "private/fictional-current"};
+  const secrets = privacy.collectSecrets({profile, profiles: [], insights: null, git});
+  const text = `${profile.id} ${profile.deploy_branch} ${git.branch}`;
+  assert.equal(privacy.createPrivacy(true, secrets).redact(text), `${privacy.MASK} ${privacy.MASK} ${privacy.MASK}`);
+  assert.equal(privacy.createPrivacy(false, secrets).redact(text), text);
+});
+
+test("状態取得で判明したブランチをConsoleの通知でも隠す", async () => {
+  const branch = "private/fictional-current";
+  const harness = consoleHarness({status: async () => ({git: {branch}, fetched_at: 1})});
+  harness.render().applyConnection(connection("A"));
+  await harness.render().refreshStatus();
+  harness.render().setPrivacyOn(true);
+  harness.render().notify({title: `更新先 ${branch}`, detail: branch});
+  assert.equal(harness.notices.at(-1).title, `更新先 ${harness.privacy.MASK}`);
+  assert.equal(harness.notices.at(-1).detail, harness.privacy.MASK);
 });
 
 test("伏せ字モードで通知の見出しと詳細、短いホーム名のパスも隠す", () => {

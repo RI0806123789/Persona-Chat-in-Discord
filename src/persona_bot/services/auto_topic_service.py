@@ -399,15 +399,14 @@ class AutoTopicService:
             guild = self._client.get_guild(guild_id)
             if guild is None:
                 continue
-            channel = self._pick_anniversary_channel(guild_settings)
+            member = await self._resolve_member(guild, user_id)
+            if member is None:
+                continue
+            channel = self._pick_anniversary_channel(guild_settings, member)
             if channel is None:
                 # 送信できる監視チャンネルが無い。API は呼んでいないため記録はせず、
                 # 権限が戻れば次回の見回りで投稿される。
                 continue
-            member = await self._resolve_member(guild, user_id)
-            if member is None:
-                continue  # このサーバーのメンバーではない
-
             try:
                 done = await self._post_anniversary(channel, guild_settings, member, label)
             except discord.Forbidden:
@@ -425,7 +424,7 @@ class AutoTopicService:
                 # メモリと DB の両方に記録する（当日に再起動しても再投稿しないため）
                 await guild_settings.record_anniversary_post(user_id, label, today_str)
 
-    def _pick_anniversary_channel(self, guild_settings: GuildSettings) -> Any | None:
+    def _pick_anniversary_channel(self, guild_settings: GuildSettings, member: discord.Member) -> Any | None:
         """お祝いの投稿先を、直近アクティビティが新しい監視チャンネルから順に選ぶ。
 
         最新のチャンネルが削除された・送信できなくなっただけで、そのサーバーでの
@@ -445,7 +444,7 @@ class AutoTopicService:
                 guild_settings.auto_topic_channels.pop(channel_id, None)
                 guild_settings.auto_topic_posted_at.pop(channel_id, None)
                 continue
-            if self._can_send(channel):
+            if self._can_send(channel) and channel.permissions_for(member).view_channel:
                 return channel
         return None
 
@@ -458,7 +457,7 @@ class AutoTopicService:
     ) -> bool:
         """お祝いメッセージを生成し、チャンネルへ投稿する。戻り値の意味は _post_topic と同様。"""
         if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
-                or not self._can_send(channel)):
+                or not self._can_send(channel) or not channel.permissions_for(member).view_channel):
             return False
 
         response_settings = guild_settings.snapshot_response()
@@ -476,7 +475,8 @@ class AutoTopicService:
         )
         full_prompt = build_anniversary_prompt(persona_prompt, member.display_name, label, history_text)
 
-        if not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels:
+        if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
+                or not channel.permissions_for(member).view_channel):
             return False
 
         response_text, usage_info, _sources = await self._gemini.generate(
@@ -492,7 +492,8 @@ class AutoTopicService:
             return False
 
         screened, done = await self._screen_auto_post(response_text, "記念日のお祝い")
-        if not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels:
+        if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
+                or not channel.permissions_for(member).view_channel):
             return False
         if screened is None:
             return done

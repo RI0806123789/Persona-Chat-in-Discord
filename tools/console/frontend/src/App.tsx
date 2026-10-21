@@ -133,8 +133,8 @@ function Console() {
     setDbUserNames([]);
   }, [connectionKey]);
   const secrets = useMemo(
-    () => collectSecrets({ profile: connection?.profile ?? null, profiles, connection, insights, userNames: dbUserNames }),
-    [connection, profiles, insights, dbUserNames],
+    () => collectSecrets({ profile: connection?.profile ?? null, profiles, connection, insights, git: status?.git, userNames: dbUserNames }),
+    [connection, profiles, insights, status?.git, dbUserNames],
   );
   const privacy = useMemo(() => createPrivacy(privacyOn, secrets), [privacyOn, secrets]);
   const privacyRef = useRef(privacy);
@@ -188,6 +188,7 @@ function Console() {
       }
       if (!state.connected || dataConnectionKey.current !== nextKey) {
         requestScope.current.invalidate();
+        setConfirmOpen(false);
         setDeploy(null);
         setDeployRunning(false);
         deployWasRunning.current = false;
@@ -413,6 +414,7 @@ function Console() {
       const profile = connection?.profile;
       if (!profile || busyAction || connection?.connected_at == null) return;
       const target = { profile_id: profile.id, connected_at: connection.connected_at };
+      const isCurrent = requestScope.current.current();
       if (deployRunning) {
         notify({ tone: "info", title: "デプロイを実行中です", detail: "終わってから操作してください。" });
         return;
@@ -438,7 +440,7 @@ function Console() {
         confirmLabel: `${ACTION_LABELS[action]}する`,
         tone: action === "stop" || (isProduction && action === "restart") ? "danger" : "primary",
         requireText: action === "stop" ? profile.service : undefined,
-        onConfirm: () => void runAction(action, target),
+        onConfirm: () => { if (isCurrent()) void runAction(action, target); },
       });
       setConfirmOpen(true);
     },

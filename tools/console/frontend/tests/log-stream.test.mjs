@@ -79,6 +79,27 @@ function harness(t, { throws = false } = {}) {
 
 const entry = { ts: 1, message: "架空のログ", priority: 6, source: "python" };
 
+test("壊れたログの項目と終了理由はエラーにして既読ログを保持する", async (t) => {
+  for (const broken of [null, {}, {...entry, ts: "1"}, {...entry, message: []},
+    {...entry, source: {}}, {...entry, priority: "6"}, {...entry, pid: []}]) {
+    await t.test(JSON.stringify(broken), (child) => {
+      const h = harness(child);
+      const socket = h.sockets[0];
+      socket.onopen();
+      socket.message({type: "entry", entry});
+      socket.message({type: "entry", entry: broken});
+      const stream = h.flush();
+      assert.equal(stream.status, "error");
+      assert.deepEqual(stream.entries, [entry]);
+      assert.equal(socket.closed, true);
+      assert.equal(h.timeouts.size, 0);
+    });
+  }
+  const h = harness(t);
+  h.sockets[0].message({type: "end", message: {invalid: true}});
+  assert.equal(h.read().status, "error");
+});
+
 test("バックエンドのエラー理由と受信済みログを残し、自動再接続しない", (t) => {
   const h = harness(t);
   const socket = h.sockets[0];

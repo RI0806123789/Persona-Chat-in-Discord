@@ -1202,8 +1202,13 @@ class Database:
             return task
 
     def queue_recover_stuck(self, now_iso: str) -> int:
-        """processing のまま残ったタスクを pending に戻し、戻した件数を返す。"""
+        """処理中は再開し、送信中断で配送結果が不明なタスクは再送せず失敗として残す。"""
         with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE queue_tasks SET status = 'failed', updated_at = ?, finished_at = ?, error = ?"
+                " WHERE status = 'sending'",
+                (now_iso, now_iso, "返信の送信中に中断されました。重複を防ぐため自動再送しません。"),
+            )
             cursor = self._conn.execute(
                 "UPDATE queue_tasks SET status = 'pending', updated_at = ?"
                 " WHERE status = 'processing'",
@@ -1229,6 +1234,8 @@ class Database:
     # ---- pending_log（記憶圧縮前の一時ログ） ----------------------------------
 
     def pending_append(self, user_id: str, created_at: str, question: str, response: str) -> None:
+        if user_id is None or not str(user_id).strip():
+            raise ValueError("会話ログの保存には空でないユーザーIDが必要です。")
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO pending_log (user_id, created_at, question, response) VALUES (?, ?, ?, ?)",

@@ -50,6 +50,7 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.guild = SimpleNamespace(id=1, voice_client=self.voice)
         self.client = SimpleNamespace(
             user=SimpleNamespace(id=99), get_channel=Mock(return_value=self.channel),
+            get_guild=Mock(return_value=self.guild),
         )
         self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("架空の応答", None, [])))
         self.service = AutonomousService(
@@ -86,6 +87,31 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.settings.current_prompt_file = "../prompts/prompt_maid.txt"
         self.settings.current_model_name = "new-model"
         self.settings.grounding_enabled = False
+
+    async def test_opening_or_monologue_send_failure_stops_the_failed_session(self):
+        for kind in ("opening", "monologue"):
+            with self.subTest(kind=kind):
+                self.settings.autonomous_session = self.session
+                self.session.busy = True
+                self.voice.disconnect.reset_mock()
+                self.sent.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason="禁止"), "架空の送信拒否")
+                await self.speak(kind)
+                self.assertIsNone(self.settings.autonomous_session)
+                self.assertFalse(self.session.busy)
+                self.voice.disconnect.assert_awaited_once_with(force=True)
+                self.spoken.assert_not_awaited()
+
+    async def test_send_failure_does_not_stop_a_replacement_session(self):
+        replacement = SimpleNamespace(channel_id=20)
+
+        async def fail(*args, **kwargs):
+            self.settings.autonomous_session = replacement
+            raise RuntimeError("架空の送信失敗")
+
+        self.sent.side_effect = fail
+        await self.speak("opening")
+        self.assertIs(self.settings.autonomous_session, replacement)
+        self.voice.disconnect.assert_not_awaited()
 
     async def test_finished_replaced_moved_or_disconnected_session_is_not_spoken_after_send(self) -> None:
         for kind in ("opening", "monologue"):

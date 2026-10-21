@@ -44,6 +44,11 @@ def parse_iso_datetime(text: str) -> datetime:
     return datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
 
 
+def as_utc(value: datetime) -> datetime:
+    """日時をUTCへ揃える。タイムゾーンのない旧値もUTCとして扱う。"""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def resolve_timezone(name: str, *, purpose: str = "") -> tzinfo:
     """タイムゾーン名を解決する。読み込めない環境では UTC を返す。
 

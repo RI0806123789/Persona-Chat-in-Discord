@@ -339,6 +339,37 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
         self.gemini.generate.assert_awaited_once()
         self.assert_recorded(True)
 
+    def hide_from_member(self, channel):
+        channel.permissions_for.side_effect = lambda target: (
+            SimpleNamespace(view_channel=False) if target is self.member else channel.permissions
+        )
+
+    async def test_anniversary_skips_channels_the_target_member_cannot_view(self):
+        self.hide_from_member(self.channels[10])
+        await self.celebrate()
+        self.channels[10].send.assert_not_awaited()
+        self.channels[20].send.assert_awaited_once()
+        self.assert_recorded(True)
+
+    async def test_hidden_channels_do_not_generate_or_record_an_anniversary(self):
+        for channel in self.channels.values():
+            self.hide_from_member(channel)
+        await self.celebrate()
+        self.gemini.generate.assert_not_awaited()
+        for channel in self.channels.values():
+            channel.send.assert_not_awaited()
+        self.assert_recorded(False)
+
+    async def test_revoked_target_visibility_during_generation_prevents_send(self):
+        async def generate(*args, **kwargs):
+            self.hide_from_member(self.channels[10])
+            return "架空のお祝い", None, []
+
+        self.gemini.generate.side_effect = generate
+        await self.celebrate()
+        self.channels[10].send.assert_not_awaited()
+        self.assert_recorded(False)
+
     async def test_disabled_auto_topic_keeps_watched_channels_but_posts_no_anniversary(self):
         self.settings.auto_topic_enabled = False
         await self.celebrate()

@@ -58,7 +58,7 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         async def attachment(item, user_id, model):
             self.models.append(model)
-            await self.memory.store_document_summary(user_id, {"document_name": item.filename, "summary": f"架空の要約 {item.filename}"})
+            return {"document_name": item.filename, "summary": f"架空の要約 {item.filename}"}
 
         self.service._process_attachment = AsyncMock(side_effect=attachment)
         self.attachment = attachment
@@ -97,14 +97,23 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await self.service._process_task(self.task)
         self.sent.assert_awaited_once()
         self.message.reply.assert_not_awaited()
-        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["completed"])
+        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["sending", "completed"])
 
     async def test_completion_save_failure_does_not_save_failed_or_reply_twice(self) -> None:
-        with patch.object(self.service, "_update_task", side_effect=OSError("架空の状態保存失敗")) as update:
+        original = self.service._update_task
+
+        async def fail_completion(task_id, **updates):
+            if updates["status"] == "completed":
+                raise OSError("架空の状態保存失敗")
+            await original(task_id, **updates)
+
+        with patch.object(self.service, "_update_task", side_effect=fail_completion) as update:
             await self.service._process_task(self.task)
         self.sent.assert_awaited_once()
         self.message.reply.assert_not_awaited()
-        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["completed"])
+        self.assertEqual([call.kwargs["status"] for call in update.await_args_list], ["sending", "completed"])
+        self.db.queue_recover_stuck("2026-01-01T00:00:00+00:00")
+        self.assertIsNone(self.db.queue_claim_next_pending("2026-01-01T00:00:01+00:00"))
 
     async def test_failed_status_save_does_not_prevent_failure_notice(self) -> None:
         self.service._process_attachment.side_effect = ValueError("架空の添付失敗")
@@ -127,11 +136,12 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_setting_change_during_first_attachment_keeps_initial_settings(self) -> None:
         async def change(item, user_id, model):
-            await self.attachment(item, user_id, model)
+            summary = await self.attachment(item, user_id, model)
             self.settings.current_model_name = "new-model"
             self.settings.current_prompt_file = "../prompts/prompt_maid.txt"
             self.settings.grounding_enabled = False
             await asyncio.sleep(0)
+            return summary
 
         self.service._process_attachment.side_effect = change
         await self.service._process_task(self.task)
@@ -139,6 +149,58 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.loader.assert_awaited_once_with("../prompts/prompt_default.txt")
         self.assertEqual(self.gemini.generate.await_args.args[1], "old-model")
         self.assertTrue(self.gemini.generate.await_args.kwargs["grounding"])
+
+
+    async def test_repeated_cancellation_during_reply_finishes_delivery_and_completion(self):
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def send(*args, **kwargs):
+            started.set()
+            await release.wait()
+
+        self.sent.side_effect = send
+        worker = asyncio.create_task(self.service._process_task(self.task))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            for _ in range(2):
+                worker.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(worker.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(worker, 2)
+        finally:
+            release.set()
+            await asyncio.gather(worker, return_exceptions=True)
+        self.sent.assert_awaited_once()
+        self.message.reply.assert_not_awaited()
+        self.db.queue_recover_stuck("2026-01-01")
+        self.assertIsNone(self.db.queue_claim_next_pending("2026-01-01"))
+        self.assertEqual(len(self.db.pending_fetch_entries("11")), 1)
+
+    async def test_delivery_checkpoint_is_durable_and_never_replayed_after_restart(self):
+        self.db.queue_update_task(self.task["task_id"], {"status": "sending"}, "2026-01-01")
+        reopened = Database(self.db._db_path)
+        try:
+            reopened.initialize()
+            reopened.queue_recover_stuck("2026-01-02")
+            self.assertIsNone(reopened.queue_claim_next_pending("2026-01-02"))
+            row = reopened._conn.execute("SELECT status, error FROM queue_tasks").fetchone()
+            self.assertEqual(row["status"], "failed")
+            self.assertIn("自動再送しません", row["error"])
+        finally:
+            reopened.close()
+
+    async def test_later_attachment_failure_saves_no_partial_batch(self):
+        await self.memory.store_document_summary("other-user", {"summary": "架空の既存要約"})
+        before = self.memory._load_projects_wrapper()
+        self.service._process_attachment.side_effect = [
+            {"document_name": "first.txt", "summary": "架空の先行要約"}, ValueError("架空の後続添付失敗"),
+        ]
+        await self.service._process_task(self.task)
+        self.assertEqual(self.memory._load_projects_wrapper(), before)
+        self.gemini.generate.assert_not_awaited()
+        self.sent.assert_not_awaited()
 
 
 class PdfStreamTests(unittest.TestCase):

@@ -83,6 +83,13 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.settings.autonomous_last_activity, self.now)
         self.assertEqual(self.settings.autonomous_recent_activity, [])
 
+    async def test_stop_all_cleans_remaining_guilds_before_propagating_cancellation(self):
+        self.state.get_guild(2).autonomous_session = self.make_session()
+        with patch.object(self.service, "stop_session", new=AsyncMock(side_effect=[asyncio.CancelledError(), True])) as stop:
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.stop_all_sessions()
+        self.assertEqual([call.args[0] for call in stop.await_args_list], [1, 2])
+
     async def test_connection_loss_closes_owned_stage_and_forces_disconnect(self) -> None:
         await self.service._tend_session(self.guild, self.settings)
         self.instance.delete.assert_awaited_once()

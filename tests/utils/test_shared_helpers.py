@@ -172,6 +172,41 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GraphSendingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_borrowed_discord_file_closes_underlying_buffer_once_even_after_sender_close(self):
+        class CountingBuffer(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"fictional-png")
+                self.closes = 0
+
+            def close(self):
+                self.closes += 1
+                super().close()
+
+        for outcome in ("success", "failure", "cancel"):
+            with self.subTest(outcome=outcome):
+                buffer = CountingBuffer()
+                interaction = make_interaction()
+
+                async def send(*args, **kwargs):
+                    # 実際のdiscord.Fileを借用する。discord.py側の終了処理も模擬する。
+                    picture = kwargs.get("file")
+                    if picture is None:
+                        return
+                    picture.close()
+                    if outcome == "failure":
+                        raise OSError("架空の送信失敗")
+                    if outcome == "cancel":
+                        raise asyncio.CancelledError
+
+                interaction.response.send_message.side_effect = send
+                if outcome == "cancel":
+                    with self.assertRaises(asyncio.CancelledError):
+                        await view_parts.send_graph_ephemeral(interaction, buffer, "fictional.png", "架空")
+                else:
+                    await view_parts.send_graph_ephemeral(interaction, buffer, "fictional.png", "架空")
+                self.assertTrue(buffer.closed)
+                self.assertEqual(buffer.closes, 1)
+
     async def test_initial_response_and_deferred_followup_both_close_buffer(self) -> None:
         for followup in (False, True):
             with self.subTest(followup=followup):

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import codecs
 import tempfile
 from datetime import datetime, timezone
@@ -193,8 +194,11 @@ class DocumentService:
             guild_settings = self._state.get_guild(guild_id)
             response_settings = guild_settings.snapshot_response()
 
-            for attachment in attachments:
+            summaries = [
                 await self._process_attachment(attachment, author_id, response_settings.model_name)
+                for attachment in attachments
+            ]
+            await self._memory.store_document_summaries(author_id, summaries)
 
             prompt_file = response_settings.prompt_file
             prompt = await load_persona_template(prompt_file)
@@ -248,7 +252,14 @@ class DocumentService:
             if accepted and grounding_sources:
                 reply_text += format_grounding_sources(grounding_sources)
 
-            await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
+            # DiscordとDBは同じトランザクションにできない。送信開始を先に記録し、
+            # 強制終了で配送結果が不明なら自動再送を止める。通常のキャンセルは送信・保存後に伝える。
+            await self._update_task(task_id, status="sending")
+            await wait_for_cleanup(
+                self._send_and_complete(task_id, message, reply_text, grounding_sources, author_id,
+                                        question, response_text, accepted),
+                label="文書返信の送信と完了記録",
+            )
         except Exception as error:
             if self._stopping:
                 # 終了中の中断は processing のまま残し、次回起動時に復旧する。
@@ -270,17 +281,22 @@ class DocumentService:
                     print(f"文書タスク失敗通知エラー: {reply_error}")
             return
 
-        # 回答は送信済み。保存の失敗を処理失敗や二重のエラー返信へ変えない。
+    async def _send_and_complete(
+        self, task_id: str, message: discord.Message, reply_text: str, grounding_sources: list,
+        author_id: str, question: str, response_text: str, accepted: bool,
+    ) -> None:
+        await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
+        # 回答は送信済み。完了記録を先に試み、保存の失敗を再送や二重のエラー返信へ変えない。
+        try:
+            await self._update_task(task_id, status="completed", finished_at=utc_now_iso())
+        except Exception as error:
+            print(f"文書タスク: 回答後の完了状態の保存に失敗しました: {type(error).__name__}")
         try:
             if accepted:
                 await self._memory.append_pending_log(author_id, question, response_text)
                 spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
         except Exception as error:
             print(f"文書タスク: 回答後の記憶追記に失敗しました: {type(error).__name__}")
-        try:
-            await self._update_task(task_id, status="completed", finished_at=utc_now_iso())
-        except Exception as error:
-            print(f"文書タスク: 回答後の完了状態の保存に失敗しました: {type(error).__name__}")
 
     async def _fetch_message_from_task(self, task: dict[str, Any]) -> discord.Message:
         channel_id = int(task.get("channel_id", 0))
@@ -298,7 +314,7 @@ class DocumentService:
         attachment: discord.Attachment,
         author_id: str,
         model_name: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         if attachment.size > MAX_DOCUMENT_SIZE_BYTES:
             raise ValueError(f"ファイルサイズが上限を超えています: {attachment.filename}")
 
@@ -311,8 +327,8 @@ class DocumentService:
 
             uploaded_file = await self._gemini.upload_file(temp_path)
             summary_data = await self._gemini.summarize_document(uploaded_file, attachment.filename, model_name)
-            # 文書要約は投稿者の記憶スペースへ保存する（ユーザー別記憶）。
-            await self._memory.store_document_summary(author_id, summary_data)
+            summary_data["document_hash"] = await run_in_thread(self._document_hash, temp_path)
+            return summary_data
         finally:
             try:
                 if uploaded_file is not None:
@@ -323,6 +339,11 @@ class DocumentService:
                 # アップロード先の削除が失敗しても、ローカルの回収を実行する。
                 if temp_path is not None:
                     self._remove_temp_file(temp_path)
+
+    @staticmethod
+    def _document_hash(path: Path) -> str:
+        """ファイル内容だけの指紋を、同期ワーカーで算出する。"""
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     async def _download_to_temp_file(self, attachment: discord.Attachment, suffix: str) -> Path:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)

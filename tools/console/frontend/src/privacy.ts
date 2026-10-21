@@ -3,7 +3,7 @@
 // ホスト名・ホスト鍵・ボット名・サーバー名・チャンネル名・利用者の表示名も、分かっている文字列を探して隠す（redact）。
 // bot.db のテーブルの中身は、列の種類ごとに隠す（dbTables.ts の isSecretKind）。
 import { createContext, useContext } from "react";
-import type { ConnectionState, Insights, LogEntry, Profile } from "./types";
+import type { ConnectionState, GitInfo, Insights, LogEntry, Profile } from "./types";
 
 export const MASK = "••••••";
 
@@ -30,6 +30,7 @@ export function collectSecrets(parts: {
   profiles: Profile[];
   connection: ConnectionState | null;
   insights: Insights | null;
+  git?: GitInfo | null;
   /** データページで開いたテーブルの中身に出てきた、利用者の表示名 */
   userNames?: string[];
 }): string[] {
@@ -37,13 +38,14 @@ export function collectSecrets(parts: {
     parts.connection?.fingerprint,
     parts.connection?.server?.hostname,
     parts.insights?.discord.bot_user,
+    parts.git?.branch,
     ...(parts.userNames ?? []),
   ];
   // ボット名は「名前#0000」の形で出ることがあるので、名前だけでも探す
   const botUser = parts.insights?.discord.bot_user;
   if (botUser?.includes("#")) values.push(botUser.split("#")[0]);
   for (const profile of [parts.profile, ...parts.profiles]) {
-    values.push(profile?.host, profile?.username, profile?.label, profile?.bot_dir);
+    values.push(profile?.host, profile?.username, profile?.label, profile?.bot_dir, profile?.id, profile?.deploy_branch);
     const home = profile?.bot_dir?.match(/\/(?:home|Users)\/([^/]+)(?=\/|$)/);
     values.push(home?.[0], home?.[1]);
   }

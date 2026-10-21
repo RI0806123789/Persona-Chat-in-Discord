@@ -16,16 +16,34 @@ function compile(text, modules) {
 const status = compile(await source("status.ts"), {});
 const ui = Object.fromEntries(["Button", "Card", "EmptyState", "StatusChip", "Chip", "InlineError", "Notice", "Sparkline", "SplitButton", "Stat"]
   .map((name) => [name, name]));
+let masked = false;
 const modules = {
   "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
   "../status": status, "../components/ui": ui, "../components/Icon": { Icon: "Icon" },
   "../components/expressive": { LoadingIndicator: "LoadingIndicator", WavyProgress: "WavyProgress" },
-  "../privacy": { usePrivacy: () => ({ redact: (value) => value }) },
+  "../privacy": { usePrivacy: () => ({ redact: (value) => value, mask: (value) => masked ? "MASKED" : value }) },
   "../format": new Proxy({}, { get: () => () => "架空の表示値" }),
   "./DeployCard": { DeployCard: "DeployCard" }, "./shared": { NotConnected: "NotConnected" },
 };
 const { OperationsPage } = compile(await source("pages/OperationsPage.tsx"), modules);
 const { OverviewPage } = compile(await source("pages/OverviewPage.tsx"), modules);
+const { DeployCard } = compile(await source("pages/DeployCard.tsx"), modules);
+
+test("デプロイのブランチと操作履歴の接続先は伏せ字設定に従う", () => {
+  try {
+    for (masked of [false, true]) {
+      const branch = "private/fictional-branch", profileId = "fictional-private-profile";
+      const card = DeployCard({deploy: null, profile: {deploy_branch: branch}, git: null, now: 0});
+      const history = OperationsPage({profile: null, service: null, now: 0, operations: [
+        {id: 1, profile_id: profileId, at: 1, action: "stop", ok: true, duration_ms: 1},
+      ]});
+      const cardText = JSON.stringify(card), historyText = JSON.stringify(history);
+      assert.equal(cardText.includes(branch), !masked);
+      assert.equal(historyText.includes(profileId), !masked);
+      if (masked) {assert.ok(cardText.includes("MASKED")); assert.ok(historyText.includes("MASKED"));}
+    }
+  } finally { masked = false; }
+});
 
 function nodes(node) {
   if (Array.isArray(node)) return node.flatMap(nodes);
