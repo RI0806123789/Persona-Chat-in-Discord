@@ -4,6 +4,11 @@ Git が管理するのは `prompts/` の書式見本（テンプレート）だ�
 利用者が各自のパソコン・サーバーで作る。ここでは `prompts/` にある `.txt` を選択肢として
 集め、任意の `prompts/personas.json` から表示名・読み上げの声・既定のペルソナを読む。
 
+personas.json の書式見本は `prompts/00_prompt_format.json`（`PERSONA_SETTINGS_TEMPLATE_FILE_NAME`）で、
+利用者が personas.json へコピーして書き換える元。ここでは見本を読まない。personas.json の
+最上位は `default` と `personas` だけを使い、それ以外（見本の説明欄 `_説明` など）は警告せずに
+無視する（見本をコピーしたまま使っても警告が出ないようにするため）。
+
 **保存・選択に使う値は旧版と同じ「src/ 基準の相対パス」（`"../prompts/<ファイル名>"`）。**
 ファイル名を変えなければ、DB に保存済みのサーバー設定がそのまま引き継がれる。
 
@@ -29,6 +34,7 @@ from typing import Any, Mapping
 from persona_bot.config import constants
 from persona_bot.config.constants import (
     DISCORD_SELECT_VALUE_MAX_LENGTH,
+    PERSONA_SETTINGS_TEMPLATE_FILE_NAME,
     PERSONA_VALUE_PREFIX,
     PROMPT_TEMPLATE_FILE_NAME,
     VOICE_PROFILE_FALLBACK,
@@ -189,6 +195,8 @@ def reload_persona_catalog() -> PersonaCatalog:
             "ペルソナ: prompts/ に利用できるペルソナがありません。"
             f"prompts/{PROMPT_TEMPLATE_FILE_NAME} をコピーして prompts/<名前>.txt を作ると、"
             "キャラ設定から選べます（作るまでは組み込みの標準プロンプトで応答します）。"
+            f"表示名と声は prompts/{PERSONA_SETTINGS_TEMPLATE_FILE_NAME} を prompts/personas.json に"
+            "コピーして決められます。"
         )
     else:
         print(f"ペルソナ: {len(catalog.personas)} 件を読み込みました。")

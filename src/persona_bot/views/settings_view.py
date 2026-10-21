@@ -9,7 +9,11 @@ from persona_bot.config.choices import (
     RESPOND_MODE_CHOICES,
     RESPOND_MODE_DISPLAY_NAMES,
 )
-from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS, PROMPT_TEMPLATE_FILE_NAME
+from persona_bot.config.constants import (
+    DISCORD_SELECT_MAX_OPTIONS,
+    PERSONA_SETTINGS_TEMPLATE_FILE_NAME,
+    PROMPT_TEMPLATE_FILE_NAME,
+)
 from persona_bot.config.personas import (
     FOLLOW_DEFAULT_PERSONA, PersonaCatalog, current_persona_catalog, is_selectable_persona,
 )
@@ -68,6 +72,8 @@ def _persona_notice(catalog: PersonaCatalog) -> str:
             "\n\nℹ️ ペルソナが未登録のため、組み込みの標準プロンプトで応答しています。"
             f"`prompts/{PROMPT_TEMPLATE_FILE_NAME}` をコピーして `prompts/<名前>.txt` を作ると、"
             "このパネルを開き直したときに選べます（作り方は README の「ペルソナを作る」）。"
+            f"表示名と声は `prompts/{PERSONA_SETTINGS_TEMPLATE_FILE_NAME}` を `prompts/personas.json` に"
+            "コピーして決められます。"
         )
     if len(catalog.personas) > DISCORD_SELECT_MAX_OPTIONS:
         return f"\n\nℹ️ ペルソナが多いため、先頭の{DISCORD_SELECT_MAX_OPTIONS}件だけを選択肢に表示しています。"

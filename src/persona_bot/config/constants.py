@@ -13,6 +13,9 @@ PROMPT_TEMPLATE_FILE_NAME = "00_prompt_format.txt"
 # 表示名・読み上げの声・既定のペルソナを決める任意の設定ファイル（利用者がローカルで作る）。
 # 無くてもよく、その場合はファイル名（拡張子なし）を表示名にし、先頭のファイルを既定にする。
 PERSONA_SETTINGS_PATH = PROMPTS_DIR / "personas.json"
+# personas.json の書式見本（Git 管理対象）。利用者が personas.json へコピーして書き換える元で、
+# ボットはこのファイルを読まない（.env.example と同じ扱い）。
+PERSONA_SETTINGS_TEMPLATE_FILE_NAME = "00_prompt_format.json"
 # 保存・選択に使うペルソナの値は「src/ 基準の相対パス」= この接頭辞 + ファイル名。
 # 旧版の固定の選択肢と同じ形なので、ファイル名を変えなければ保存済みの設定を引き継げる。
 PERSONA_VALUE_PREFIX = "../prompts/"

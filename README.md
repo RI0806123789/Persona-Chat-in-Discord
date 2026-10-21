@@ -55,6 +55,7 @@ Persona Chat in Discord/
 ├── tests/                                     # 用途別の回帰テスト（構成と個別実行は tests/README.md）
 ├── prompts/                                    # ペルソナ（キャラクター設定）のプロンプト
 │   ├── 00_prompt_format.txt                    # 書式見本（Git 管理対象。コピーしてキャラを作る）
+│   ├── 00_prompt_format.json                   # personas.json の書式見本（Git 管理対象。コピーして表示名・声を決める）
 │   ├── <名前>.txt                              # 自作のペルソナ（Git 管理対象外。作り方は「ペルソナを作る」）
 │   └── personas.json                           # 表示名・声・既定のペルソナ（任意。Git 管理対象外）
 ├── memory/                                     # 長期記憶の保存先（.gitkeep 以外は Git 管理対象外）
@@ -253,7 +254,7 @@ REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_gr
 
 ## 🎭 ペルソナ（キャラクター）を作る
 
-リポジトリに含めているのは、プロンプトの書式見本 `prompts/00_prompt_format.txt` だけです。キャラクターのプロンプトは、この見本をもとに各自で作ります。`prompts/` に作ったファイルは `.gitignore` 済みなので、コミットされず、`git pull` で上書きも削除もされません。
+リポジトリに含めているのは、プロンプトの書式見本 `prompts/00_prompt_format.txt` と、表示名・声の設定（`personas.json`）の書式見本 `prompts/00_prompt_format.json` だけです。キャラクターのプロンプトと設定は、これらの見本をもとに各自で作ります。`prompts/` に作ったファイルは `.gitignore` 済みなので、コミットされず、`git pull` で上書きも削除もされません。
 
 ### 作り方
 
@@ -274,6 +275,16 @@ REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_gr
 ### 表示名・声・既定のペルソナ（任意）
 
 `prompts/personas.json` を作ると、表示名・読み上げの声・既定のペルソナを決められます（無くても動きます）。
+
+1. 見本をコピーして `personas.json` を作ります。
+
+   ```bash
+   cp prompts/00_prompt_format.json prompts/personas.json    # Windows (PowerShell) では Copy-Item prompts/00_prompt_format.json prompts/personas.json
+   ```
+
+2. ファイル名・表示名・声を、自分で作ったキャラクターに合わせて書き換えます（UTF-8 で保存）。キャラの数だけ `personas` の中の項目を増やし、使わない項目は消します。見本の先頭にある `_説明` は読み込み時に無視されるので、消しても残しても動きます。
+
+見本はボットに読み込まれません。`personas.json` という名前でコピーしたものだけが使われます。キャラクター 1 人分に書き換えた例です。
 
 ```json
 {
@@ -303,7 +314,7 @@ REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_gr
 
 ### サーバー（Linux）へ転送する
 
-パソコンで作ったファイルは Git では届かないので、SCP か SFTP で送ります（Windows 10 以降は PowerShell から `scp` / `sftp` を使えます）。**見本の `00_prompt_format.txt` は送らないでください**（サーバー側の Git 管理対象のファイルが変わり、管理コンソールのデプロイが止まります）。
+パソコンで作ったファイルは Git では届かないので、SCP か SFTP で送ります（Windows 10 以降は PowerShell から `scp` / `sftp` を使えます）。**見本の `00_prompt_format.txt`・`00_prompt_format.json` は送らないでください**（サーバー側の Git 管理対象のファイルが変わり、管理コンソールのデプロイが止まります）。
 
 ```bash
 scp prompts/my_character.txt prompts/personas.json <USER>@<HOST>:<PROJECT_DIR>/prompts/
@@ -492,7 +503,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 #### 新機能
 
 - **ボイス接続先の保護**(BETA): 管理者などがボットを別のボイスチャンネルへ移したとき、`/join`の接続は元のチャンネルへ戻り、自律行動の配信は締めの一言を残して移動先から退出。元のチャンネルの削除・権限不足・復帰失敗・短時間の連続移動では戻らずに退出し、自動で入り直さない。移動の瞬間に再生中だった読み上げは止め、`/join`・`/leave`・配信の開始と終了は移動と区別
-- **自作のペルソナ**(BETA): キャラ別のプロンプトの同梱をやめ、書式見本`prompts/00_prompt_format.txt`だけを公開。`prompts/`に置いた`.txt`がキャラ設定の選択肢になり、パネルを開くたびに読み直すため再起動は不要。表示名・読み上げの声・既定のペルソナは任意の`prompts/personas.json`で設定。ペルソナが1つも無い間は標準のプロンプトで応答し、パネルで作り方を案内。選んだファイルが見つからない間も選択は保ち、既定のペルソナで応答。キャラ別のファイルと`personas.json`はGitの管理対象外にし、作り方・SCP/SFTPでのサーバーへの転送・既存環境の更新手順（更新前の退避と復元）をREADMEに記載。管理コンソールの表示名も`personas.json`から取得
+- **自作のペルソナ**(BETA): キャラ別のプロンプトの同梱をやめ、書式見本`prompts/00_prompt_format.txt`と、`personas.json`の書式見本`prompts/00_prompt_format.json`だけを公開。`prompts/`に置いた`.txt`がキャラ設定の選択肢になり、パネルを開くたびに読み直すため再起動は不要。表示名・読み上げの声・既定のペルソナは任意の`prompts/personas.json`（JSONの見本をコピーして作る）で設定。ペルソナが1つも無い間は標準のプロンプトで応答し、パネルで作り方を案内。選んだファイルが見つからない間も選択は保ち、既定のペルソナで応答。キャラ別のファイルと`personas.json`はGitの管理対象外にし、作り方・SCP/SFTPでのサーバーへの転送・既存環境の更新手順（更新前の退避と復元）をREADMEに記載。管理コンソールの表示名も`personas.json`から取得
 
 #### 運用・構成の整備
 

@@ -44,7 +44,9 @@ class PackageLayoutTests(unittest.TestCase):
         for name in (constants.PROMPT_TEMPLATE_FILE_NAME, "架空のペルソナ.txt"):
             with self.subTest(persona=name):
                 self.assertEqual(resolve_prompt_path(persona_value(name)), PROJECT_ROOT / "prompts" / name)
-        self.assertTrue((PROJECT_ROOT / "prompts" / constants.PROMPT_TEMPLATE_FILE_NAME).is_file())
+        for template in (constants.PROMPT_TEMPLATE_FILE_NAME, constants.PERSONA_SETTINGS_TEMPLATE_FILE_NAME):
+            with self.subTest(template=template):
+                self.assertTrue((PROJECT_ROOT / "prompts" / template).is_file())
 
     def test_legacy_entrypoint_starts_in_an_isolated_project(self) -> None:
         # ソースだけをコピーし、実際の設定・DB・会話・記憶には触れずに起動する。
