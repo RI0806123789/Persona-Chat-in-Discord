@@ -29,9 +29,8 @@ from persona_bot.config.constants import (
     TTS_EQ_MIN_Q,
     TTS_EQ_NYQUIST_MARGIN,
     VOICE_EQ_PROFILES,
-    VOICE_PROFILE_FALLBACK,
-    VOICE_PROFILES,
 )
+from persona_bot.config.personas import current_persona_catalog
 
 # 0 除算を避けるための微小値。
 _EPSILON = 1e-9
@@ -40,11 +39,10 @@ _EPSILON = 1e-9
 def resolve_profile(prompt_file: str | None) -> Mapping[str, Any]:
     """ペルソナのファイルパスから、そのキャラクターのボイスプロファイルを引く。
 
-    未登録のペルソナ（今後 prompts/ に追加されたもの）は既定値に落とす。
+    声は personas.json の voice に書いたもの。書いていないペルソナ・一覧に無い値・
+    組み込みの標準は既定値（VOICE_PROFILE_FALLBACK）に落とす。
     """
-    if not prompt_file:
-        return VOICE_PROFILE_FALLBACK
-    return VOICE_PROFILES.get(prompt_file, VOICE_PROFILE_FALLBACK)
+    return current_persona_catalog().voice_profile(prompt_file)
 
 
 def needs_equalizer(profile: Mapping[str, Any]) -> bool:

@@ -280,6 +280,37 @@ subprocess.run = _fake_run
         self.assertEqual(data["dm_settings"]["persona"], "ツンデレ")
         self.assertEqual(data["dm_settings"]["model"], "Gemini 3.1 Flash Lite")
 
+    def test_personas_json_names_and_default_override_old_choices(self):
+        # ver0.1.8 以降はペルソナの表示名と既定をサーバー上の prompts/personas.json に書く
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        source = self.root / "src/persona_bot/config"
+        # 新しい版には DEFAULT_PROMPT_FILE と PERSONA_CHOICES が無い
+        constants = [line for line in CONSTANTS_PY.splitlines() if not line.startswith("DEFAULT_PROMPT_FILE")]
+        (source / "constants.py").write_text("\n".join(constants), encoding="utf-8")
+        (source / "choices.py").write_text(
+            'MODEL_CHOICES = [app_commands.Choice(name="Gemini 3.1 Flash Lite", value=DEFAULT_MODEL_NAME)]\n',
+            encoding="utf-8",
+        )
+        prompts = self.root / "prompts"
+        prompts.mkdir()
+        (prompts / "personas.json").write_text(json.dumps({
+            "default": "架空の既定.txt",
+            "personas": {"prompt_tsun.txt": {"name": "架空の キャラ"}, "架空の既定.txt": {"name": "架空の既定キャラ"}},
+        }, ensure_ascii=False), encoding="utf-8")
+        responses = {
+            "/users/@me": {"username": "架空のボット"},
+            "/users/@me/guilds": [{"id": str(GUILD_ID), "name": "架空のサーバー"}],
+            f"/guilds/{GUILD_ID}/voice-states/@me": 404,
+        }
+        data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
+        self.assertEqual(data["dm_settings"]["persona"], "架空の キャラ")
+        self.assertEqual(data["discord"]["guilds"][0]["settings"]["persona"], "架空の既定キャラ")
+
+        (prompts / "personas.json").write_text("{壊れた", encoding="utf-8")
+        data = self.insights(journal=[])
+        self.assertEqual(data["dm_settings"]["persona"], "prompt_tsun")
+        self.assertTrue(any("personas.json" in error for error in data["errors"]))
+
     def test_voice_permission_error_is_local_but_rate_limit_stops_later_requests(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
         responses = {

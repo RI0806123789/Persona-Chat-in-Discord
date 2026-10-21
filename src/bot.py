@@ -47,6 +47,7 @@ from persona_bot.services.memory_service import MemoryService
 from persona_bot.core.message_handler import MessageHandler
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
+from persona_bot.config.personas import reload_persona_catalog
 from persona_bot.config.settings_loader import load_settings
 from persona_bot.services.stats_service import StatsService
 from persona_bot.services.voice_guard import VoiceGuard
@@ -69,6 +70,9 @@ tree = app_commands.CommandTree(client)
 
 state = BotState()
 usage = UsageTracker()
+# prompts/ のペルソナ一覧を読む。保存済みの設定の復元が「ファイルが見つかるか」を
+# この一覧で確かめるため、復元より先に読む。
+reload_persona_catalog()
 # 保存済みのサーバーごとの設定（ペルソナ・モデル・応答モード・Google検索・自発会話）と
 # 記念日の投稿記録をメモリへ復元する。以降の設定変更は各 GuildSettings.persist() で保存される。
 state.restore_from_database(database)

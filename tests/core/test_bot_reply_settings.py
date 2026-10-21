@@ -22,6 +22,7 @@ from persona_bot.services.affinity_service import extract_affinity_changes
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import spawn
 from tests.helpers.message_handler_helpers import make_message_handler
+from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.config.constants import (
     GEMINI_RESPONSE_TIMEOUT_SECONDS, GROUNDING_MODEL_NAME, HISTORY_LIMIT, MAX_DOCUMENT_SIZE_BYTES,
 )
@@ -59,6 +60,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.stage = "generate"
         self.response = "架空の応答です。"
         self.state = BotState()
+        install_persona_catalog(self)
         self.guild_id = 1
         self.generations = []
         self.settings = self.state.get_guild(self.guild_id)

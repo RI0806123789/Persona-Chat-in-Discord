@@ -4,7 +4,25 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BASE_DIR.parent
 
-DEFAULT_PROMPT_FILE = "../prompts/prompt_default.txt"
+# ペルソナ（キャラクター設定）のプロンプトを置くフォルダ。Git が管理するのは書式見本の
+# テンプレートだけで、キャラ別のファイルは利用者が各自のパソコン・サーバーで作る
+# （.gitignore で除外済み）。ここにある .txt がキャラ設定の選択肢になる（personas.py）。
+PROMPTS_DIR = PROJECT_ROOT / "prompts"
+# プロンプトの書式見本（Git 管理対象）。コピーしてキャラを作る元で、選択肢には出さない。
+PROMPT_TEMPLATE_FILE_NAME = "00_prompt_format.txt"
+# 表示名・読み上げの声・既定のペルソナを決める任意の設定ファイル（利用者がローカルで作る）。
+# 無くてもよく、その場合はファイル名（拡張子なし）を表示名にし、先頭のファイルを既定にする。
+PERSONA_SETTINGS_PATH = PROMPTS_DIR / "personas.json"
+# 保存・選択に使うペルソナの値は「src/ 基準の相対パス」= この接頭辞 + ファイル名。
+# 旧版の固定の選択肢と同じ形なので、ファイル名を変えなければ保存済みの設定を引き継げる。
+PERSONA_VALUE_PREFIX = "../prompts/"
+# ペルソナを1つも作っていない間に使う、キャラ付けのない標準のプロンプト。
+# テンプレートだけを取得した直後でも、存在しないファイルを参照せずに会話できるようにする。
+BUILTIN_PERSONA_PROMPT = (
+    "あなたは Discord サーバーの会話に参加している、親しみやすいアシスタントです。\n"
+    "日本語で、相手の質問や話題に自然な話し言葉で簡潔に答えてください。\n"
+    "分からないことは分からないと伝え、事実を作り上げないでください。"
+)
 # 選択肢（choices.MODEL_CHOICES）から外したモデルを保存していたサーバーは、起動時にこの既定値へ戻る。
 DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_RESPOND_MODE = "mention"
@@ -154,6 +172,9 @@ VIEW_TIMEOUT_SECONDS = 120.0
 DISCORD_SELECT_MAX_OPTIONS = 25
 # Discord のセレクト選択肢の label / description の最大文字数（プラットフォームの制限）。
 DISCORD_SELECT_LABEL_MAX_LENGTH = 100
+# Discord のセレクト選択肢の value の最大文字数（プラットフォームの制限）。
+# ペルソナの値（"../prompts/<ファイル名>"）がこれを超えるファイルは選択肢に出せない。
+DISCORD_SELECT_VALUE_MAX_LENGTH = 100
 # リマインダーパネルの本文をここで打ち切る。Discord の 2000 文字制限に対し、
 # 打ち切り案内の追記分を見込んで余裕を持たせた長さ。
 REMINDER_PANEL_MAX_LENGTH = 1900
@@ -500,70 +521,19 @@ VOICE_EQ_PROFILES = {
     # 高域を軽く落として、落ち着きのある大人びた声にする。
     "warm": {"kind": "high_shelf", "frequency": 3000.0, "gain_db": -4.0, "q": 0.707},
     # 特定の帯域を深く削り、さらに量子化を粗くして無機質な響きにする。
-    # 現在どのペルソナにも割り当てていない（将来ロボット系を追加した場合の受け皿）。
+    # ロボット系のキャラを作るときの受け皿（personas.json の eq に "robotic" と書く）。
     "robotic": {"kind": "notch", "frequency": 1200.0, "gain_db": 0.0, "q": 1.0, "bit_crush": 6},
     # 加工なし（話者の素の声）。
     "flat": {"kind": None},
 }
 
-# ペルソナ（GuildSettings.current_prompt_file の値）ごとの声の設定。
+# ペルソナごとの声は、利用者がローカルで作る prompts/personas.json の "voice" に書く
+# （キャラ別のファイルを公開しないため、ここには特定のキャラの設定を置かない。personas.py）。
 #   voice : 話者。EDGE_TTS_VOICE_FEMALE / _MALE のどちらか。
 #   pitch : 声の高さ。edge-tts のネイティブ形式（"+10Hz" のような符号つき整数）。
 #   rate  : 話す速さ。同じくネイティブ形式（"+5%"）。長さは 1/(1+rate/100) 倍になる。
 #   eq    : 音色。VOICE_EQ_PROFILES のキー。
-# コメント末尾の数値は、この設定で実際に合成して測った基本周波数と長さ。
-VOICE_PROFILES = {
-    # 強気な口調と若さ。感嘆符の多さに合わせてやや早口に。（256.7Hz / 5.66秒）
-    "../prompts/prompt_tsun.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+10Hz", "rate": "+5%", "eq": "bright",
-    },
-    # 丁寧語ベースの落ち着いたトーンに、ねっとりした間を足して遅め。（235.3Hz / 6.46秒）
-    "../prompts/prompt_devotion.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "-5Hz", "rate": "-8%", "eq": "warm",
-    },
-    # 感情の起伏を出さない大人の女性像として低め・ゆったり。（225.9Hz / 6.26秒）
-    "../prompts/prompt_maid.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "-10Hz", "rate": "-5%", "eq": "warm",
-    },
-    # 幼さと高いテンションを強調（女性話者の中でもっとも高音・早口）。（287.4Hz / 5.42秒）
-    "../prompts/prompt_innocent_girl.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+30Hz", "rate": "+10%", "eq": "bright",
-    },
-    # 男の子なので男性話者。Keita の上限付近まで上げて幼さを出す。（158.4Hz / 4.94秒）
-    "../prompts/prompt_innocent_boy.txt": {
-        "voice": EDGE_TTS_VOICE_MALE, "pitch": "+90Hz", "rate": "+10%", "eq": "bright",
-    },
-    # 中年男性。話者そのものが男性なので加工は控えめ、高テンションを早口で。（117.1Hz / 5.16秒）
-    "../prompts/prompt_middle_aged.txt": {
-        "voice": EDGE_TTS_VOICE_MALE, "pitch": "+10Hz", "rate": "+5%", "eq": "flat",
-    },
-    # 「マジで」「ウケる」等の勢いのある口調に合わせ高め・早口。（265.2Hz / 5.42秒）
-    "../prompts/prompt_gyaru.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+15Hz", "rate": "+10%", "eq": "bright",
-    },
-    # からかうような高めのトーンで挑発感を強調。（271.2Hz / 5.66秒）
-    "../prompts/prompt_cheeky.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+20Hz", "rate": "+5%", "eq": "bright",
-    },
-    # 全プロファイル中もっともゆったり。包み込むような低めの声に。（217.7Hz / 6.60秒）
-    "../prompts/prompt_ane.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "-15Hz", "rate": "-10%", "eq": "warm",
-    },
-    # 表面上の上品さ・優雅さをゆったりしたテンポで（高さは素のまま）。（241.2Hz / 6.60秒）
-    "../prompts/prompt_kyoto.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+0Hz", "rate": "-10%", "eq": "warm",
-    },
-    # 威圧感を出すため男性話者の素の低音のまま、間を詰めすぎない程度に遅め。
-    # （Keita は下方向の pitch がほとんど効かないため素のまま使う）（113.4Hz / 5.71秒）
-    "../prompts/prompt_greed.txt": {
-        "voice": EDGE_TTS_VOICE_MALE, "pitch": "+0Hz", "rate": "-5%", "eq": "warm",
-    },
-    # 加工なしの素の声。他プロファイルの基準点。（241.2Hz / 5.95秒）
-    "../prompts/prompt_default.txt": {
-        "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+0Hz", "rate": "+0%", "eq": "flat",
-    },
-}
-# 上の辞書に載っていないペルソナ（今後追加されたもの）が選ばれたときの既定値。
+# 書かなかった項目・形式の誤った項目は、下の既定値を使う。
 VOICE_PROFILE_FALLBACK = {
     "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+0Hz", "rate": "+0%", "eq": "flat",
 }

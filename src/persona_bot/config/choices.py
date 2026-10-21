@@ -1,22 +1,10 @@
 from discord import app_commands
 
-from persona_bot.config.constants import DEFAULT_MODEL_NAME, DEFAULT_PROMPT_FILE, DEFAULT_RESPOND_MODE
+from persona_bot.config.constants import DEFAULT_MODEL_NAME, DEFAULT_RESPOND_MODE
 
 
-PERSONA_CHOICES = [
-    app_commands.Choice(name="ツンデレ", value="../prompts/prompt_tsun.txt"),
-    app_commands.Choice(name="ヤンデレ", value="../prompts/prompt_devotion.txt"),
-    app_commands.Choice(name="メイド", value="../prompts/prompt_maid.txt"),
-    app_commands.Choice(name="ロリ", value="../prompts/prompt_innocent_girl.txt"),
-    app_commands.Choice(name="ショタ", value="../prompts/prompt_innocent_boy.txt"),
-    app_commands.Choice(name="オジサン", value="../prompts/prompt_middle_aged.txt"),
-    app_commands.Choice(name="ギャル", value="../prompts/prompt_gyaru.txt"),
-    app_commands.Choice(name="メスガキ", value="../prompts/prompt_cheeky.txt"),
-    app_commands.Choice(name="お姉さん", value="../prompts/prompt_ane.txt"),
-    app_commands.Choice(name="はんなり", value="../prompts/prompt_kyoto.txt"),
-    app_commands.Choice(name="クレーマー", value="../prompts/prompt_greed.txt"),
-    app_commands.Choice(name="標準", value=DEFAULT_PROMPT_FILE),
-]
+# ペルソナの選択肢は固定の一覧を持たず、prompts/ にあるファイルから作る（personas.py）。
+# キャラ別のプロンプトは利用者が各自の環境で作り、Git では管理しないため。
 
 MODEL_CHOICES = [
     app_commands.Choice(name="Gemini 2.5 Flash", value="gemini-2.5-flash"),
@@ -49,7 +37,6 @@ AUTO_TOPIC_INTERVAL_CHOICES = [
 
 
 
-PERSONA_DISPLAY_NAMES = {choice.value: choice.name for choice in PERSONA_CHOICES}
 MODEL_DISPLAY_NAMES = {choice.value: choice.name for choice in MODEL_CHOICES}
 RESPOND_MODE_DISPLAY_NAMES = {choice.value: choice.name for choice in RESPOND_MODE_CHOICES}
 AUTO_TOPIC_INTERVAL_DISPLAY_NAMES = {choice.value: choice.name for choice in AUTO_TOPIC_INTERVAL_CHOICES}

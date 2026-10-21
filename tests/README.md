@@ -37,6 +37,20 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #189の確認
+
+| テスト | 確認内容 |
+| --- | --- |
+| `config/test_personas.py` | `prompts/` の`.txt`から選択肢を作り、テンプレート・隠しファイル・フォルダ・長すぎる名前を除く。`personas.json`の並び順・表示名・声・既定、形式の誤った声の既定値への置き換え、壊れたJSON・BOM付き・型の誤りでの続行（ファイルは書き換えず中身をログに出さない）。テンプレートだけ・フォルダ無しで組み込みの標準になること、確定時に`prompts/`の外やテンプレートを拒否すること。キャラ設定はペルソナ0件でセレクトを出さず作り方を案内し、25件を超える分は出さない。開くときに応答保留の後で一覧を読み直し、見つからない保存値は残したまま他の設定を確定できる。Gitの管理対象がテンプレートだけで、新しいファイルと`personas.json`が除外されること |
+| `core/test_guild_settings_persist.py` | 見つからないファイルの保存値を残して既定で応答し、ファイルが戻れば元のペルソナで応答する。`prompts/`の外・テンプレート・区切り文字入りの保存値は既定へ戻す。未選択は一覧の既定に従う |
+| `audio/test_voice_dsp.py`・`views/test_panel_confirmations.py`・`views/test_remaining_io.py`・`core/test_database.py` | 声を一覧から引き、一覧に無い値・組み込みは既定の声。確定時のファイル確認をワーカーで行い、設定の保存と往復を架空のペルソナで維持 |
+| `integration/test_package_layout.py` | ペルソナの保存値（`../prompts/<ファイル名>`）と`prompts/`・`personas.json`の位置が変わらず、公開テンプレートが実在する。`prompts/`の無い環境でも起動できる |
+| コンソール`tests/test_remote_scripts.py` | `personas.json`の表示名と既定を旧版の`PERSONA_CHOICES`より優先し、読めない場合はファイル名で表示して案内を出す |
+
+応答設定の取り違えを確かめる既存テストは、実際の`prompts/`を読まずに`helpers/persona_helpers.py`の架空の一覧へ差し替える。利用者のキャラ別ファイルが手元にあると通り、テンプレートだけのCIでは落ちる、という差を作らないため。
+
+Windows・Python 3.13.3（`.venv`、google-genai 2.31.0）でボット738件・コンソールバックエンド175件が成功。Git管理対象と未追跡ファイルだけを別フォルダへ写した新規取得相当の環境（`prompts/`はテンプレートだけ、`.env`・DBなし）でもボット738件が成功し、外部通信を止めた起動で作り方の案内が出て組み込みの標準プロンプトで応答することを確認した。`pip check`・全ソースの構文・`compileall`・構成図XML・メッセージ分割・`git diff --check`も成功。手元のキャラ別ファイル13件（テンプレートを含む）は追跡を外した後もSHA-256が一致した。Linux／Python 3.10での実行、実際のDiscord・Gemini・音声での確認、サーバーへのSCP転送と移行手順の実施は未確認。
+
 ## Issue #153〜#155の確認
 
 | Issue | テスト | 確認内容 |
@@ -149,6 +163,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 
 | 分類 | ファイル |
 | --- | --- |
+| config | [test_personas.py](config/test_personas.py) |
 | config | [test_prompt_loading.py](config/test_prompt_loading.py) |
 | config | [test_settings_loader.py](config/test_settings_loader.py) |
 | config | [test_tuning_constants.py](config/test_tuning_constants.py) |
@@ -263,7 +278,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | #69 | `utils/test_image_attachments`・`services/test_ng_word_service.NgWordReloadTests` | 画像の取得前・取得後の容量確認、上限ちょうどの画像のRGB変換、壊れた画像の後の継続、中断時の全画像の回収。NGワードは正規表現の準備後に単語とまとめて反映する |
 | #69 | 既存の `services/test_document_service.DocumentTemporaryFileTests` | 共通のワーカー待機へ置き換えた後も、書込エラー・単発／繰り返しキャンセルで一時ファイルが残らず、回収後に再作成されない |
 | #70 | `utils/test_json_extraction.ServiceJsonTests`・`services/test_stats_service.StatsAnalysisTests` | 文書要約・記憶ルーティング・圧縮・統計解析で前置きの別形式JSONを読み飛ばす。必要なキーが無い場合の失敗・キャッシュ保持と、カテゴリ・繰り返し種別の空白／大小文字の正規化を確認する |
-| #70 | `config/test_tuning_constants.ModerationAndChoiceTuningTests` | 起動前に変えたモデレーションのモデル・タイムアウトと、既定ペルソナ・応答モードが利用側へ反映される |
+| #70 | `config/test_tuning_constants.ModerationAndChoiceTuningTests` | 起動前に変えたモデレーションのモデル・タイムアウトと、既定の応答モードが利用側へ反映される（既定ペルソナは #189 で固定の選択肢を外したため対象外） |
 
 2026-10-17、Windows・Python 3.13.3で追加22件を修正前のソースに適用し、subTestを含め19失敗・8エラーを確認した。画像の4件は、新しい定数・デコード補助関数が修正前に存在しないことによるエラー。読込失敗後の継続・非画像の除外・統合判定の正規化・必要なキーが無い場合の既存の失敗処理の4件は修正前から成功した。修正後は全412テストが省略なしで成功した。
 

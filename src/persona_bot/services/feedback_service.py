@@ -59,7 +59,8 @@ from typing import Any
 import discord
 
 from persona_bot.core.background import run_in_thread, spawn
-from persona_bot.config.choices import MODEL_DISPLAY_NAMES, PERSONA_DISPLAY_NAMES
+from persona_bot.config.choices import MODEL_DISPLAY_NAMES
+from persona_bot.config.personas import current_persona_catalog
 from persona_bot.config.constants import (
     DM_SETTINGS_GUILD_KEY,
     FEEDBACK_ENABLED,
@@ -440,10 +441,12 @@ class FeedbackService:
             "",
             "**モデル別・ペルソナ別の内訳**",
         ]
+        catalog = current_persona_catalog()
         for row in rows[:FEEDBACK_SUMMARY_MAX_ROWS]:
-            # 表示名は choices.py を唯一の情報源にする（未登録の値は素のまま出す）。
+            # モデルの表示名は choices.py（未登録の値は素のまま出す）、ペルソナは prompts/ の
+            # 一覧から引く（消したファイルはファイル名、組み込みの標準はその旨を出す）。
             model = MODEL_DISPLAY_NAMES.get(row["model_name"], row["model_name"]) or "（不明）"
-            persona = PERSONA_DISPLAY_NAMES.get(row["prompt_file"], row["prompt_file"]) or "（不明）"
+            persona = catalog.display_name(row["prompt_file"]) or "（不明）"
             lines.append(
                 f"・{model} / {persona} … 👍 {row['good']} / 👎 {row['bad']}"
                 f"（満足度 {_format_satisfaction(row['good'], row['bad'])}）"

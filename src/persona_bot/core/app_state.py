@@ -6,17 +6,15 @@ from typing import Any
 from persona_bot.config.choices import (
     AUTO_TOPIC_INTERVAL_CHOICES,
     MODEL_CHOICES,
-    PERSONA_CHOICES,
     RESPOND_MODE_CHOICES,
 )
-from persona_bot.config.paths import resolve_prompt_path
 from persona_bot.config.constants import (
     DEFAULT_AUTO_TOPIC_INTERVAL_HOURS,
     DEFAULT_MODEL_NAME,
-    DEFAULT_PROMPT_FILE,
     DEFAULT_RESPOND_MODE,
     DM_SETTINGS_GUILD_KEY,
 )
+from persona_bot.config.personas import FOLLOW_DEFAULT_PERSONA, current_persona_catalog, persona_file_name
 from persona_bot.core.background import run_in_thread
 
 
@@ -79,7 +77,9 @@ class GuildSettings:
     集約された「全DM共有の1スロット」として扱う（guild_id=None 相当）。
     """
 
-    current_prompt_file: str = DEFAULT_PROMPT_FILE
+    # 空文字は「既定のペルソナに従う」（まだ選んでいない）。実際に使うペルソナは
+    # snapshot_response() が一覧から解決する（personas.py）。
+    current_prompt_file: str = FOLLOW_DEFAULT_PERSONA
     current_model_name: str = DEFAULT_MODEL_NAME
     current_respond_mode: str = DEFAULT_RESPOND_MODE
     grounding_enabled: bool = True
@@ -135,7 +135,8 @@ class GuildSettings:
     def snapshot_response(self) -> ResponseSettings:
         """非同期の処理を始める前に、今回の応答に使う設定を確定する。"""
         return ResponseSettings(
-            prompt_file=self.current_prompt_file,
+            # 未選択・ファイルが見つからない間は既定のペルソナで応答する（設定値は消さない）
+            prompt_file=current_persona_catalog().resolve(self.current_prompt_file),
             model_name=self.current_model_name,
             grounding_enabled=self.grounding_enabled,
         )
@@ -156,8 +157,8 @@ class GuildSettings:
         値が空・欠落している項目は既定値のままにする（列を増やした直後の行など、
         中途半端なデータでボットが起動しなくなることを避けるため）。
         """
+        self._apply_persisted_prompt_file(values.get("prompt_file"))
         for key, attribute, choices, default in (
-            ("prompt_file", "current_prompt_file", PERSONA_CHOICES, DEFAULT_PROMPT_FILE),
             ("model_name", "current_model_name", MODEL_CHOICES, DEFAULT_MODEL_NAME),
             ("respond_mode", "current_respond_mode", RESPOND_MODE_CHOICES, DEFAULT_RESPOND_MODE),
         ):
@@ -165,11 +166,6 @@ class GuildSettings:
             if value is None or value == "":
                 continue
             valid = isinstance(value, str) and any(choice.value == value for choice in choices)
-            if valid and key == "prompt_file":
-                try:
-                    valid = resolve_prompt_path(value).is_file()
-                except OSError:
-                    valid = False
             if valid:
                 setattr(self, attribute, value)
             else:
@@ -188,6 +184,27 @@ class GuildSettings:
         elif interval is not None:
             print("サーバー設定: 保存済みの auto_topic_interval_hours が無効なため既定値へ戻します。")
             self.auto_topic_interval_hours = DEFAULT_AUTO_TOPIC_INTERVAL_HOURS
+
+    def _apply_persisted_prompt_file(self, value: Any) -> None:
+        """保存済みのペルソナを復元する。
+
+        ペルソナの形の値なら、ファイルが見つからなくても値を残す。Git の更新で
+        キャラ別のファイルが一時的に消えた環境でも、ファイルを戻せば元のキャラに
+        戻れるようにするため（見つからない間は snapshot_response() が既定で応答する）。
+        """
+        if value is None or value == "":
+            return
+        file_name = persona_file_name(value)
+        if file_name is None:
+            print("サーバー設定: 保存済みの prompt_file が無効なため既定値へ戻します。")
+            self.current_prompt_file = FOLLOW_DEFAULT_PERSONA
+            return
+        self.current_prompt_file = value
+        if not current_persona_catalog().contains(value):
+            print(
+                f"サーバー設定: 保存済みのペルソナ（{file_name}）が prompts/ に見つかりません。"
+                "ファイルを戻すまで既定のペルソナで応答します。"
+            )
 
     async def persist(self) -> None:
         """現在の設定値を DB へ保存する。設定を変更した UI 側が変更確定後に呼ぶ。

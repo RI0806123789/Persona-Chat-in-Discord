@@ -6,8 +6,8 @@
 **声はペルソナごとに変わる。** 主エンジンの **edge-tts**（Microsoft Edge の読み上げが
 使っているニューラル音声。APIキー不要）に、キャラクターごとの話者・声の高さ・話す速さを
 指定して合成する。edge-tts には音色を変える機能が無いため、同じ話者を使い回すキャラの
-差だけ `voice_dsp` の EQ で付ける。どのキャラをどう鳴らすかは `constants.py` の
-`VOICE_PROFILES`。
+差だけ `voice_dsp` の EQ で付ける。どのキャラをどう鳴らすかは、利用者がローカルで作る
+`prompts/personas.json` の `voice`（読み込みと形式の点検は `config/personas.py`）。
 
 **edge-tts が失敗したら gTTS へ退避する。** edge-tts は公式に third-party 利用が
 認められた API ではなく、過去に Microsoft 側の仕様変更で一時的に使えなくなった経緯が
@@ -50,7 +50,6 @@ from persona_bot.config.constants import (
     TTS_SAMPLE_RATE,
     TTS_TIMEOUT_SECONDS,
     TTS_TRUNCATION_NOTICE,
-    VOICE_PROFILES,
 )
 from persona_bot.audio.voice_dsp import apply_equalizer, needs_equalizer, resolve_profile
 from persona_bot.services.affinity_service import strip_speech_tags
@@ -69,33 +68,9 @@ _MENTION_PATTERN = re.compile(r"<[@#][!&]?\d+>")
 _MARKDOWN_SYMBOL_PATTERN = re.compile(r"[*_~>#|`]")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
-# edge-tts が受け付けるパラメータの形式（パッケージ内部の検証と同じもの）。
-# 起動時にプロファイルを点検するために持つ。
-_EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
-_EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
-
 # edge-tts が失敗し続けている間、返信のたびに同じログを出さないための状態。
 # 「失敗し始めたとき」と「復旧したとき」の2回だけ記録する。
 _edge_tts_failing = False
-
-
-def _validate_profiles() -> None:
-    """`VOICE_PROFILES` の pitch / rate が edge-tts の形式に合っているか点検する。
-
-    形式が違うと `edge_tts.Communicate` が `ValueError` を投げ、以後ずっと
-    gTTS へ退避し続けることになる（音は出るのでキャラ差が消えたことに
-    気づきにくい）。設定ミスは実行時ではなく起動時に気づけるようにする。
-    """
-    for prompt_file, profile in VOICE_PROFILES.items():
-        rate = profile.get("rate", "+0%")
-        pitch = profile.get("pitch", "+0Hz")
-        if not isinstance(rate, str) or not _EDGE_RATE_PATTERN.match(rate):
-            print(f"警告: ボイスプロファイルの rate が不正です（{prompt_file}: {rate!r}）。'+5%' のような形式で指定してください。")
-        if not isinstance(pitch, str) or not _EDGE_PITCH_PATTERN.match(pitch):
-            print(f"警告: ボイスプロファイルの pitch が不正です（{prompt_file}: {pitch!r}）。'+10Hz' のような形式で指定してください。")
-
-
-_validate_profiles()
 
 
 def build_speech_text(response_text: str) -> str:

@@ -8,19 +8,21 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from persona_bot.audio import voice_dsp
+from persona_bot.config.constants import VOICE_PROFILE_FALLBACK
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 class VoiceDspTests(unittest.TestCase):
     def test_registered_and_missing_personas_resolve_to_expected_profile(self):
-        selected, fallback = {"voice": "架空の話者"}, {"voice": "架空の既定話者"}
-        with patch.object(voice_dsp, "VOICE_PROFILES", {"fictional.txt": selected}), patch.object(
-            voice_dsp, "VOICE_PROFILE_FALLBACK", fallback,
-        ):
-            self.assertIs(voice_dsp.resolve_profile("fictional.txt"), selected)
-            for prompt in (None, "", "unknown.txt"):
-                self.assertIs(voice_dsp.resolve_profile(prompt), fallback)
+        # 声は personas.json から読んだ一覧に入っている。一覧に無い値・組み込みは既定値。
+        selected = {"voice": "架空の話者"}
+        install_persona_catalog(self, "../prompts/fictional.txt", voices={"../prompts/fictional.txt": selected})
+        self.assertIs(voice_dsp.resolve_profile("../prompts/fictional.txt"), selected)
+        for prompt in (None, "", "../prompts/unknown.txt"):
+            self.assertIs(voice_dsp.resolve_profile(prompt), VOICE_PROFILE_FALLBACK)
 
     def test_empty_audio_is_safe_for_every_filter_kind(self):
         for kind in ("low_pass", "notch", "high_shelf", "unknown"):

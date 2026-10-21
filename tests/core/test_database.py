@@ -12,8 +12,10 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from persona_bot.core.app_state import BotState
+from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.core import database
 from persona_bot.core.database import Database, SCHEMA_VERSION
 
@@ -166,12 +168,14 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_persisted_settings_round_trip_for_guilds_and_dm(self) -> None:
         state = BotState()
         state.restore_from_database(self.db)
-        from persona_bot.config.choices import AUTO_TOPIC_INTERVAL_CHOICES, PERSONA_CHOICES, MODEL_CHOICES
+        from persona_bot.config.choices import AUTO_TOPIC_INTERVAL_CHOICES, MODEL_CHOICES
+        personas = ("../prompts/架空のペルソナA.txt", "../prompts/架空のペルソナB.txt", "../prompts/架空のペルソナC.txt")
+        install_persona_catalog(self, *personas)
         expected = {}
         for index, guild_id in enumerate((1, 2, None)):
             settings = state.get_guild(guild_id)
             values = {
-                "current_prompt_file": PERSONA_CHOICES[index].value,
+                "current_prompt_file": personas[index],
                 "current_model_name": MODEL_CHOICES[index].value,
                 "current_respond_mode": "all" if index == 0 else "mention",
                 "grounding_enabled": index != 1,

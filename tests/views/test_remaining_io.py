@@ -13,9 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
 
+from persona_bot.config import personas
 from persona_bot.core.app_state import GuildSettings
 from persona_bot.views import functions_view, settings_view, summary_view
 from tests.helpers.thread_probe import make_thread_probe
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 class ViewIOTests(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +33,7 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
                 settings = GuildSettings()
                 view = settings_view.SettingsView(settings, 0, "未登録")
                 self.addCleanup(view.stop)
-                view.temp_persona, view.temp_model = "fictional-persona", "fictional-model"
+                view.temp_persona, view.temp_model = "../prompts/fictional-persona.txt", "fictional-model"
                 interaction = self.interaction()
                 operation, threads = make_thread_probe(exists)
 
@@ -39,10 +41,10 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
                     # パス解決と存在確認の両方を、応答保留後にワーカーで行う。
                     self.assertTrue(interaction.response.defer.await_count)
                     operation()
-                    return SimpleNamespace(exists=lambda: exists)
+                    return SimpleNamespace(is_file=lambda: exists)
 
                 button = next(item for item in view.children if isinstance(item, settings_view.ConfirmButton))
-                with patch.object(settings_view, "resolve_prompt_path", side_effect=resolve), patch.object(
+                with patch.object(personas, "resolve_prompt_path", side_effect=resolve), patch.object(
                     settings, "persist", new_callable=AsyncMock,
                 ) as persist:
                     await button.callback(interaction)
@@ -50,10 +52,10 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(threading.get_ident(), threads)
                 interaction.edit_original_response.assert_awaited_once()
                 if exists:
-                    self.assertEqual(settings.current_prompt_file, "fictional-persona")
+                    self.assertEqual(settings.current_prompt_file, "../prompts/fictional-persona.txt")
                     persist.assert_awaited_once()
                 else:
-                    self.assertNotEqual(settings.current_prompt_file, "fictional-persona")
+                    self.assertNotEqual(settings.current_prompt_file, "../prompts/fictional-persona.txt")
                     persist.assert_not_awaited()
                     self.assertIn("見つかりません", interaction.edit_original_response.call_args.kwargs["content"])
                 self.assertTrue(view.is_finished())
@@ -82,6 +84,7 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
     async def test_summary_prompt_loading_keeps_loop_responsive_and_missing_file_falls_back(self):
         author = SimpleNamespace(bot=False, display_name="架空の利用者")
         message = SimpleNamespace(author=author, content="架空の会話", attachments=[], created_at=datetime.now(timezone.utc))
+        install_persona_catalog(self)
         for missing in (False, True):
             with self.subTest(missing=missing):
                 operation, threads = make_thread_probe("架空のペルソナ")
@@ -91,7 +94,8 @@ class ViewIOTests(unittest.IsolatedAsyncioTestCase):
                     "persona_bot.config.paths.load_prompt_template", loader,
                 ), patch.object(summary_view, "screen_bot_response", new=AsyncMock(side_effect=lambda text, *a, **k: text)):
                     ok, text = await summary_view.generate_channel_summary(
-                        object(), None, summary_view._DEFAULT_PERIOD, guild_settings=GuildSettings(),
+                        object(), None, summary_view._DEFAULT_PERIOD,
+                        guild_settings=GuildSettings(current_prompt_file="../prompts/prompt_default.txt"),
                         gemini=gemini, moderator=None, ng_filter=None, usage=SimpleNamespace(log_snapshot=Mock()),
                     )
                 self.assertTrue(ok)

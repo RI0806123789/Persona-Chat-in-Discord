@@ -13,10 +13,12 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import discord
 
-from persona_bot.config.choices import MODEL_CHOICES, PERSONA_CHOICES, RESPOND_MODE_CHOICES
+from persona_bot.config import personas
+from persona_bot.config.choices import MODEL_CHOICES, RESPOND_MODE_CHOICES
 from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.core.app_state import BotState
 from persona_bot.views import settings_view
@@ -25,6 +27,7 @@ from persona_bot.views.auto_topic_view import (
 )
 from persona_bot.views.settings_view import ConfirmButton, ModelSelect, PersonaSelect, RespondModeSelect, SettingsView
 from persona_bot.views.unblock_view import UnblockSelect, UnblockView
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 def make_interaction(*, admin: bool = True) -> SimpleNamespace:
@@ -53,13 +56,15 @@ async def press(view, item_type, *, values=None):
 
 class SettingsConfirmTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        catalog = install_persona_catalog(self, "../prompts/架空のペルソナA.txt", "../prompts/架空のペルソナB.txt")
         self.settings = BotState().get_guild(1)
+        self.settings.current_prompt_file = catalog.personas[0].value
         self.settings.persist = AsyncMock()
         self.before = (
             self.settings.current_prompt_file, self.settings.current_model_name, self.settings.current_respond_mode,
         )
         # 現在値と違う選択肢を選ぶ
-        self.persona = next(c.value for c in PERSONA_CHOICES if c.value != self.before[0])
+        self.persona = next(p.value for p in catalog.personas if p.value != self.before[0])
         self.model = next(c.value for c in MODEL_CHOICES if c.value != self.before[1])
         self.mode = next(c.value for c in RESPOND_MODE_CHOICES if c.value != self.before[2])
         self.view = SettingsView(self.settings, 3, "なし")
@@ -86,7 +91,7 @@ class SettingsConfirmTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selected_values_are_applied_and_saved_only_on_confirm(self) -> None:
         await self.choose_all()
-        with patch.object(settings_view, "resolve_prompt_path", return_value=self.persona_path(True)) as resolve:
+        with patch.object(personas, "resolve_prompt_path", return_value=self.persona_path(True)) as resolve:
             interaction = await press(self.view, ConfirmButton)
         resolve.assert_called_once_with(self.persona)
         self.assertEqual(
@@ -100,7 +105,7 @@ class SettingsConfirmTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_persona_file_keeps_settings_unchanged(self) -> None:
         await self.choose_all()
-        with patch.object(settings_view, "resolve_prompt_path", return_value=self.persona_path(False)):
+        with patch.object(personas, "resolve_prompt_path", return_value=self.persona_path(False)):
             interaction = await press(self.view, ConfirmButton)
         self.assertEqual(
             (self.settings.current_prompt_file, self.settings.current_model_name, self.settings.current_respond_mode),

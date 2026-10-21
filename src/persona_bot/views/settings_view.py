@@ -6,15 +6,16 @@ from persona_bot.core.background import run_in_thread
 from persona_bot.config.choices import (
     MODEL_CHOICES,
     MODEL_DISPLAY_NAMES,
-    PERSONA_CHOICES,
-    PERSONA_DISPLAY_NAMES,
     RESPOND_MODE_CHOICES,
     RESPOND_MODE_DISPLAY_NAMES,
 )
-from persona_bot.config.paths import resolve_prompt_path
+from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS, PROMPT_TEMPLATE_FILE_NAME
+from persona_bot.config.personas import (
+    FOLLOW_DEFAULT_PERSONA, PersonaCatalog, current_persona_catalog, is_selectable_persona,
+)
 from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, BackButton,
-    HubFactory, PanelView,
+    HubFactory, PanelView, select_option_text,
 )
 
 
@@ -26,9 +27,11 @@ def _build_status_text(
     blacklist_status: str,
     *,
     confirmed: bool = False,
+    catalog: PersonaCatalog | None = None,
 ) -> str:
     """キャラ設定パネルのステータス表示テキストを組み立てる。"""
-    persona_display = PERSONA_DISPLAY_NAMES.get(persona_file, f"不明 ({persona_file})")
+    catalog = current_persona_catalog() if catalog is None else catalog
+    persona_display = _persona_status(catalog, persona_file)
     model_display = MODEL_DISPLAY_NAMES.get(model_name, f"不明 ({model_name})")
     mode_display = RESPOND_MODE_DISPLAY_NAMES.get(respond_mode, f"不明 ({respond_mode})")
 
@@ -44,20 +47,45 @@ def _build_status_text(
         f"・**応答モード**: {mode_display}\n"
         f"・**NGワード**: {ng_count}件\n"
         f"・**ブラックリスト**: {blacklist_status}"
+        f"{_persona_notice(catalog)}"
     )
+
+
+def _persona_status(catalog: PersonaCatalog, persona_file: str) -> str:
+    """ペルソナの表示。未選択は既定の名前を、見つからないファイルは既定で応答中と添える。"""
+    default_name = catalog.display_name(catalog.default_value)
+    if persona_file == FOLLOW_DEFAULT_PERSONA:
+        return f"既定（{default_name}）"
+    if not catalog.contains(persona_file):
+        return f"⚠️ {catalog.display_name(persona_file)}（ファイルが見つからないため、既定の{default_name}で応答中）"
+    return catalog.display_name(persona_file)
+
+
+def _persona_notice(catalog: PersonaCatalog) -> str:
+    """ペルソナを作っていない・多すぎて全部を選択肢に出せないときの案内。"""
+    if not catalog.personas:
+        return (
+            "\n\nℹ️ ペルソナが未登録のため、組み込みの標準プロンプトで応答しています。"
+            f"`prompts/{PROMPT_TEMPLATE_FILE_NAME}` をコピーして `prompts/<名前>.txt` を作ると、"
+            "このパネルを開き直したときに選べます（作り方は README の「ペルソナを作る」）。"
+        )
+    if len(catalog.personas) > DISCORD_SELECT_MAX_OPTIONS:
+        return f"\n\nℹ️ ペルソナが多いため、先頭の{DISCORD_SELECT_MAX_OPTIONS}件だけを選択肢に表示しています。"
+    return ""
 
 
 class PersonaSelect(ui.Select):
     """ペルソナ選択用セレクトメニュー。"""
 
-    def __init__(self, current_value: str) -> None:
+    def __init__(self, current_value: str, catalog: PersonaCatalog) -> None:
+        # 選択肢は prompts/ のファイルから作る（Discord の上限を超える分は出さない）
         options = [
             discord.SelectOption(
-                label=choice.name,
-                value=choice.value,
-                default=(choice.value == current_value),
+                label=select_option_text(persona.name, fallback=persona.value),
+                value=persona.value,
+                default=(persona.value == current_value),
             )
-            for choice in PERSONA_CHOICES
+            for persona in catalog.personas[:DISCORD_SELECT_MAX_OPTIONS]
         ]
         super().__init__(
             placeholder="👤 ペルソナを選択…",
@@ -139,9 +167,11 @@ class ConfirmButton(ui.Button):
         view: SettingsView = self.view  # type: ignore[assignment]
         begin_panel_operation(view, interaction)
 
-        # ペルソナのファイル存在チェック
+        # ペルソナを変えたときだけ、選んだファイルが prompts/ にあるかを確かめる。
+        # 変えていなければ、見つからない保存値もそのまま残す（ファイルを戻せば元に戻る）。
         await interaction.response.defer(ephemeral=True)
-        if not await run_in_thread(lambda: resolve_prompt_path(view.temp_persona).exists()):
+        persona_changed = view.temp_persona != view.guild_settings.current_prompt_file
+        if persona_changed and not await run_in_thread(is_selectable_persona, view.temp_persona):
             await edit_panel_message(interaction, deferred=True,
                 content=f"エラー: ファイル「{view.temp_persona}」が見つかりませんでした。設定は変更されていません。",
                 view=None,
@@ -161,6 +191,7 @@ class ConfirmButton(ui.Button):
             view.ng_count,
             view.blacklist_status,
             confirmed=True,
+            catalog=view.catalog,
         )
 
         await edit_panel_message(interaction, deferred=True, content=confirmed_text, view=None)
@@ -227,6 +258,10 @@ class SettingsView(PanelView):
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
 
+        # パネルを開いた時点のペルソナ一覧。選択肢と表示をこの一覧にそろえる
+        # （開いている間に別のパネルが一覧を読み直しても、選択肢が入れ替わらないように）。
+        self.catalog = current_persona_catalog()
+
         # 一時選択値（現在の設定を初期値として保存）
         self.temp_persona: str = guild_settings.current_prompt_file
         self.temp_model: str = guild_settings.current_model_name
@@ -239,8 +274,11 @@ class SettingsView(PanelView):
         """UIパーツを View に追加する。セレクト更新時にも使用する。
 
         セレクト類（row0〜2）、確定/戻る（row3）、会話リセット（row4）の順に並べる。
+        ペルソナが1つも無いときはペルソナのセレクトを出さない（選択肢0件のセレクトは
+        Discord に拒否され、パネルごと開けなくなるため）。
         """
-        self.add_item(PersonaSelect(self.temp_persona))
+        if self.catalog.personas:
+            self.add_item(PersonaSelect(self.temp_persona, self.catalog))
         self.add_item(ModelSelect(self.temp_model))
         self.add_item(RespondModeSelect(self.temp_respond_mode))
         self.add_item(ConfirmButton())
@@ -255,4 +293,5 @@ class SettingsView(PanelView):
             self.temp_respond_mode,
             self.ng_count,
             self.blacklist_status,
+            catalog=self.catalog,
         )
