@@ -48,10 +48,9 @@ class ModerationAndChoiceTuningTests(unittest.TestCase):
         moderator = module.ContentModerator(None, SimpleNamespace(words=[]))
         self.assertEqual((moderator._model_name, moderator._timeout), ("test-moderation-model", 23.0))
 
-    def test_default_choices_follow_configured_prompt_and_mode(self) -> None:
-        module = load_with_tuning("persona_bot.config.choices",
-                                 DEFAULT_PROMPT_FILE="fictional-default.txt", DEFAULT_RESPOND_MODE="test-mode")
-        self.assertIn("fictional-default.txt", [choice.value for choice in module.PERSONA_CHOICES])
+    def test_default_choices_follow_configured_mode(self) -> None:
+        # ペルソナは固定の選択肢を持たない（prompts/ から作る）ため、応答モードだけを確かめる
+        module = load_with_tuning("persona_bot.config.choices", DEFAULT_RESPOND_MODE="test-mode")
         self.assertIn("test-mode", [choice.value for choice in module.RESPOND_MODE_CHOICES])
 
 

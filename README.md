@@ -19,7 +19,7 @@ Google Gemini を使い、ペルソナ（キャラクター）になりきって
 | 機能 | 概要 |
 | --- | --- |
 | AI チャット | メンション（設定で全発言）に Gemini が応答する。画像・文書（pdf / txt / csv / md）の添付にも対応 |
-| キャラ設定 | ペルソナ 12 種・モデル 3 種・応答モードの切り替えと、チャンネルの会話リセット |
+| キャラ設定 | 自作のペルソナ（`prompts/` に置いたプロンプト）・モデル 3 種・応答モードの切り替えと、チャンネルの会話リセット |
 | 長期記憶 | 会話の内容を覚えて回答に使う。記憶はユーザーごとに完全に分離される |
 | Google 検索 | 最新の情報を検索し、回答に参考リンクを付ける（ON/OFF 切り替え可） |
 | 音声読み上げ | `/join` または自律行動でボイス接続中に返信を読み上げる。声（話者・高さ・速さ・音色）はペルソナごとに変わる。FFmpeg 不要 |
@@ -53,20 +53,10 @@ Persona Chat in Discord/
 │       ├── audio/                              # 読み上げと音声の加工
 │       └── utils/                              # 送信・JSON入出力・時刻・グラフ描画
 ├── tests/                                     # 用途別の回帰テスト（構成と個別実行は tests/README.md）
-├── prompts/                                    # システムプロンプトファイル群（※すべて架空のキャラクター設定）
-│   ├── 00_prompt_format.txt                    # プロンプトフォーマット定義
-│   ├── prompt_default.txt
-│   ├── prompt_tsun.txt
-│   ├── prompt_devotion.txt
-│   ├── prompt_maid.txt
-│   ├── prompt_innocent_girl.txt
-│   ├── prompt_innocent_boy.txt
-│   ├── prompt_middle_aged.txt
-│   ├── prompt_gyaru.txt
-│   ├── prompt_cheeky.txt
-│   ├── prompt_ane.txt
-│   ├── prompt_kyoto.txt
-│   └── prompt_greed.txt
+├── prompts/                                    # ペルソナ（キャラクター設定）のプロンプト
+│   ├── 00_prompt_format.txt                    # 書式見本（Git 管理対象。コピーしてキャラを作る）
+│   ├── <名前>.txt                              # 自作のペルソナ（Git 管理対象外。作り方は「ペルソナを作る」）
+│   └── personas.json                           # 表示名・声・既定のペルソナ（任意。Git 管理対象外）
 ├── memory/                                     # 長期記憶の保存先（.gitkeep 以外は Git 管理対象外）
 │   ├── .gitkeep                                # 空ディレクトリを Git に残すためのファイル
 │   ├── bot.db                                  # SQLite DB（親密度・会話統計・文書キュー・一時ログ・プロフィール記憶・サーバー設定・記念日の投稿記録・リマインダー・フィードバックの9テーブル）
@@ -208,6 +198,8 @@ cd src
 
 `ログイン成功: BotName#0000` と表示されれば起動完了です。**必ず `src/` の中から実行してください**（`bot.py` は引き続き `src/` 直下にあります）。
 
+キャラクターのプロンプトは同梱していません。作るまではキャラ付けのない標準のプロンプトで応答します。自分のキャラを使うには「[ペルソナ（キャラクター）を作る](#-ペルソナキャラクターを作る)」を参照してください。
+
 ### 7. 常時稼働の設定（systemd / Linux のみ）
 
 手動で起動した場合はターミナルを閉じると止まり、落ちても自動では復帰しません。Linux サーバーでは systemd に登録してください。見本の `deploy/bot.service.example`（Git 管理対象）から、実際の値を入れた `deploy/bot.service`（Git 管理外）を作って使います。
@@ -259,6 +251,104 @@ REQUIRE_JAPANESE_GRAPH_FONT=1 python -B -m unittest discover -s tests -p test_gr
 
 ---
 
+## 🎭 ペルソナ（キャラクター）を作る
+
+リポジトリに含めているのは、プロンプトの書式見本 `prompts/00_prompt_format.txt` だけです。キャラクターのプロンプトは、この見本をもとに各自で作ります。`prompts/` に作ったファイルは `.gitignore` 済みなので、コミットされず、`git pull` で上書きも削除もされません。
+
+### 作り方
+
+1. 見本をコピーして、キャラクターのファイルを作ります（ファイル名は自由。日本語も使えます）。
+
+   ```bash
+   cp prompts/00_prompt_format.txt prompts/my_character.txt    # Windows (PowerShell) では Copy-Item prompts/00_prompt_format.txt prompts/my_character.txt
+   ```
+
+2. 各項目にキャラクターの設定・口調・応答のルールを書き込みます（UTF-8 で保存。メモ帳の「UTF-8 (BOM 付き)」でも読めます）。
+3. Discord で `/functions` → ⚙️ キャラ設定 を開くと、👤 ペルソナに表示されます。選んで「確定」を押してください（再起動は不要です）。
+
+- `prompts/` 直下の `.txt` がすべて選択肢になります（見本と、`.` で始まるファイルは除きます）。表示名は拡張子を除いたファイル名、並び順はファイル名の順です。
+- 選択肢に出せるのは先頭の 25 件までです（Discord の制限）。ファイル名は拡張子を含めて 89 文字までにしてください。
+- 各サーバーの選択はファイル名で保存されます。ファイル名を変えると、そのペルソナを選んでいたサーバーは既定のペルソナで応答するようになります。
+- ペルソナを 1 つも作っていない間は、キャラ付けのない標準のプロンプトで応答します。
+
+### 表示名・声・既定のペルソナ（任意）
+
+`prompts/personas.json` を作ると、表示名・読み上げの声・既定のペルソナを決められます（無くても動きます）。
+
+```json
+{
+  "default": "my_character.txt",
+  "personas": {
+    "my_character.txt": {
+      "name": "わたしのキャラ",
+      "voice": { "voice": "ja-JP-NanamiNeural", "pitch": "+10Hz", "rate": "+5%", "eq": "bright" }
+    }
+  }
+}
+```
+
+| 項目 | 内容 |
+| --- | --- |
+| `default` | まだペルソナを選んでいないサーバーで使うファイル。省略すると選択肢の先頭 |
+| `personas` | ファイル名ごとの設定。書いた順に選択肢へ並び、書いていないファイルはその後ろにファイル名の順で続く |
+| `name` | 表示名（省略するとファイル名） |
+| `voice.voice` | 話者。`ja-JP-NanamiNeural`（女性）/ `ja-JP-KeitaNeural`（男性） |
+| `voice.pitch` | 声の高さ（`+10Hz` の形式）。Nanami は 10Hz でおよそ半音 1 つ分。Keita は上げると +6 半音付近で頭打ちになり、下げてもほとんど変わらない |
+| `voice.rate` | 話す速さ（`+5%` の形式） |
+| `voice.eq` | 音色。`flat`（加工なし）/ `bright`（明るい）/ `warm`（落ち着いた）/ `robotic`（機械的） |
+
+- 省略した項目は既定値（`ja-JP-NanamiNeural`・`+0Hz`・`+0%`・`flat`）になります。
+- 形式が誤っている項目はログに警告を出し、その項目だけ既定値を使います。JSON として読めないときは、ファイルを書き換えずに表示名と声の設定を使わずに動きます。
+- `personas.json` の変更も、⚙️ キャラ設定を開き直すと反映されます。
+
+### サーバー（Linux）へ転送する
+
+パソコンで作ったファイルは Git では届かないので、SCP か SFTP で送ります（Windows 10 以降は PowerShell から `scp` / `sftp` を使えます）。**見本の `00_prompt_format.txt` は送らないでください**（サーバー側の Git 管理対象のファイルが変わり、管理コンソールのデプロイが止まります）。
+
+```bash
+scp prompts/my_character.txt prompts/personas.json <USER>@<HOST>:<PROJECT_DIR>/prompts/
+```
+
+SFTP の場合:
+
+```bash
+sftp <USER>@<HOST>
+sftp> cd <PROJECT_DIR>/prompts
+sftp> put prompts/my_character.txt
+sftp> put prompts/personas.json
+sftp> bye
+```
+
+送った後は ⚙️ キャラ設定を開き直すと反映されます（`sudo systemctl restart bot` でも可）。ボットを動かしているユーザーとは別のユーザーで送った場合は、`sudo chown <USER>:<USER> <PROJECT_DIR>/prompts/*` で所有者を合わせてください。サーバーからパソコンへ取り戻すときは、`scp <USER>@<HOST>:<PROJECT_DIR>/prompts/my_character.txt prompts/` のように送り先と送り元を入れ替えます。
+
+### 既存の環境を更新する（ver0.1.7 以前から）
+
+ver0.1.7 までは、キャラ別のファイル（`prompts/prompt_*.txt`）を Git で管理していました。この版から Git の管理対象外になるため、**更新（`git pull`・管理コンソールのデプロイ）の際に、手元のこれらのファイルが削除されます**（中身を変えていなくても削除されます）。パソコン・サーバーとも、更新の前にリポジトリの外へ退避し、更新後に戻してください。同じファイル名で戻せば、各サーバーで選んでいたペルソナはそのまま引き継がれます。
+
+**Windows（PowerShell。リポジトリのフォルダで実行）**:
+
+```powershell
+Copy-Item prompts "$HOME\persona-prompts-backup" -Recurse        # 1. 退避（同じ名前のフォルダが無いことを先に確認）
+git pull                                                          # 2. 更新
+Copy-Item "$HOME\persona-prompts-backup\prompt_*.txt" prompts\     # 3. キャラ別のファイルだけを戻す
+```
+
+**Linux（サーバー）**:
+
+```bash
+cd <PROJECT_DIR>
+cp -a prompts ~/persona-prompts-backup                    # 1. 退避（管理コンソールでデプロイする場合も、その前に行う）
+git pull                                                  # 2. 更新（またはデプロイ）
+cp -p ~/persona-prompts-backup/prompt_*.txt prompts/       # 3. キャラ別のファイルだけを戻す
+sudo systemctl restart bot                                # 4. 読み直す
+```
+
+- 戻すまでの間にボットが再起動しても、各サーバーで選んでいたペルソナの設定は消えません（その間は既定のペルソナで応答し、戻した後の再起動で元に戻ります）。
+- この版から、表示名と声はファイル名に結び付いた設定（`personas.json`）になりました。設定しないと、表示名はファイル名（例: `prompt_default`）、声は既定の声、既定のペルソナは選択肢の先頭になります。ver0.1.7 と同じにしたい場合は、ver0.1.7 の `src/persona_bot/config/choices.py`（`PERSONA_CHOICES` の表示名）と `constants.py`（`VOICE_PROFILES` の声・`DEFAULT_PROMPT_FILE` の既定）を参考に `personas.json` を書き、サーバーにも転送してください。
+- 戻し終えたら、`git status` に `prompts/` のファイルが出ないこと（Git の管理対象外になっていること）を確認できます。退避したフォルダは、動作を確かめた後に消して構いません。
+
+---
+
 ## 🧪 開発時のローカル検証
 
 仮想環境を有効化し、既存の依存関係をインストールした後、リポジトリルートで実行します。
@@ -305,11 +395,13 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 | メニュー | 選択肢 |
 | --- | --- |
-| 👤 ペルソナ | ツンデレ / ヤンデレ / メイド / ロリ / ショタ / オジサン / ギャル / メスガキ / お姉さん / はんなり / クレーマー / 標準 |
+| 👤 ペルソナ | `prompts/` に置いた自作のペルソナ（先頭の 25 件。作り方は「[ペルソナ（キャラクター）を作る](#-ペルソナキャラクターを作る)」）。1 つも無いときはメニューを出さず、作り方を案内 |
 | 🤖 AIモデル | Gemini 2.5 Flash / Gemini 3.5 Flash / Gemini 3.5 Flash Lite（既定） |
 | 💬 応答モード | すべての発言に反応 / メンションのみに反応（既定） |
 
 - 「確定」を押すまで反映されません。「🔄 会話リセット」を押すと、そのチャンネルの会話履歴がそこで区切られます。
+- パネルを開くたびに `prompts/` を読み直すので、ペルソナを追加・変更しても再起動は要りません。
+- まだペルソナを選んでいないサーバーは「既定」のペルソナで応答します。選んだペルソナのファイルが見つからない間は、選択を残したまま既定のペルソナで応答し、ファイルを戻すと元に戻ります。
 - 設定はサーバーごとに独立し、DB に保存されて再起動後も維持されます（DM は全 DM で共有。会話リセットの位置は再起動で消えます）。
 
 #### 📈 会話統計 / 👍 フィードバック
@@ -400,6 +492,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 #### 新機能
 
 - **ボイス接続先の保護**(BETA): 管理者などがボットを別のボイスチャンネルへ移したとき、`/join`の接続は元のチャンネルへ戻り、自律行動の配信は締めの一言を残して移動先から退出。元のチャンネルの削除・権限不足・復帰失敗・短時間の連続移動では戻らずに退出し、自動で入り直さない。移動の瞬間に再生中だった読み上げは止め、`/join`・`/leave`・配信の開始と終了は移動と区別
+- **自作のペルソナ**(BETA): キャラ別のプロンプトの同梱をやめ、書式見本`prompts/00_prompt_format.txt`だけを公開。`prompts/`に置いた`.txt`がキャラ設定の選択肢になり、パネルを開くたびに読み直すため再起動は不要。表示名・読み上げの声・既定のペルソナは任意の`prompts/personas.json`で設定。ペルソナが1つも無い間は標準のプロンプトで応答し、パネルで作り方を案内。選んだファイルが見つからない間も選択は保ち、既定のペルソナで応答。キャラ別のファイルと`personas.json`はGitの管理対象外にし、作り方・SCP/SFTPでのサーバーへの転送・既存環境の更新手順（更新前の退避と復元）をREADMEに記載。管理コンソールの表示名も`personas.json`から取得
 
 #### 運用・構成の整備
 

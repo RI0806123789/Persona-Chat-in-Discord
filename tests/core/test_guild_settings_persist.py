@@ -8,9 +8,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from persona_bot.core.app_state import GuildSettings
-from persona_bot.config import choices, constants
+from persona_bot.config import choices, constants, personas
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 class BlockingDatabase:
@@ -65,8 +67,9 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
                 self.assertEqual(settings.auto_topic_interval_hours, 24)
 
     def test_allowed_settings_restore_with_existing_prompt(self) -> None:
+        install_persona_catalog(self, "../prompts/架空のペルソナ.txt")
         values = {
-            "prompt_file": choices.PERSONA_CHOICES[0].value,
+            "prompt_file": "../prompts/架空のペルソナ.txt",
             "model_name": choices.MODEL_CHOICES[0].value,
             "respond_mode": "all",
         }
@@ -81,19 +84,43 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
             with self.subTest(value=value), patch("builtins.print") as logging:
                 settings = GuildSettings(current_prompt_file="previous", current_model_name="previous", current_respond_mode="previous")
                 settings.apply_persisted({key: value for key in ("prompt_file", "model_name", "respond_mode")})
-                self.assertEqual(settings.current_prompt_file, constants.DEFAULT_PROMPT_FILE)
+                self.assertEqual(settings.current_prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
                 self.assertEqual(settings.current_model_name, constants.DEFAULT_MODEL_NAME)
                 self.assertEqual(settings.current_respond_mode, constants.DEFAULT_RESPOND_MODE)
                 self.assertEqual(logging.call_count, 3)
                 self.assertNotIn(str(value), str(logging.call_args_list))
 
-    def test_missing_prompt_file_uses_default_and_missing_values_keep_current(self) -> None:
+    def test_missing_prompt_file_keeps_value_and_responds_with_default(self) -> None:
+        # Git の更新でキャラ別のファイルが一時的に消えても、保存値は残して既定で応答する。
+        # ファイルを戻して一覧を読み直せば、元のペルソナに戻る。
+        install_persona_catalog(self, "../prompts/既定.txt", default="../prompts/既定.txt")
         settings = GuildSettings(current_model_name=choices.MODEL_CHOICES[0].value)
-        with patch("persona_bot.core.app_state.resolve_prompt_path") as path, patch("builtins.print"):
-            path.return_value.is_file.return_value = False
-            settings.apply_persisted({"prompt_file": choices.PERSONA_CHOICES[0].value})
-        self.assertEqual(settings.current_prompt_file, constants.DEFAULT_PROMPT_FILE)
+        with patch("builtins.print") as logging:
+            settings.apply_persisted({"prompt_file": "../prompts/消えたキャラ.txt"})
+        self.assertEqual(settings.current_prompt_file, "../prompts/消えたキャラ.txt")
+        self.assertEqual(settings.snapshot_response().prompt_file, "../prompts/既定.txt")
+        self.assertIn("消えたキャラ.txt", str(logging.call_args_list))
         self.assertEqual(settings.current_model_name, choices.MODEL_CHOICES[0].value)
+
+        install_persona_catalog(self, "../prompts/既定.txt", "../prompts/消えたキャラ.txt", default="../prompts/既定.txt")
+        self.assertEqual(settings.snapshot_response().prompt_file, "../prompts/消えたキャラ.txt")
+
+    def test_prompt_file_outside_prompts_folder_is_rejected(self) -> None:
+        # 保存値から prompts/ の外（.env など）やテンプレートを読ませない
+        for value in ("../.env", "../prompts/../.env", "../prompts/sub/架空.txt", "../prompts/..\\.env",
+                      "../prompts/00_prompt_format.txt", "../prompts/.hidden.txt", "../prompts/架空.md"):
+            with self.subTest(value=value), patch("builtins.print"):
+                settings = GuildSettings(current_prompt_file="previous")
+                settings.apply_persisted({"prompt_file": value})
+                self.assertEqual(settings.current_prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
+
+    def test_unselected_persona_follows_catalog_default(self) -> None:
+        settings = GuildSettings()
+        self.assertEqual(settings.current_prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
+        install_persona_catalog(self)
+        self.assertEqual(settings.snapshot_response().prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
+        install_persona_catalog(self, "../prompts/架空A.txt", "../prompts/架空B.txt", default="../prompts/架空B.txt")
+        self.assertEqual(settings.snapshot_response().prompt_file, "../prompts/架空B.txt")
 
     def test_former_default_model_moves_to_current_default(self) -> None:
         # 既定を Gemini 3.5 Flash Lite へ変える前の既定を保存したサーバーも、次の起動で新しい既定へ移る。

@@ -124,7 +124,37 @@ def choice_names(list_name):
     return names
 
 
-PERSONAS = choice_names("PERSONA_CHOICES")
+def persona_settings():
+    """prompts/personas.json から {値: 表示名} と既定のペルソナの値を読む。
+
+    ver0.1.8 以降のボットはペルソナの固定の選択肢を持たず、表示名と既定は利用者が
+    サーバー上に置く personas.json に書く。無い・読めない場合は空にし、旧版の
+    choices.py の選択肢とファイル名での表示に任せる。
+    """
+    path = BOT_DIR / "prompts" / "personas.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, ValueError):
+        note("prompts/personas.json を読めませんでした。JSON の形式と読み取り権限を確認してください。")
+        return {}, None
+    if not isinstance(data, dict):
+        note("prompts/personas.json の最上位がオブジェクトではありません。")
+        return {}, None
+    names = {}
+    entries = data.get("personas")
+    for file_name, entry in entries.items() if isinstance(entries, dict) else ():
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name.strip():
+            names["../prompts/" + file_name] = " ".join(name.split())
+    default = data.get("default")
+    return names, ("../prompts/" + default) if isinstance(default, str) and default else None
+
+
+PERSONA_NAMES, PERSONA_DEFAULT = persona_settings()
+# personas.json の表示名を優先し、旧版の choices.py の選択肢で補う
+PERSONAS = {**choice_names("PERSONA_CHOICES"), **PERSONA_NAMES}
 MODELS = choice_names("MODEL_CHOICES")
 MODES = choice_names("RESPOND_MODE_CHOICES")
 
@@ -172,7 +202,8 @@ def load_guild_settings():
 
 def describe_settings(row):
     """DB の行（無ければ空）を、既定値を補った表示用の設定にする。"""
-    prompt_file = row.get("prompt_file") or CONSTANTS.get("DEFAULT_PROMPT_FILE") or ""
+    # 未保存のサーバーは既定のペルソナ（personas.json の default、旧版は DEFAULT_PROMPT_FILE）
+    prompt_file = row.get("prompt_file") or PERSONA_DEFAULT or CONSTANTS.get("DEFAULT_PROMPT_FILE") or ""
     model = row.get("model_name") or CONSTANTS.get("DEFAULT_MODEL_NAME") or ""
     mode = row.get("respond_mode") or CONSTANTS.get("DEFAULT_RESPOND_MODE") or ""
 

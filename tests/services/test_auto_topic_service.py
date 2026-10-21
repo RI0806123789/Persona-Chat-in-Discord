@@ -18,11 +18,13 @@ from persona_bot.core.app_state import BotState
 from persona_bot.core.background import spawn
 from persona_bot.services.auto_topic_service import AutoTopicService
 from tests.helpers.thread_probe import make_thread_probe
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.state = BotState()
+        install_persona_catalog(self)
         self.settings = self.state.get_guild(1)
         self.settings.auto_topic_enabled = True
         self.settings.auto_topic_interval_hours = 1
@@ -104,6 +106,8 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.settings.auto_topic_channels[30], old)
 
     async def test_topic_and_anniversary_prompt_loading_keeps_loop_responsive(self):
+        # 既定（空）は組み込みのプロンプトでファイルを読まないため、ファイルのペルソナを選ぶ
+        self.settings.current_prompt_file = "../prompts/prompt_default.txt"
         for kind in ("topic", "anniversary"):
             with self.subTest(kind=kind):
                 operation, threads = make_thread_probe("架空のペルソナ")
@@ -281,6 +285,7 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.state = BotState()
+        install_persona_catalog(self)
         self.settings = self.state.get_guild(1)
         self.settings.auto_topic_enabled = True
         now = datetime.now(timezone.utc)

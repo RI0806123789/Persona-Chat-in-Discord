@@ -17,6 +17,8 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
   ただし、利用者が「作業完了を宣言します」と伝えた**後**に、末尾の「作業完了時の手順」に沿って行う作業ブランチの
   push と PR 作成は、その宣言が依頼にあたるので承認は要らない（宣言の前に push・PR 作成をしてはならない）
 - **実行時データ**（`memory/` 配下の `bot.db`・`projects.json`、`ng/blacklist.json`）を消したり書き換えたりすること。
+  利用者が手元で作ったペルソナ（`prompts/` のテンプレート以外の `.txt` と `personas.json`）も同じ。Git の管理対象外で、
+  消すと取り戻せない
   会話の記憶・会話統計・リマインダー・違反記録が入っており、消すと取り戻せない
 - **依存ライブラリの追加。** このプロジェクトは**ライブラリを足さない**判断を随所でしています
   （読み上げは FFmpeg を使わず miniaudio でメモリ上のままデコードし、音色の EQ は numpy だけで実装して
@@ -180,7 +182,7 @@ SSH 経由でボットを見守り、サービス操作・デプロイを行う�
 
 同じボットを複数の Discord サーバーへ招待しても設定が混ざらないよう、可変設定は**サーバー（ギルド）ごとに分離**されている。
 
-- **`GuildSettings`**: ペルソナ（`current_prompt_file`）・モデル（`current_model_name`）・応答モード（`current_respond_mode`）・グラウンディング（`grounding_enabled`）・会話リセット地点（`channel_reset_points`）・自発会話の設定と監視状態（`auto_topic_*`）・自律行動の設定と配信状態（`autonomous_*`）・記念日の投稿記録（`anniversary_posted_dates`）を持つ。
+- **`GuildSettings`**: ペルソナ（`current_prompt_file`。空文字は「既定のペルソナに従う」で、実際に使う値は `snapshot_response()` が一覧から解決する。「ペルソナの一覧」の項を参照）・モデル（`current_model_name`）・応答モード（`current_respond_mode`）・グラウンディング（`grounding_enabled`）・会話リセット地点（`channel_reset_points`）・自発会話の設定と監視状態（`auto_topic_*`）・自律行動の設定と配信状態（`autonomous_*`）・記念日の投稿記録（`anniversary_posted_dates`）を持つ。
 - **`BotState.get_guild(guild_id)`**: そのサーバーの `GuildSettings` を返す。未登録なら初回アクセス時にデフォルト値で自動生成する。**`guild_id=None`（DM）は `BotState.dm_settings` を返す** — DM にはギルドが無いため、全 DM で1スロットを共有する。`iter_all_guild_settings()` は「全サーバー + DM」を横断する見回り処理用。
 - **`BotState` に残すもの**: 最終活動時刻（`last_activity_timestamp`）とバックグラウンドタスクの起動フラグ類のみ（サーバーに依存しないプロセス全体の状態）。
 - **永続化**: 設定値（ペルソナ・モデル・応答モード・グラウンディング・自発会話の ON/しきい値・自律行動の ON）と記念日の投稿記録は DB に保存され、起動時に `BotState.restore_from_database(db)`（`bot.py` の `Database` 初期化直後に1回）が復元する。**設定を変えたら `await guild_settings.persist()` を呼ぶこと** — UI の確定ボタンやトグルの直後がその場所。保存はフェイルオープン（失敗してもインメモリの変更は残る）。`persist()` は `_persist_lock` で直列化し、**保存する値はロックを取ってから読む**（保存は行の総入れ替えなので、並んだ2つの保存の書き込み順が入れ替わると古い値で上書きされる）。書き込みは `run_in_thread` で待つ（素の `asyncio.to_thread` に戻すと、キャンセルの瞬間にロックが外れて同じ上書きが起きる）。記念日の記録（`record_anniversary_post`）も `run_in_thread` で待つ。`get_guild()` が新しく作る `GuildSettings` には `attach()` で DB が引き継がれるので、呼び出し側は何もしなくてよい。`restore_from_database` は、復元より前に `get_guild()` で作られていた設定にも `attach()` する（つながないと、その設定の `persist()` が DB へ書かれない）。
@@ -298,14 +300,14 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 **キャラクター別ボイスプロファイル**: 「声の高さ（`pitch`）」と「話す速さ（`rate`）」は **edge-tts のサーバー側パラメータ**が、「音色（`eq`）」だけを `voice_dsp.py` の numpy 製バイクアッド EQ が担う。**`scipy` / `librosa` / `pydub` を持ち込まないこと** — 前2つは 1GB 環境に対して重すぎ、`pydub` は内部で FFmpeg プロセスを起動するため上記の方針と矛盾する。
 
-- **どのキャラをどう鳴らすかは `constants.py` の `VOICE_PROFILES`**（キーは `current_prompt_file` の値、値は `voice` / `pitch` / `rate` / `eq`）。EQ の中身は `VOICE_EQ_PROFILES`。未登録のペルソナは `VOICE_PROFILE_FALLBACK` へ落ちる。調整はこの2つの辞書だけで完結させ、`voice_dsp.py` や `voice.py` にハードコードしないこと。
+- **どのキャラをどう鳴らすかは、利用者がローカルで作る `prompts/personas.json` の `voice`**（値は `voice` / `pitch` / `rate` / `eq`。`personas.py` が読み、`voice_dsp.resolve_profile` が一覧から引く）。EQ の中身は `constants.py` の `VOICE_EQ_PROFILES`。書いていない項目・未登録のペルソナ・組み込みの標準は `VOICE_PROFILE_FALLBACK` へ落ちる。**特定のキャラの声を公開側のコード（`constants.py` など）に書かないこと**（キャラ別のファイルを公開しない方針のため。旧 `VOICE_PROFILES` は #189 で外した）。`voice_dsp.py` や `voice.py` にもハードコードしない。
 - **`pitch` / `rate` は edge-tts のネイティブ形式の文字列**（`"+10Hz"` / `"+5%"`。正規表現 `^[+-]\d+Hz$` / `^[+-]\d+%$` に一致しないと `Communicate` が `ValueError` を投げる）。**半音単位 `st` は使えない。**
 - **「半音 → Hz」を計算で求めないこと**: 効き方が話者ごとに違い、Nanami は理論式の約1.5倍効き、Keita は約0.55倍しか効かないうえ **+6半音付近で飽和し、下方向はほとんど効かない**。`constants.py` に実測の較正表をコメントで置いてあるので、それを目安に Hz を直書きする。
 - **`voice_dsp.py` に WSOLA・リサンプリングを戻さないこと**: 設計初期に gTTS の単一音声から高さと速さを作るため自前で持っていたが、edge-tts はピッチを変えても長さが変わらない（＝リサンプリングではなくフォルマントを保つ）ため不要になった。戻すと音質を落とすだけで得るものがない。
 - **バイクアッドはブロック処理**: IIR は1つ前の**出力**を使う再帰式のため numpy でベクトル化できず Python のループになる。`TTS_BIQUAD_BLOCK_SIZE` ごとに区切ってフィルタの状態を持ち越す（一気に `tolist()` すると 30 秒の音声で数十 MB の一時オブジェクトができる）。
 - **音色を変えないペルソナは numpy を通さない**: `needs_equalizer` が偽なら miniaudio に 48kHz ステレオまで変換させる。この分岐を消さないこと（`flat` のペルソナの経路が無駄に重くなる）。EQ を掛ける場合はモノラル1ch分だけ処理し、`np.repeat(clipped, TTS_CHANNELS)` でのステレオ化は最後に回す（計算量が半分で済む）。
 - **int16 のクリップは必須**: EQ のブーストでレンジを超えるため、`np.clip` してから `astype(np.int16)` する（超えたまま変換すると音が割れる）。
-- **プロファイルは起動時に点検する**: `voice.py` の `_validate_profiles()` が import 時に `pitch` / `rate` の形式を確認して警告を出す。形式ミスは `Communicate` の `ValueError` 経由で**黙って gTTS 退避に落ち続ける**（音は出るのでキャラ差が消えたことに気づきにくい）ため、この点検を外さないこと。
+- **プロファイルは読み込み時に点検する**: `personas.py` の `_build_voice` が一覧の読み込み（起動時とキャラ設定パネルを開いたとき）に `pitch` / `rate` の形式を確認し、誤った項目は警告を出して既定値を使う。形式ミスは `Communicate` の `ValueError` 経由で**黙って gTTS 退避に落ち続ける**（音は出るのでキャラ差が消えたことに気づきにくい）ため、この点検を外さないこと。
 - **フェイルセーフ**: EQ 名が未知・`eq` キー自体が無い場合は `DEFAULT_VOICE_EQ_NAME` の音色へフォールバックする（既定は加工なしの `flat`）。数値でない周波数・ゲイン・Qも `TTS_EQ_*` の既定値で処理する。NaN・無限大も同じく既定値へ落とす（`_as_float` が `math.isfinite` で弾く。通すとフィルタ係数が NaN になり、int16 変換で雑音になる）。`bit_crush` は `_bit_crush_bits` が1以上のときだけ有効とし、`needs_equalizer` の判定と `apply_equalizer` の適用で同じ関数を使う（判定だけ `bool()` にすると `"0"` や `-1` で numpy の経路へ無駄に回る）。
 
 ### ボイス接続先の保護 (`voice_guard.py`)
@@ -332,7 +334,22 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 ### キャラ設定 UI (`settings_view.py`, `commands.py`, `choices.py`)
 
-`/functions` のハブ（`functions_view.py` の `FunctionsView`、エフェメラル）から **⚙️ キャラ設定** を選ぶと、同じメッセージが `SettingsView` に変身する（ペルソナ/モデル/応答モードのセレクト + 確定/戻る/リセットボタン、120秒タイムアウト）。一時的な選択値は View 上に保持され、**確定 (Confirm)** ボタンを押したときにのみ `GuildSettings`（`/functions` 実行時に `interaction.guild_id` から解決したもの）に書き込まれる — それまでは共有状態を一切変更しない。Google検索（グラウンディング）のトグルはハブ側にあり、こちらは押した瞬間に `GuildSettings` へ反映される（ハブは「その場で実行」系のため）。**各 View は `BotState` ではなく `GuildSettings` を受け取る** ため、設定変更の影響はそのサーバー内（DM の場合は全 DM）に閉じる。`choices.py` はペルソナ/モデル/モード、および要約期間（`SUMMARY_PERIOD_CHOICES`）の選択肢リストと表示名マップの唯一の情報源。
+`/functions` のハブ（`functions_view.py` の `FunctionsView`、エフェメラル）から **⚙️ キャラ設定** を選ぶと、同じメッセージが `SettingsView` に変身する（ペルソナ/モデル/応答モードのセレクト + 確定/戻る/リセットボタン、120秒タイムアウト）。一時的な選択値は View 上に保持され、**確定 (Confirm)** ボタンを押したときにのみ `GuildSettings`（`/functions` 実行時に `interaction.guild_id` から解決したもの）に書き込まれる — それまでは共有状態を一切変更しない。Google検索（グラウンディング）のトグルはハブ側にあり、こちらは押した瞬間に `GuildSettings` へ反映される（ハブは「その場で実行」系のため）。**各 View は `BotState` ではなく `GuildSettings` を受け取る** ため、設定変更の影響はそのサーバー内（DM の場合は全 DM）に閉じる。`choices.py` はモデル/モード、および要約期間（`SUMMARY_PERIOD_CHOICES`）の選択肢リストと表示名マップの唯一の情報源。ペルソナの選択肢は固定の一覧を持たず、`personas.py` が `prompts/` から作る（次項）。
+
+### ペルソナの一覧 (`personas.py`)
+
+キャラ別のプロンプトは公開しない（#189）。Git が管理する `prompts/` のファイルは書式見本の `00_prompt_format.txt`（`PROMPT_TEMPLATE_FILE_NAME`）だけで、キャラ別の `.txt` と任意の `personas.json`（表示名・声・既定）は利用者が各自のパソコン・サーバーで作る。`.gitignore` は `prompts/*` で直下全体を除外し、テンプレートだけを否定行で戻している。
+
+- **選択肢は `prompts/` の `.txt` から作る**: テンプレート・`.` で始まる名前・フォルダは除く。`personas.json` の `personas` に書いた順が先、残りはファイル名の順。表示名は `name`、無ければ拡張子なしのファイル名。`default` が無い・見つからないときは先頭、1つも無ければ空（組み込みの標準）。
+- **保存値の形は変えないこと**: `"../prompts/<ファイル名>"`（`PERSONA_VALUE_PREFIX`）。旧版の固定の選択肢と同じ形なので、ファイル名が同じなら DB の保存値をそのまま引き継げる。形を変えると全サーバーの選択が既定へ戻る。
+- **空文字は「既定のペルソナに従う」**（`FOLLOW_DEFAULT_PERSONA`。`GuildSettings` の初期値・DB の未設定と同じ）。`snapshot_response()` が `PersonaCatalog.resolve` で一覧の既定へ解決し、空のままなら `load_persona_template` がファイルを読まずに `BUILTIN_PERSONA_PROMPT`（`constants.py`）を返す。テンプレートだけを取得した直後でも、存在しないファイルを参照しない。
+- **見つからないファイルの保存値は消さない**: `apply_persisted` はペルソナの形の値なら、ファイルが無くても残してログを出し、応答は `resolve` が既定へ回す。Git の更新でキャラ別のファイルが一時的に消えた環境でも、戻せば元のキャラに戻るようにするため（旧版は既定へ書き換えていたが、その状態で別の設定を確定すると選択が失われた）。キャラ設定の確定も、ペルソナを変えたときだけファイルを確かめる（変えていなければ見つからない値も保つ）。
+- **`persona_file_name` が prompts/ の外を読ませない関門**: 区切り文字・テンプレート・隠しファイル・`.txt` 以外を拒否する。保存値の復元（`apply_persisted`）と確定時の確認（`is_selectable_persona`）の両方で通す。確定時の確認を「ファイルがあるか」だけに戻さないこと（`../.env` を選ばせると API キーを Gemini へ送ってしまう）。
+- **一覧はスナップショット**: `reload_persona_catalog()`（`bot.py` で設定の復元より前に1回）と `refresh_persona_catalog()`（⚙️ キャラ設定を開くとき。応答を保留してから `run_in_thread` で読む）だけがファイルを読み、読み終えた一覧を差し替える。応答・読み上げ・表示は `current_persona_catalog()` を参照するだけで、イベントループ上でファイルを読まない。フォルダを読めないときは前回の一覧を保つ。`SettingsView` は開いた時点の一覧を持ち、選択肢と表示をそろえる。
+- **Discord の制限**: 選択肢は先頭の `DISCORD_SELECT_MAX_OPTIONS`（25）件まで、値が `DISCORD_SELECT_VALUE_MAX_LENGTH`（100文字）を超えるファイルは警告して選択肢から外す。1つも無いときはペルソナのセレクトを出さない（選択肢0件のセレクトは Discord に拒否され、パネルごと開けなくなる）。
+- **`personas.json` の誤りでは止めない**: 手書きのファイルなので `utf-8-sig` で読み、JSON の誤り・型の誤り・未知の項目・形式の誤った声は警告して、その部分だけ既定にする。ファイルは書き換えない（`load_json_file` の退避は使わない）。ログに `personas.json` の中身を出さない。
+- **テストで実際の `prompts/` を読まないこと**: 利用者のキャラ別ファイルが手元にあると通り、CI（テンプレートだけ）では落ちる。`tests/helpers/persona_helpers.py` の `install_persona_catalog` / `install_empty_persona_catalog` で架空の一覧に差し替える。`tests/config/test_personas.py` は Git の管理対象がテンプレートだけであることと、新しいファイル・`personas.json` が除外されることも確かめる。テンプレートの名前を変えるときは、`PROMPT_TEMPLATE_FILE_NAME`・`.gitignore` の否定行・README をそろえる。
+- **管理コンソールも `personas.json` を読む**: `tools/console/backend/remote_scripts/insights.py` が表示名と既定を `prompts/personas.json` から取る（旧版のサーバー向けに `choices.py` の `PERSONA_CHOICES` も読む）。形式を変えたら `insights.py` と `tests/test_remote_scripts.py` も直す。
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
 
@@ -504,7 +521,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 
 ## 規約と落とし穴
 
-- **パス解決**（`persona_bot/config/constants.py`, `persona_bot/config/paths.py`）: `BASE_DIR = src/`（`constants.py` の `Path(__file__).resolve().parents[2]`）、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/prompt_tsun.txt"` のような値（`src/` 基準）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。ファイルの配置を変えたら `tests/integration/test_package_layout.py`（全ペルソナの相対パスと `.env`・DB・記憶・NG の保存先が変わらないことを確かめる）を回す。
+- **パス解決**（`persona_bot/config/constants.py`, `persona_bot/config/paths.py`）: `BASE_DIR = src/`（`constants.py` の `Path(__file__).resolve().parents[2]`）、`PROJECT_ROOT` はその親。ペルソナファイルは `"../prompts/<ファイル名>.txt"` のような値（`src/` 基準。`PERSONA_VALUE_PREFIX` + ファイル名）として保存・選択され、`resolve_prompt_path` で解決される。`memory/`・`ng/`・`prompts/` はプロジェクトルート直下にある。ファイルの配置を変えたら `tests/integration/test_package_layout.py`（ペルソナの値の解決先・公開テンプレートの実在と `.env`・DB・記憶・NG の保存先が変わらないことを確かめる）を回す。
 - **設定（APIキー）**: `settings_loader.load_settings()` はプロジェクトルート直下の `.env`（パスは `constants.ENV_FILE_PATH`。**絶対パスで解決すること** — ボットは `src/` から起動するため、カレントディレクトリ基準の相対探索では見つけられない）を `python-dotenv` で読み込み、`.API_KEY_GEMINI` / `.TOKEN_DISCORD` を持つ `Settings` データクラスを返す。旧 `config.py` / `config_private.py` は ver0.1.6 で削除済み。
   - **`load_dotenv(override=False)` を変えないこと**: OS の環境変数が `.env` より優先される。systemd の `EnvironmentFile=` や Docker の `--env-file` へ移行できるようにするための挙動で、逆にするとサーバーに残った古い `.env` が黙って優先され「直したはずのキーが反映されない」事故になる。
   - **未設定なら起動を止める**: ファイル無し・変数無し・空文字・`.env.example` のプレースホルダのまま、のいずれでも `キー未設定` を出力して `SettingsError` を送出する。`load_settings()` は `bot.py` のトップレベルで呼ばれるためボットは起動しない。キーが無いまま起動すると「Discord へは接続できるが Gemini の呼び出しだけ全滅する」という切り分けの難しい状態になるため、あえて失敗させている。
@@ -517,7 +534,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 - **モデレーションはフェイルオープン**: タイムアウト/例外時、`content_moderator.check` は *safe* を返してボットを動かし続ける。Gemini のプロンプトブロックは *unsafe* として扱う。この挙動を維持すること — 一時的な API エラーでユーザーをブロックしないこと。**`check` / `check_and_route` の本体で例外を外へ漏らさないこと**: これらは `on_message` の主経路から呼ばれるため、抜けた例外はそのメッセージの処理ごと落とす。準備処理（タイムゾーンの解決など）を `try` の外に置くと、環境依存の失敗が全メッセージの無応答に直結する（実際に `ZoneInfo` の組み立てで起きた）。
 - **保存する UTC 時刻は `timeutil.utc_now()` / `timeutil.utc_now_iso()` で作る**（`datetime.now(timezone.utc).isoformat()` を各サービスに直書きしない）。既定は秒精度で、リマインダーの期限判定のように ISO 文字列の比較で扱う値の桁数を揃える。例外は文書キューの `created_at` で、取り出し順が `ORDER BY created_at, task_id`（`task_id` の先頭はチャンネルID）のため、同じ1秒に届いた別チャンネルの文書を到着順に処理できるようマイクロ秒を明示して残す。リマインダーの `_utc_now` はテストが時計を固定する差し替え口なので名前を残す。記憶圧縮前ログの `"%Y-%m-%d %H:%M:%S UTC"` は圧縮プロンプト向けの表記なので対象外。本文が無い添付だけの依頼に使う質問文は `constants.py` の `IMAGE_ONLY_QUESTION`・`DOCUMENT_ONLY_QUESTION`。
 - **タイムゾーンは `timeutil.resolve_timezone(name, purpose=...)` で解決する**: `ZoneInfo` を直接呼ばないこと。`requirements.txt`の`tzdata`により、OSにタイムゾーンDBのないWindowsやスリムなLinuxでも`Asia/Tokyo`を使う。未導入・データ欠落・無効なタイムゾーン名では、この関数がUTCへのフォールバックと警告ログをまとめて引き受ける。導入後はボットを再起動し、サービスの保持するタイムゾーンを読み直す。タイムゾーン名そのもの（`STATS_TIMEZONE` / `ANNIVERSARY_TIMEZONE` / `REMINDER_TIMEZONE`）は用途ごとに `constants.py` で個別に調整できる形を保つ。
-- **再起動でリセットされる状態**（インメモリのみ）: 利用/トークン履歴（`usage_graph`、500件のリングバッファ）、`channel_reset_points`（`/functions` → ⚙️キャラ設定パネルの会話リセットのアンカー）、自発的な会話の**監視状態**（`auto_topic_channels` / `auto_topic_posted_at`）、自律行動の**配信状態と話したいゲージ**（`autonomous_session` / `autonomous_last_activity` / `autonomous_recent_activity`。ボイス接続自体が再起動をまたげないため復元しない）、フィードバックの**評価対象レジストリ**・**評価者ごとのリアクション状態**・**付与クールダウンの記録**（`FeedbackService._tracked` / `_votes` / `_last_reaction_at`。記録済みの評価そのものは DB に残る）、ウェルカム投稿済みのサーバーID（`welcomed_guild_ids`。`on_guild_join` は招待時にしか発火しないため、消えても再投稿は起きない）、ボイス接続先の保護の**意図した接続先と戻した時刻**（`VoiceGuard._homes`。ボイス接続自体が再起動をまたげないため）。一方、`GuildSettings` の**設定値**（ペルソナ/モデル/応答モード/グラウンディング/自発会話の ON・しきい値/自律行動の ON）・記念日の投稿記録・リマインダー・フィードバックの記録は DB に永続化され、再起動しても失われない。永続化される状態は `memory/bot.db`（SQLite: affinity / user_stats / queue_tasks / pending_log / profile / guild_settings / anniversary_posts / reminders / feedback / legacy_imports）、`memory/projects.json`、`ng/blacklist.json`。`memory/profile.json` は手書き追加用の受け皿で、起動時に DB へ吸収され `{}` に戻る。
+- **再起動でリセットされる状態**（インメモリのみ）: 利用/トークン履歴（`usage_graph`、500件のリングバッファ）、ペルソナ一覧のスナップショット（`personas._catalog`。起動時とキャラ設定パネルを開いたときに `prompts/` から読み直す）、`channel_reset_points`（`/functions` → ⚙️キャラ設定パネルの会話リセットのアンカー）、自発的な会話の**監視状態**（`auto_topic_channels` / `auto_topic_posted_at`）、自律行動の**配信状態と話したいゲージ**（`autonomous_session` / `autonomous_last_activity` / `autonomous_recent_activity`。ボイス接続自体が再起動をまたげないため復元しない）、フィードバックの**評価対象レジストリ**・**評価者ごとのリアクション状態**・**付与クールダウンの記録**（`FeedbackService._tracked` / `_votes` / `_last_reaction_at`。記録済みの評価そのものは DB に残る）、ウェルカム投稿済みのサーバーID（`welcomed_guild_ids`。`on_guild_join` は招待時にしか発火しないため、消えても再投稿は起きない）、ボイス接続先の保護の**意図した接続先と戻した時刻**（`VoiceGuard._homes`。ボイス接続自体が再起動をまたげないため）。一方、`GuildSettings` の**設定値**（ペルソナ/モデル/応答モード/グラウンディング/自発会話の ON・しきい値/自律行動の ON）・記念日の投稿記録・リマインダー・フィードバックの記録は DB に永続化され、再起動しても失われない。永続化される状態は `memory/bot.db`（SQLite: affinity / user_stats / queue_tasks / pending_log / profile / guild_settings / anniversary_posts / reminders / feedback / legacy_imports）、`memory/projects.json`、`ng/blacklist.json`。`memory/profile.json` は手書き追加用の受け皿で、起動時に DB へ吸収され `{}` に戻る。
 - **単一プロセス前提**: DB は `database.py` 内部の `threading.Lock` + トランザクションで、`projects.json` は `MemoryService.io_lock`（`asyncio.Lock`）で保護される。`blacklist.json` の違反登録・解除は非同期ロックで直列化し、別スレッドで原子的保存した後にキャッシュのスナップショットを差し替える（`profile.json` は起動時に DB へ吸収されるだけ）。保存前に `ng/` を作る（初回の違反記録で保存できるように）。手で直すこともあるファイルなので、ユーザーごとの値が dict でない・回数が数値でない記録は「記録なし」として扱い、`is_blocked` から例外を出さない（`on_message` の最初に呼ばれるため）。プロセス間ロックは存在しない。DB は WAL モードのため、稼働中でも `sqlite3` CLI 等からの**読み取り**は安全（外部からの書き込みはしないこと）。
 - **ログ出力とエンコーディング**: Windows の既定コンソールは cp932 で、絵文字を `print` すると `UnicodeEncodeError` でそこの処理が止まる。`bot.py` の冒頭で標準出力を UTF-8（`errors="replace"`）へ再設定しているので通常は問題ないが、**`bot.py` を経由しない単体スクリプトから同じモジュールを動かすときは `PYTHONIOENCODING=utf-8` を付けること**。
 - **Discord の制限**: 2000文字を超える返信は `send_long_reply`/`split_message` を通す。`send_long_reply` は**1通目（元メッセージへの `reply`）**を返し、フィードバックのリアクション付与がそれを使う（戻り値を最後のチャンクに変えない。戻り値を無視する呼び出しはそのままでよい）。グラウンディング返信はリンクの埋め込みプレビューを抑制する。
@@ -558,7 +575,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 | API キー・トークン | `.env` の値、ログ、デバッグ出力 | `.env.example` と同じ `YOUR_GEMINI_API_KEY` / `YOUR_DISCORD_BOT_TOKEN` |
 | ローカルの絶対パス（OS のユーザー名を含む） | `C:\Users\<名前>\...` / `/home/<名前>/...` | `<PROJECT_ROOT>` やリポジトリ基準の相対パス |
 | サーバーの実パス・ユーザー名・IP アドレス・ホスト名 | `deploy/bot.service` の値 | `deploy/bot.service.example` と同じプレースホルダ |
-| 利用者の会話・記憶・違反記録 | `memory/`・`chatlog/`・`ng/blacklist.json`・`ng/NG_WORD_private.txt` 由来の文 | 削除（例が必要なら架空の文に差し替える） |
+| 利用者の会話・記憶・違反記録・キャラ別のプロンプト | `memory/`・`chatlog/`・`ng/blacklist.json`・`ng/NG_WORD_private.txt`・`prompts/`（テンプレート以外）由来の文 | 削除（例が必要なら架空の文に差し替える） |
 
 機械的な確認の例（ヒットした行は目で確かめ、誤検出なら残してよい）:
 
@@ -573,7 +590,7 @@ git diff --name-only origin/main...HEAD                 # .env / deploy/bot.serv
 
 ### 注意
 
-- **gitignore 済みのファイル**（`.env`・`deploy/bot.service`・`memory/`・`chatlog/`・`ng/blacklist.json`・`ng/NG_WORD_private.txt` など）を `git add -f` で追加しないこと。
+- **gitignore 済みのファイル**（`.env`・`deploy/bot.service`・`memory/`・`chatlog/`・`ng/blacklist.json`・`ng/NG_WORD_private.txt`・`prompts/` のキャラ別ファイルと `personas.json` など）を `git add -f` で追加しないこと。
 - 公開を意図して置かれている既存の情報（`SECURITY.md` の報告先など）は変更しない。公開してよいか判断できない値を見つけたら、PR を作る前に利用者へ確認する。
 - `.env.example` のプレースホルダ文字列は変えないこと（変えるなら `settings_loader._PLACEHOLDER_VALUES` と `deploy/migrate_config_to_env.py` も対で直す。「規約と落とし穴」の設定の項を参照）。
 - **既に push 済みのコミットに個人情報が見つかった場合**は、force-push で履歴を書き換えず、作業を止めて利用者に報告する（履歴の書き換えやキーの再発行など、利用者の判断が要るため）。

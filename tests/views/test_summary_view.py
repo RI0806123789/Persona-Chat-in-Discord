@@ -7,9 +7,11 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import discord
 from persona_bot.core.app_state import GuildSettings
+from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.views import summary_view
 from persona_bot.views.summary_view import RunSummaryButton, SummaryView
 
@@ -109,6 +111,9 @@ class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SummaryGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        install_persona_catalog(self)
+
     async def test_initial_persona_and_model_are_kept_across_history_and_prompt_waits(self):
         for stage in ("history", "prompt"):
             with self.subTest(stage=stage):

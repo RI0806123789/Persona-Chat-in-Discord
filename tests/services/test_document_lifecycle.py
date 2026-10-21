@@ -9,12 +9,14 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
     from pypdf import PdfWriter
 except ImportError:
     PdfWriter = None
 from persona_bot.core.app_state import BotState
+from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.core.database import Database
 from persona_bot.services import document_service, memory_service
 from persona_bot.services.document_service import DocumentService, validate_pdf_file
@@ -30,6 +32,7 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.db.initialize()
         self.addCleanup(self.db.close)
         self.state = BotState()
+        install_persona_catalog(self)
         self.settings = self.state.get_guild(1)
         self.settings.current_prompt_file = "../prompts/prompt_default.txt"
         self.settings.current_model_name = "old-model"

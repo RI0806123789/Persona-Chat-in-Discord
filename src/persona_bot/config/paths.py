@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from persona_bot.config.constants import BASE_DIR
+from persona_bot.config.constants import BASE_DIR, BUILTIN_PERSONA_PROMPT
 
 
 def resolve_script_path(relative_path: str) -> Path:
@@ -18,7 +18,13 @@ def load_prompt_template(file_path: str | Path) -> str:
 
 
 async def load_persona_template(prompt_file: str) -> str:
-    """src基準のペルソナを別スレッドで読み、読込例外は呼出元へ返す。"""
+    """src基準のペルソナを別スレッドで読み、読込例外は呼出元へ返す。
+
+    空の値はペルソナを1つも作っていない状態（personas.py）なので、ファイルを読まずに
+    組み込みの標準プロンプトを返す。
+    """
+    if not prompt_file:
+        return BUILTIN_PERSONA_PROMPT
     from persona_bot.core.background import run_in_thread
 
     return await run_in_thread(_load_persona_template, prompt_file)

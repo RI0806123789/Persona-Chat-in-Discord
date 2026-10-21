@@ -1,6 +1,7 @@
 import discord
 from discord import ui
 
+from persona_bot.config.personas import refresh_persona_catalog
 from persona_bot.core.app_state import GuildSettings
 from persona_bot.core.background import run_in_thread
 from persona_bot.views.auto_topic_view import AutoTopicView
@@ -34,6 +35,10 @@ class OpenSettingsButton(ui.Button):
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
         begin_panel_operation(hub, interaction)
 
+        # prompts/ に足したペルソナを再起動なしで選べるよう、開くたびに一覧を読み直す。
+        # ファイルを読むので先に応答を保留する。
+        await interaction.response.defer(ephemeral=True)
+        await refresh_persona_catalog()
         blocked_users = hub.blacklist.get_all_blocked_users()
         blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
         settings_view = SettingsView(

@@ -14,8 +14,8 @@ SRC = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from persona_bot.config import constants
-from persona_bot.config.choices import PERSONA_CHOICES
 from persona_bot.config.paths import resolve_prompt_path
+from persona_bot.config.personas import persona_value
 
 
 class PackageLayoutTests(unittest.TestCase):
@@ -32,16 +32,19 @@ class PackageLayoutTests(unittest.TestCase):
             "NG_WORD_PATH": "ng/NG_WORD.txt",
             "NG_WORD_PRIVATE_PATH": "ng/NG_WORD_private.txt",
             "BLACKLIST_PATH": "ng/blacklist.json",
+            "PROMPTS_DIR": "prompts",
+            "PERSONA_SETTINGS_PATH": "prompts/personas.json",
         }
         # 実ファイルは読まず、保存先の計算だけを確認する。
         for name, relative in locations.items():
             with self.subTest(setting=name):
                 self.assertEqual(getattr(constants, name), PROJECT_ROOT / relative)
-        for stored in [constants.DEFAULT_PROMPT_FILE, *(choice.value for choice in PERSONA_CHOICES)]:
-            with self.subTest(persona=stored):
-                expected = PROJECT_ROOT / "prompts" / Path(stored).name
-                self.assertEqual(resolve_prompt_path(stored), expected)
-                self.assertTrue(expected.is_file())
+        # 保存するペルソナの値（"../prompts/<ファイル名>"）は従来どおり prompts/ を指す。
+        # キャラ別のファイルは Git 管理外なので、公開しているテンプレートだけ実在を確かめる。
+        for name in (constants.PROMPT_TEMPLATE_FILE_NAME, "架空のペルソナ.txt"):
+            with self.subTest(persona=name):
+                self.assertEqual(resolve_prompt_path(persona_value(name)), PROJECT_ROOT / "prompts" / name)
+        self.assertTrue((PROJECT_ROOT / "prompts" / constants.PROMPT_TEMPLATE_FILE_NAME).is_file())
 
     def test_legacy_entrypoint_starts_in_an_isolated_project(self) -> None:
         # ソースだけをコピーし、実際の設定・DB・会話・記憶には触れずに起動する。

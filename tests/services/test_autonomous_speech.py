@@ -19,11 +19,13 @@ from persona_bot.services import autonomous_service
 from persona_bot.services.autonomous_service import AutonomousService
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.thread_probe import make_thread_probe
+from tests.helpers.persona_helpers import install_persona_catalog
 
 
 class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.state = BotState()
+        install_persona_catalog(self)
         self.settings = self.state.get_guild(1)
         self.settings.current_prompt_file = "../prompts/prompt_default.txt"
         self.settings.current_model_name = "old-model"
