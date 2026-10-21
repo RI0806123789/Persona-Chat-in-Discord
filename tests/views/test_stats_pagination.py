@@ -62,6 +62,20 @@ class StatsPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(buffer.closed)
         self.assertIn("失敗", self.interaction.edit_original_response.call_args.kwargs["content"])
 
+    async def test_blank_caption_still_delivers_images_and_finishes_panel(self):
+        buffer = io.BytesIO("架空の画像".encode())
+        self.stats.build_dashboard.return_value = (" \n\t", [("stats.png", buffer)])
+        await self.button(RunStatsButton).callback(self.interaction)
+        self.assertEqual(self.interaction.edit_original_response.call_args.kwargs["content"], "表示できる統計の本文がありません。")
+        self.interaction.followup.send.assert_awaited_once()
+        self.assertIn("files", self.interaction.followup.send.call_args.kwargs)
+        self.assertTrue(buffer.closed)
+
+    async def test_blank_feedback_finishes_deferred_response_with_notice(self):
+        self.feedback.build_summary_text.return_value = " \n\t"
+        await self.button(FeedbackButton).callback(self.interaction)
+        self.interaction.followup.send.assert_awaited_once_with("表示できるフィードバックの集計がありません。", ephemeral=True)
+
     async def test_feedback_defers_before_aggregation_and_splits_private_messages(self):
         text = "架" * 4001
 

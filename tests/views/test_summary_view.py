@@ -49,6 +49,16 @@ class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
     def last_panel(self) -> str:
         return self.interaction.edit_original_response.await_args.kwargs["content"]
 
+    async def test_blank_summary_finishes_panel_without_public_or_private_post(self) -> None:
+        for private in (False, True):
+            with self.subTest(private=private):
+                self.view.temp_private = private
+                self.generate.return_value = (True, " \n\t")
+                await self.button.callback(self.interaction)
+                self.assertEqual(self.last_panel(), summary_view._FAILURE_NOTICE)
+                self.send_long.assert_not_awaited()
+                self.interaction.followup.send.assert_not_awaited()
+
     async def test_unexpected_generation_error_replaces_busy_panel(self) -> None:
         self.generate.side_effect = RuntimeError("架空の内部エラー")
         await self.button.callback(self.interaction)

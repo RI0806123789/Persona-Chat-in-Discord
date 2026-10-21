@@ -56,6 +56,24 @@ class LifecycleHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(split_message("123456789\n\n  abcdef", limit=10), ["123456789", "\n  abcdef"])
         self.assertEqual([len(chunk) for chunk in split_message("あ" * 4001)], [2000, 2000, 1])
 
+    def test_split_discards_whitespace_only_chunks_at_boundaries_and_between_text(self):
+        for whitespace in ("\n   ", " " * 4001, "\n" * 4001):
+            with self.subTest(whitespace=repr(whitespace[:10])):
+                self.assertEqual(split_message("あ" * 2000 + whitespace), ["あ" * 2000])
+                chunks = split_message("あ" * 2000 + whitespace + "い" * 2000)
+                self.assertTrue(all(chunk.strip() and len(chunk) <= 2000 for chunk in chunks))
+                self.assertEqual("".join(chunks).replace(" ", "").replace("\n", ""), "あ" * 2000 + "い" * 2000)
+
+    def test_split_returns_no_chunks_for_empty_or_whitespace_only_text(self):
+        for text in ("", " \n\t\r　", " " * 4001, "\n" * 4001):
+            with self.subTest(text=repr(text[:10])):
+                self.assertEqual(split_message(text), [])
+
+    def test_split_preserves_code_block_indentation_and_surrounding_whitespace(self):
+        text = " \n```python\n    架空の処理()\n```\n "
+        self.assertEqual(split_message(text), [text])
+        self.assertEqual(split_message("あ" * 2000 + text), ["あ" * 2000, text])
+
     def test_symbols_do_not_reach_speech_engines_but_letters_and_digits_survive(self):
         for text in ("！！！", "「……？」", "👋😊", "[V:1,A:0] ……"):
             with self.subTest(text=text):

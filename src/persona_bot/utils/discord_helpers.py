@@ -226,9 +226,10 @@ def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[st
     """長いテキストを Discord の文字数制限内に分割する。
 
     改行の位置で分割し、それでも収まらない場合は強制的にカットする。
+    空白だけの断片は除き、中身のある断片の空白や字下げは保持する。
     """
     if len(text) <= limit:
-        return [text]
+        return [text] if text.strip() else []
 
     chunks: list[str] = []
     while text:
@@ -252,7 +253,7 @@ def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[st
         chunks.append(text[:split_pos])
         text = text[split_pos + 1:]
 
-    return chunks
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 async def _send_chunks(
@@ -270,6 +271,8 @@ async def _send_chunks(
     誰かへの返信ではないため、通知を伴わせない用途で使う。
     """
     for chunk in chunks:
+        if not chunk.strip():
+            continue
         await channel.send(chunk, suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
 
 
@@ -290,8 +293,10 @@ async def send_long_reply(
     （評価対象は「1つの応答」であり、分割は表示上の都合にすぎないため）。
     戻り値を使わない呼び出しはそのままでよい。
     """
-    # split_message は空文字でも1要素を返すため chunks[0] は必ず存在する。
-    chunks = split_message(text)
+    # 分割側とは別に空白だけの断片を除き、最初に実際に送る1通を返信にする。
+    chunks = [chunk for chunk in split_message(text) if chunk.strip()]
+    if not chunks:
+        return None
     sent = await message.reply(chunks[0], suppress_embeds=suppress_embeds)
     await _send_chunks(message.channel, chunks[1:], suppress_embeds=suppress_embeds)
     return sent

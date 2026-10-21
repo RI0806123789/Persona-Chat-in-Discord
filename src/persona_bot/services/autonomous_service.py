@@ -60,6 +60,7 @@ from persona_bot.config.constants import (
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
     AUTONOMOUS_CLOSING_NOTICE_MOVED,
+    AUTONOMOUS_CLOSING_NOTICE_PERMISSIONS,
     AUTONOMOUS_CLOSING_NOTICE_QUIET,
     AUTONOMOUS_CLOSING_NOTICE_TIMEUP,
     AUTONOMOUS_COMMENT_COOLDOWN_SECONDS,
@@ -75,6 +76,7 @@ from persona_bot.config.constants import (
 )
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response
 from persona_bot.utils.discord_helpers import (
+    can_bot_send_messages,
     fetch_channel_history_text,
     channel_display_name,
     close_image_attachments,
@@ -412,6 +414,20 @@ class AutonomousService:
         # handle_external_move から畳むので、ここはイベントを取りこぼした場合などの受け皿。
         if await self._stop_if_moved(guild, session):
             return
+
+        channel = self._client.get_channel(session.channel_id)
+        bot_member = guild.me
+        # キャッシュが無いだけでは権限を失ったと判断しない。従来の無効化・
+        # 時間制限などの停止判定は続け、次の見回りで権限を確かめ直す。
+        if channel is not None and bot_member is not None:
+            missing = autonomous_stage.missing_session_permissions(channel, bot_member)
+            if missing:
+                print(f"自律行動: 配信の継続に必要な権限・状態がありません（guild={guild.id} / 不足: {'、'.join(missing)}）。")
+                # 発言できなくてもチャットへは終了理由を残す。閲覧・送信が
+                # 許可されていない場合は、送れないと分かっている投稿を試さない。
+                notice = AUTONOMOUS_CLOSING_NOTICE_PERMISSIONS if can_bot_send_messages(channel, bot_member) else None
+                await self.stop_session(guild.id, reason="チャンネルの権限不足", notice=notice)
+                return
 
         now = datetime.now(timezone.utc)
         if not guild_settings.autonomous_enabled:

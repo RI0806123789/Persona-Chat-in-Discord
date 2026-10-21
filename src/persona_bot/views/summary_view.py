@@ -240,6 +240,10 @@ class RunSummaryButton(ui.Button):
                 await edit_panel_message(interaction, deferred=True, content=text)
                 return
 
+            if not text.strip():
+                await _report_failure(interaction, _FAILURE_NOTICE, keep_result=False)
+                return
+
             if view.temp_private:
                 # 結果を自分だけに: パネルを結果で上書きし、続きも本人だけの followup で送る。
                 chunks = split_message(text)

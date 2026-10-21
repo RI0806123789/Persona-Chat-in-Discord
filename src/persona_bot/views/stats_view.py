@@ -112,7 +112,7 @@ class RunStatsButton(ui.Button):
             # 途中の生成失敗でも、それまでに作成したFileをfinallyで回収する。
             for filename, buffer in images:
                 files.append(discord.File(buffer, filename=filename))
-            chunks = split_message(caption)
+            chunks = split_message(caption) or ["表示できる統計の本文がありません。"]
             if not await edit_panel_message(interaction, deferred=True, content=chunks[0]):
                 return
             for chunk in chunks[1:]:
@@ -214,7 +214,7 @@ class FeedbackButton(ui.Button):
             if not is_administrator(interaction.user):
                 await interaction.followup.send("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
                 return
-            for chunk in split_message(summary):
+            for chunk in split_message(summary) or ["表示できるフィードバックの集計がありません。"]:
                 await interaction.followup.send(chunk, ephemeral=True)
         except Exception as error:
             print(f"フィードバックの集計・送信中にエラー: {error}")
