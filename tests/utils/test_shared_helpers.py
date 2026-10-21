@@ -60,6 +60,49 @@ def make_member(*, admin: bool):
 
 
 class LongMessageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_senders_skip_whitespace_only_text_and_trailing_chunks(self) -> None:
+        for text in ("", " \n\t", "\n" * 4001, "あ" * 2000 + "\n   "):
+            with self.subTest(text=repr(text[:10])):
+                first = object()
+                channel = SimpleNamespace(send=AsyncMock())
+                message = SimpleNamespace(reply=AsyncMock(return_value=first), channel=channel)
+                result = await send_long_reply(message, text)
+                channel.send.assert_not_awaited()
+                if text.strip():
+                    self.assertIs(result, first)
+                    message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=False)
+                else:
+                    self.assertIsNone(result)
+                    message.reply.assert_not_awaited()
+                await send_long_message(channel, text)
+                if text.strip():
+                    channel.send.assert_awaited_once_with("あ" * 2000, suppress_embeds=False, allowed_mentions=None)
+                else:
+                    channel.send.assert_not_awaited()
+
+    async def test_senders_defend_against_whitespace_chunks_from_splitter(self) -> None:
+        for chunks in (["\n ", "  架空の先頭\n", "\t", "\n架空の続き  ", " "], [" ", "\n"], []):
+            with self.subTest(chunks=chunks):
+                first = object()
+                channel = SimpleNamespace(send=AsyncMock())
+                message = SimpleNamespace(reply=AsyncMock(return_value=first), channel=channel)
+                valid = [chunk for chunk in chunks if chunk.strip()]
+                with patch.object(discord_helpers, "split_message", return_value=chunks):
+                    result = await send_long_reply(message, "架空の本文", suppress_embeds=True)
+                    if valid:
+                        self.assertIs(result, first)
+                        message.reply.assert_awaited_once_with(valid[0], suppress_embeds=True)
+                    else:
+                        self.assertIsNone(result)
+                        message.reply.assert_not_awaited()
+                    self.assertEqual([call.args[0] for call in channel.send.await_args_list], valid[1:])
+                    channel.send.reset_mock()
+                    mentions = discord.AllowedMentions.none()
+                    await send_long_message(channel, "架空の本文", suppress_embeds=True, allowed_mentions=mentions)
+                self.assertEqual([call.args[0] for call in channel.send.await_args_list], valid)
+                for call in channel.send.await_args_list:
+                    self.assertEqual(call.kwargs, {"suppress_embeds": True, "allowed_mentions": mentions})
+
     async def test_long_message_propagates_options_to_every_chunk(self) -> None:
         channel = SimpleNamespace(send=AsyncMock())
         mentions = discord.AllowedMentions.none()
