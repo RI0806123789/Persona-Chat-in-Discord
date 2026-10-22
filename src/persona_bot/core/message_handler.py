@@ -13,7 +13,7 @@ from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.core.chat_admission import ChatAdmission
 from persona_bot.config.constants import (
     AGENT_ROUTER_HISTORY_LIMIT, BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
-    HISTORY_LIMIT, IMAGE_ONLY_QUESTION, MAX_DOCUMENT_SIZE_BYTES,
+    DOCUMENT_QUEUE_FULL_NOTICE, HISTORY_LIMIT, IMAGE_ONLY_QUESTION, MAX_DOCUMENT_SIZE_BYTES,
 )
 from persona_bot.config.personas import current_persona_catalog
 from persona_bot.services.agent_plan import AgentPlan, requests_subagent
@@ -311,7 +311,10 @@ class MessageHandler:
                         await message.reply(f"ファイルサイズが上限({MAX_DOCUMENT_SIZE_BYTES // (1024 * 1024)}MB)を超えています。")
                         return
 
-                await self.documents.enqueue_from_message(message, question, document_attachments)
+                # 未処理件数の上限で受け付けなかった文書には、受付完了を伝えない（#202）。
+                if await self.documents.enqueue_from_message(message, question, document_attachments) is None:
+                    await message.reply(DOCUMENT_QUEUE_FULL_NOTICE)
+                    return
                 await message.reply("受付が完了しました。順番に処理しています…")
                 return
 

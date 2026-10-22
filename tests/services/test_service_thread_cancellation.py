@@ -84,7 +84,7 @@ class ServiceThreadCancellationTests(unittest.IsolatedAsyncioTestCase):
         service = DocumentService(None, BotState(), None, None, None, self.db)
         cases = [
             ("queue_recover_stuck", service._recover_stuck_tasks),
-            ("queue_upsert_task", lambda: service._enqueue({"task_id": "fictional"})),
+            ("queue_try_enqueue", lambda: service._enqueue({"task_id": "fictional"})),
             ("queue_update_task", lambda: service._update_task("fictional", status="completed")),
             ("queue_prune_finished", lambda: service._update_task("fictional", status="completed")),
             ("queue_claim_next_pending", service._claim_next_task),

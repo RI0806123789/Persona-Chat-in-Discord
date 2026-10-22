@@ -102,8 +102,13 @@ async def fetch_channel_history_text(
     reset_message_id: int | None,
     bot_user: Any,
     limit: int,
+    *,
+    exclude_message_id: int | None = None,
 ) -> str:
     """チャンネルの直近履歴を、プロンプトへ差し込める1つのテキストに整形する。
+
+    exclude_message_id を渡すと、その発言を履歴から除く（文書ワーカーが、受付後に
+    編集されうる元の投稿の本文をプロンプトへ入れないために使う。#203）。
 
     履歴の取得に失敗した場合は例外を外へ出さず、空文字を返して会話を続行する
     （フェイルオープン）。この関数は on_message の主経路から呼ばれるため、
@@ -120,6 +125,8 @@ async def fetch_channel_history_text(
     channel_id = getattr(channel, "id", "不明")
     try:
         async for history_message in channel.history(limit=limit, after=after, oldest_first=False):
+            if exclude_message_id is not None and history_message.id == exclude_message_id:
+                continue
             history_messages.append(history_message)
     # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること
     # （順序を逆にすると権限エラーが一時障害として扱われ、原因がログから消える）。
@@ -305,16 +312,29 @@ async def _send_chunks(
         await channel.send(chunk, suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
 
 
+# AI の返信で通知を許すのは、返信先（質問した本人）への通知だけ。
+# 本文は AI が生成・引用したものなので、@everyone・@here・ロール・第三者の
+# メンションが含まれていてもボットの権限で通知させない（モデレーションは
+# 通知先の認可を保証しないため、送信側で止める）。
+REPLY_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=False, users=False, roles=False, replied_user=True,
+)
+
+
 async def send_long_reply(
     message: discord.Message,
     text: str,
     *,
     suppress_embeds: bool = False,
+    allowed_mentions: discord.AllowedMentions = REPLY_ALLOWED_MENTIONS,
 ) -> discord.Message | None:
     """2000 文字を超える応答を分割して送信する。
 
     最初のチャンクは元メッセージへの reply、残りは通常の send で送信する。
     suppress_embeds が True の場合、リンクの埋め込みプレビューを抑制する。
+    allowed_mentions は1通目と2通目以降の全チャンクへ同じものを渡す。既定の
+    `REPLY_ALLOWED_MENTIONS` は返信先本人への通知だけを残す（通常会話・文書・
+    配信コメントの返信がすべてここを通るため、呼び出し側で指定しなくてよい）。
 
     戻り値は**1通目**（元メッセージへの reply）。フィードバックのリアクション
     付与など、送信したメッセージを後から参照する用途に使う。2通目以降は
@@ -326,8 +346,10 @@ async def send_long_reply(
     chunks = [chunk for chunk in split_message(text) if chunk.strip()]
     if not chunks:
         return None
-    sent = await message.reply(chunks[0], suppress_embeds=suppress_embeds)
-    await _send_chunks(message.channel, chunks[1:], suppress_embeds=suppress_embeds)
+    sent = await message.reply(chunks[0], suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
+    await _send_chunks(
+        message.channel, chunks[1:], suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions,
+    )
     return sent
 
 

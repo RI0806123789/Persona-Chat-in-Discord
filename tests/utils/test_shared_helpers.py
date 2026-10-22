@@ -19,7 +19,8 @@ from persona_bot.core import commands
 from persona_bot.services import content_moderator
 from persona_bot.utils import discord_helpers
 from persona_bot.utils.discord_helpers import (
-    build_history_text, is_administrator, send_long_message, send_long_reply, split_message,
+    REPLY_ALLOWED_MENTIONS, build_history_text, fetch_channel_history_text, is_administrator, send_long_message,
+    send_long_reply, split_message,
 )
 from persona_bot.views import functions_view
 from persona_bot.views import help_view
@@ -59,6 +60,24 @@ def make_member(*, admin: bool):
     return member
 
 
+class HistoryExclusionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_excluded_message_is_left_out_of_history(self) -> None:
+        # 文書の元の投稿は、受付後に編集された本文がプロンプトへ入らないよう履歴から除く（#203）。
+        messages = [
+            SimpleNamespace(id=message_id, content=content, author=None, attachments=[])
+            for message_id, content in ((3, "後の発言"), (2, "受付後に編集した架空の本文"), (1, "前の発言"))
+        ]
+
+        async def history(**kwargs):
+            for message in messages:
+                yield message
+
+        channel = SimpleNamespace(id=10, history=Mock(side_effect=history))
+        text = await fetch_channel_history_text(channel, None, SimpleNamespace(id=99), 50, exclude_message_id=2)
+        self.assertEqual(text, "ユーザーの質問: 前の発言\nユーザーの質問: 後の発言")
+        self.assertIn("受付後に編集した架空の本文", await fetch_channel_history_text(channel, None, SimpleNamespace(id=99), 50))
+
+
 class LongMessageTests(unittest.IsolatedAsyncioTestCase):
     async def test_senders_skip_whitespace_only_text_and_trailing_chunks(self) -> None:
         for text in ("", " \n\t", "\n" * 4001, "あ" * 2000 + "\n   "):
@@ -70,7 +89,9 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                 channel.send.assert_not_awaited()
                 if text.strip():
                     self.assertIs(result, first)
-                    message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=False)
+                    message.reply.assert_awaited_once_with(
+                        "あ" * 2000, suppress_embeds=False, allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                    )
                 else:
                     self.assertIsNone(result)
                     message.reply.assert_not_awaited()
@@ -91,7 +112,9 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                     result = await send_long_reply(message, "架空の本文", suppress_embeds=True)
                     if valid:
                         self.assertIs(result, first)
-                        message.reply.assert_awaited_once_with(valid[0], suppress_embeds=True)
+                        message.reply.assert_awaited_once_with(
+                            valid[0], suppress_embeds=True, allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                        )
                     else:
                         self.assertIsNone(result)
                         message.reply.assert_not_awaited()
@@ -116,8 +139,18 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(reply=AsyncMock(return_value=first), channel=SimpleNamespace(send=AsyncMock()))
         result = await send_long_reply(message, "あ" * 4001, suppress_embeds=True)
         self.assertIs(result, first)
-        message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=True)
+        message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=True, allowed_mentions=REPLY_ALLOWED_MENTIONS)
         self.assertEqual([len(call.args[0]) for call in message.channel.send.call_args_list], [2000, 1])
+
+    async def test_reply_restricts_mentions_in_every_chunk_except_replied_user(self) -> None:
+        # AI の本文に全体・ロール・第三者のメンションが混ざっても、通知は返信先本人だけに限る。
+        text = "@everyone @here <@&22> <@33> " + "あ" * 4001
+        message = SimpleNamespace(reply=AsyncMock(return_value=object()), channel=SimpleNamespace(send=AsyncMock()))
+        await send_long_reply(message, text)
+        calls = [message.reply.await_args, *message.channel.send.await_args_list]
+        self.assertGreater(len(calls), 1)
+        for call in calls:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), {"parse": [], "replied_user": True})
 
     async def test_topic_and_anniversary_restrict_mentions_in_every_chunk(self) -> None:
         text = "あ" * 4001

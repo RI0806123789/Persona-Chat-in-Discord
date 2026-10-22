@@ -168,6 +168,13 @@ DOCUMENT_WORKER_IDLE_SECONDS = 5
 # 「UTF-8 として読めるか」を確認する。
 TEXT_VALIDATION_PREVIEW_BYTES = 4096
 QUEUE_MAX_FINISHED_TASKS = 50
+# 文書キューの未処理（pending / processing / sending）の上限（#202）。全サーバーで1つの
+# ワーカーが到着順に処理するため、1人の大量投稿が他の利用者の文書を待たせ続けないよう、
+# 利用者別と全体の両方で受付時に制限する。キューは永続なので再起動しても解消しない。
+DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER = 3
+DOCUMENT_QUEUE_MAX_ACTIVE_TOTAL = 20
+# 上限に達して文書を受け付けなかったときの案内（利用者別・全体のどちらでも同じ文言にする）。
+DOCUMENT_QUEUE_FULL_NOTICE = "処理待ちの文書が多いため、今は受け付けられませんでした。前の文書の回答が届いてから、もう一度送ってください。"
 MAX_GROUNDING_SOURCES = 5
 # 検索用のサブモデル。Gemini 3 以降の検索は無料枠に含まれないため、無料枠では
 # 選択モデルの検索が 429 で断られ、このモデル（Gemini 2.5 の検索枠）で検索する。

@@ -158,6 +158,21 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pdf", reply)
         self.gemini.generate_with_metadata.assert_not_awaited()
 
+    # ---- 文書の受付 ------------------------------------------------------------
+
+    async def test_document_reply_depends_on_queue_admission(self) -> None:
+        # 未処理件数の上限で断った文書に「受付完了」を返さない（#202）。
+        self.message.attachments = [self.attachment("fictional.pdf", "application/pdf")]
+        for task_id, expected in (("fictional-task", "受付が完了しました"), (None, constants.DOCUMENT_QUEUE_FULL_NOTICE)):
+            with self.subTest(task_id=task_id):
+                self.message.reply.reset_mock()
+                self.handler.documents.enqueue_from_message = AsyncMock(return_value=task_id)
+                await self.handler.on_message(self.message)
+                self.handler.documents.enqueue_from_message.assert_awaited_once()
+                self.message.reply.assert_awaited_once()
+                self.assertIn(expected, self.message.reply.call_args.args[0])
+                self.gemini.generate_with_metadata.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

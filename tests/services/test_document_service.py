@@ -256,6 +256,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
             moderator=self.moderator,
         )
         self.message = SimpleNamespace(
+            id=30,
             content="文書を要約してください。",
             guild=SimpleNamespace(id=10),
             channel=SimpleNamespace(id=20),
@@ -288,7 +289,10 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
 
     async def process_response(self, text: str, sources=None) -> None:
         self.gemini.generate.return_value = (text, None, sources or [])
-        await self.service._process_task({"task_id": "fictional-task", "author_id": "test-user"})
+        # 受付時は on_message が検査済みの本文を question として保存する（実際の流れと揃える）。
+        await self.service._process_task(
+            {"task_id": "fictional-task", "author_id": "test-user", "question": self.message.content},
+        )
 
     def assert_clean_response(self, expected: str, *, sources: bool = False) -> None:
         self.sent.assert_awaited_once()
@@ -303,6 +307,26 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
         self.message.reply.assert_not_awaited()
+
+    async def test_edited_message_body_is_not_sent_to_generation(self) -> None:
+        # 受付後に編集された本文は検査されていないので、受付時の質問で回答する（#203）。
+        for stored, expected in (("文書を要約してください。", "文書を要約してください。"),
+                                 ("", document_service.DOCUMENT_ONLY_QUESTION)):
+            with self.subTest(stored=stored):
+                self.gemini.generate.reset_mock()
+                self.memory.route_category.reset_mock()
+                self.message.content = "受付後に編集した架空の本文"
+                self.gemini.generate.return_value = ("要約です。", None, [])
+                await self.service._process_task(
+                    {"task_id": "fictional-task", "author_id": "test-user", "question": stored},
+                )
+                prompt = self.gemini.generate.await_args.args[0]
+                self.assertIn(expected, prompt)
+                self.assertNotIn("受付後に編集した架空の本文", prompt)
+                self.memory.route_category.assert_awaited_once_with(expected)
+                # 元の投稿は履歴からも除く（編集後の本文が履歴経由で入らないように）。
+                history = document_service.fetch_channel_history_text.await_args
+                self.assertEqual(history.kwargs["exclude_message_id"], self.message.id)
 
     async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
         await self.process_response("要約です。[V:1, A:2]")
@@ -398,6 +422,31 @@ class OptionalPdfDependencyTests(unittest.TestCase):
             path.write_text("架空の文書です。", encoding="utf-8")
             with patch.dict(sys.modules, self.WITHOUT_PYPDF):
                 module.validate_text_file(path)
+
+
+
+class DocumentQueueAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    """受付が利用者別の上限で断られたらタスクを作らずに None を返すことを確認する（#202）。"""
+
+    async def asyncSetUp(self) -> None:
+        from persona_bot.core.database import Database
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db = Database(Path(directory.name) / "bot.db")
+        self.addCleanup(lambda: self.db.close())
+        self.db.initialize()
+        self.service = DocumentService(None, BotState(), None, None, None, self.db)
+
+    def message(self, message_id: int, author_id: int = 11) -> SimpleNamespace:
+        return SimpleNamespace(id=message_id, channel=SimpleNamespace(id=10), author=SimpleNamespace(id=author_id))
+
+    async def test_enqueue_returns_none_without_task_when_user_limit_is_reached(self) -> None:
+        with patch.object(document_service, "DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER", 1):
+            self.assertIsNotNone(await self.service.enqueue_from_message(self.message(20), "架空の質問", [object()]))
+            self.assertIsNone(await self.service.enqueue_from_message(self.message(21), "架空の質問", [object()]))
+            self.assertIsNotNone(await self.service.enqueue_from_message(self.message(22, author_id=12), "架空の質問", [object()]))
+        claimed = [self.db.queue_claim_next_pending("2026-01-01T00:00:00") for _ in range(3)]
+        self.assertEqual([task["message_id"] for task in claimed if task], [20, 22])
 
 
 if __name__ == "__main__":

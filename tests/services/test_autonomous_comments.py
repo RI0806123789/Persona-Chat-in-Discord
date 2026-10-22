@@ -19,6 +19,7 @@ from persona_bot.services import autonomous_service
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core.background import spawn
 from persona_bot.config.constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES, MAX_IMAGE_SIZE_BYTES
+from persona_bot.utils import discord_helpers
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, is_supported_document_attachment,
     is_supported_message_channel,
@@ -120,6 +121,15 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.topic.mark_activity.call_count, 5)
         self.assertEqual(len(self.settings.autonomous_recent_activity), 5)
         self.assertEqual(self.session.last_human_at, self.now - timedelta(seconds=1))
+
+    async def test_comment_reply_restricts_mentions_without_bot_mention(self) -> None:
+        # メンション無しで受け付ける配信コメントでも、応答の通知は返信先本人だけに限る。
+        self.gemini.generate.return_value = ("@everyone <@&22> <@33> 架空の応答", None, [])
+        with patch.object(autonomous_service, "send_long_reply", discord_helpers.send_long_reply):
+            await self.on_message(self.message)
+        self.message.reply.assert_awaited_once()
+        mentions = self.message.reply.await_args.kwargs["allowed_mentions"]
+        self.assertEqual(mentions.to_dict(), {"parse": [], "replied_user": True})
 
     async def test_cooldown_keeps_local_ng_checks_without_more_ai_calls(self) -> None:
         await self.on_message(self.message)
