@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
@@ -34,6 +35,7 @@ from persona_bot.views import stats_view
 from persona_bot.views import summary_view
 from persona_bot.views import unblock_view
 from persona_bot.views import view_parts
+from tests.helpers.member_helpers import make_member
 
 
 def make_filter() -> NgWordFilter:
@@ -54,10 +56,6 @@ def make_interaction(*, user=None):
     )
 
 
-def make_member(*, admin: bool):
-    member = Mock(spec=discord.Member, id=11)
-    member.guild_permissions = SimpleNamespace(administrator=admin)
-    return member
 
 
 class HistoryExclusionTests(unittest.IsolatedAsyncioTestCase):
