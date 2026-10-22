@@ -257,6 +257,8 @@ _QUEUE_COLUMNS = (
     "finished_at",
     "error",
 )
+# まだ終わっていない（受付の上限に数える）文書タスクのステータス。
+_QUEUE_ACTIVE_STATUSES = ("pending", "processing", "sending")
 
 
 def _json_loads_or(text: Any, default: Any) -> Any:
@@ -1149,25 +1151,51 @@ class Database:
     def queue_upsert_task(self, task: dict[str, Any]) -> None:
         """タスクを追加する（同じ task_id があれば丸ごと置き換える）。"""
         with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO queue_tasks"
-                " (task_id, status, channel_id, message_id, author_id, question,"
-                "  attachment_count, created_at, updated_at, finished_at, error)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    str(task.get("task_id") or ""),
-                    str(task.get("status") or "pending"),
-                    int(task.get("channel_id") or 0),
-                    int(task.get("message_id") or 0),
-                    int(task.get("author_id") or 0),
-                    str(task.get("question") or ""),
-                    int(task.get("attachment_count") or 0),
-                    str(task.get("created_at") or ""),
-                    str(task.get("updated_at") or ""),
-                    task.get("finished_at"),
-                    task.get("error"),
-                ),
-            )
+            self._insert_queue_task(task)
+
+    def queue_try_enqueue(self, task: dict[str, Any], max_per_user: int, max_total: int) -> str:
+        """未処理件数の上限内なら追加する。結果は "accepted" / "user_limit" / "total_limit"。
+
+        件数の確認と追加を同じロック・トランザクションで行い、並行した受付が
+        確認と追加の間へ割り込んで上限を超えることを防ぐ。上限に数えるのは
+        終わっていないタスク（_QUEUE_ACTIVE_STATUSES）だけなので、完了・失敗へ
+        進めば枠が空く。
+        """
+        placeholders = ", ".join("?" for _ in _QUEUE_ACTIVE_STATUSES)
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(author_id = ?), 0) AS mine"
+                f" FROM queue_tasks WHERE status IN ({placeholders})",
+                (int(task.get("author_id") or 0), *_QUEUE_ACTIVE_STATUSES),
+            ).fetchone()
+            if row["mine"] >= max_per_user:
+                return "user_limit"
+            if row["total"] >= max_total:
+                return "total_limit"
+            self._insert_queue_task(task)
+            return "accepted"
+
+    def _insert_queue_task(self, task: dict[str, Any]) -> None:
+        """タスクを1行書く。呼び出し側がロックとトランザクションを持つこと。"""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO queue_tasks"
+            " (task_id, status, channel_id, message_id, author_id, question,"
+            "  attachment_count, created_at, updated_at, finished_at, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(task.get("task_id") or ""),
+                str(task.get("status") or "pending"),
+                int(task.get("channel_id") or 0),
+                int(task.get("message_id") or 0),
+                int(task.get("author_id") or 0),
+                str(task.get("question") or ""),
+                int(task.get("attachment_count") or 0),
+                str(task.get("created_at") or ""),
+                str(task.get("updated_at") or ""),
+                task.get("finished_at"),
+                task.get("error"),
+            ),
+        )
 
     def queue_update_task(self, task_id: str, updates: dict[str, Any], updated_at: str) -> None:
         """指定タスクの列を部分更新する（updated_at は常に更新される）。"""

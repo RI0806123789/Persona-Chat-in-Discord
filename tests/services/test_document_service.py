@@ -400,5 +400,30 @@ class OptionalPdfDependencyTests(unittest.TestCase):
                 module.validate_text_file(path)
 
 
+
+class DocumentQueueAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    """受付が利用者別の上限で断られたらタスクを作らずに None を返すことを確認する（#202）。"""
+
+    async def asyncSetUp(self) -> None:
+        from persona_bot.core.database import Database
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db = Database(Path(directory.name) / "bot.db")
+        self.addCleanup(lambda: self.db.close())
+        self.db.initialize()
+        self.service = DocumentService(None, BotState(), None, None, None, self.db)
+
+    def message(self, message_id: int, author_id: int = 11) -> SimpleNamespace:
+        return SimpleNamespace(id=message_id, channel=SimpleNamespace(id=10), author=SimpleNamespace(id=author_id))
+
+    async def test_enqueue_returns_none_without_task_when_user_limit_is_reached(self) -> None:
+        with patch.object(document_service, "DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER", 1):
+            self.assertIsNotNone(await self.service.enqueue_from_message(self.message(20), "架空の質問", [object()]))
+            self.assertIsNone(await self.service.enqueue_from_message(self.message(21), "架空の質問", [object()]))
+            self.assertIsNotNone(await self.service.enqueue_from_message(self.message(22, author_id=12), "架空の質問", [object()]))
+        claimed = [self.db.queue_claim_next_pending("2026-01-01T00:00:00") for _ in range(3)]
+        self.assertEqual([task["message_id"] for task in claimed if task], [20, 22])
+
+
 if __name__ == "__main__":
     unittest.main()

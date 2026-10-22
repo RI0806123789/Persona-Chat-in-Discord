@@ -622,5 +622,68 @@ class FeedbackPruneIndexTests(unittest.TestCase):
                     candidate.close()
 
 
+
+class QueueCapacityTests(unittest.TestCase):
+    """文書キューの未処理件数を、確認と追加を分けずに制限することを確認する（#202）。"""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "bot.db"
+        self.db = Database(self.path)
+        self.addCleanup(lambda: self.db.close())
+        self.db.initialize()
+        self.sequence = 0
+
+    def enqueue(self, author_id: int, *, max_per_user: int = 2, max_total: int = 3) -> str:
+        self.sequence += 1
+        task = {"task_id": f"fictional-{self.sequence}", "author_id": author_id, "question": "架空の質問",
+                "created_at": f"2026-01-01T00:00:{self.sequence:02d}", "updated_at": "2026-01-01T00:00:00"}
+        return self.db.queue_try_enqueue(task, max_per_user, max_total)
+
+    def active_count(self) -> int:
+        with closing(sqlite3.connect(self.path)) as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM queue_tasks WHERE status IN ('pending', 'processing', 'sending')"
+            ).fetchone()[0]
+
+    def test_user_and_total_limits_are_independent(self) -> None:
+        self.assertEqual([self.enqueue(11), self.enqueue(11), self.enqueue(11)], ["accepted", "accepted", "user_limit"])
+        # 1人が利用者別の上限に達していても、他の利用者は全体の上限まで受け付ける。
+        self.assertEqual(self.enqueue(22), "accepted")
+        self.assertEqual(self.enqueue(33), "total_limit")
+        self.assertEqual(self.active_count(), 3)
+
+    def test_finished_tasks_free_slots_but_sending_still_counts(self) -> None:
+        self.enqueue(11)
+        self.enqueue(11)
+        self.db.queue_update_task("fictional-1", {"status": "sending"}, "2026-01-01T00:01:00")
+        self.assertEqual(self.enqueue(11), "user_limit")
+        for status in ("completed", "failed"):
+            with self.subTest(status=status):
+                self.db.queue_update_task("fictional-1", {"status": status}, "2026-01-01T00:02:00")
+                self.assertEqual(self.enqueue(11), "accepted")
+                self.db.queue_update_task(f"fictional-{self.sequence}", {"status": "completed"}, "2026-01-01T00:03:00")
+
+    def test_concurrent_enqueue_never_exceeds_limit(self) -> None:
+        results: list[str] = []
+        barrier = threading.Barrier(12)
+
+        def worker(index: int) -> None:
+            barrier.wait()
+            task = {"task_id": f"fictional-thread-{index}", "author_id": 11, "question": "架空の質問",
+                    "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00"}
+            results.append(self.db.queue_try_enqueue(task, 3, 20))
+
+        threads = [threading.Thread(target=worker, args=(index,)) for index in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(results.count("accepted"), 3)
+        self.assertEqual(results.count("user_limit"), 9)
+        self.assertEqual(self.active_count(), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

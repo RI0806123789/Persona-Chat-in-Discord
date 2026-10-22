@@ -14,6 +14,8 @@ from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.config.constants import (
     DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_ONLY_QUESTION,
+    DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER,
+    DOCUMENT_QUEUE_MAX_ACTIVE_TOTAL,
     DOCUMENT_WORKER_IDLE_SECONDS,
     GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT,
@@ -93,14 +95,15 @@ class DocumentService:
         message: discord.Message,
         question: str,
         attachments: Sequence[discord.Attachment],
-    ) -> str:
+    ) -> str | None:
+        """文書タスクを受け付けてタスクIDを返す。未処理件数の上限に達していれば追加せず None を返す。"""
         now = datetime.now(timezone.utc)
         # 取り出し順は ORDER BY created_at, task_id で決まり、task_id の先頭はチャンネルID。
         # 秒精度にすると同じ1秒に届いた別チャンネルの文書が到着順に処理されなくなるため、
         # この列だけはマイクロ秒まで残す（他の時刻は timeutil.utc_now_iso の秒精度）。
         now_iso = now.isoformat(timespec="microseconds")
         task_id = f"{message.channel.id}-{message.id}-{int(now.timestamp() * 1000)}"
-        await self._enqueue(
+        result = await self._enqueue(
             {
                 "task_id": task_id,
                 "status": "pending",
@@ -113,6 +116,10 @@ class DocumentService:
                 "updated_at": now_iso,
             }
         )
+        if result != "accepted":
+            scope = "利用者別" if result == "user_limit" else "全体"
+            print(f"文書キュー: 処理待ちの上限（{scope}）に達したため、新しい文書を受け付けませんでした。")
+            return None
         return task_id
 
     async def run_worker(self) -> None:
@@ -149,8 +156,12 @@ class DocumentService:
         if recovered:
             print(f"文書ワーカー: 中断された processing タスク {recovered} 件を pending に戻しました。")
 
-    async def _enqueue(self, task: dict[str, Any]) -> None:
-        await run_in_thread(self._db.queue_upsert_task, task)
+    async def _enqueue(self, task: dict[str, Any]) -> str:
+        # 件数の確認と追加は DB 側で1つのトランザクションにまとめる（並行した受付でも上限を超えない）。
+        return await run_in_thread(
+            self._db.queue_try_enqueue, task,
+            DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER, DOCUMENT_QUEUE_MAX_ACTIVE_TOTAL,
+        )
 
     async def _update_task(self, task_id: str, **updates: Any) -> None:
         now_iso = utc_now_iso()
