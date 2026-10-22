@@ -556,7 +556,8 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("戻しました", record.message)
         self.assertEqual(len(after_merge), 2)  # 事前確認とfetchだけ。
         self.assertEqual(self.sent("git reset"), [])
-        self.assertTrue(manager.running)
+        self.assertFalse(manager.running)
+        self.assertTrue(manager.state_unknown)
         with self.assertRaises(RuntimeError):
             manager.start(self.session, self.profile, **FAST)
 
@@ -577,6 +578,8 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(manager.wait(), timeout=5)
         self.assertEqual(record.status, "unknown", record.message)
         self.assertEqual(self.repo.head, self.repo.origin)
+        self.assertFalse(manager.running)
+        self.assertTrue(manager.state_unknown)
         self.assertEqual(self.sent("git reset"), [])
         self.assertEqual(self.sent("pip check"), [])
         self.assertFalse(any(step.phase == "rollback" for step in record.steps))
@@ -589,6 +592,7 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
             manager.start(self.session, self.profile, **FAST)
         record = await manager.wait()
         self.assertFalse(manager.running)
+        self.assertFalse(manager.state_unknown)
         self.assertEqual(record.status, "succeeded")
 
 

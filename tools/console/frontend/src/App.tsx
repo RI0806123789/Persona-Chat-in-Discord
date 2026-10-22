@@ -312,7 +312,7 @@ function Console() {
 
   const requestDeploy = useCallback(() => {
     const profile = connection?.profile;
-    if (!profile || deployRunning || busyAction || connection?.connected_at == null) return;
+    if (!profile || deployRunning || deploy?.status === "unknown" || busyAction || connection?.connected_at == null) return;
     const target = { profile_id: profile.id, connected_at: connection.connected_at };
     const branch = profile.deploy_branch ?? "main";
     const isProduction = profile.environment === "production";
@@ -348,7 +348,7 @@ function Console() {
       onConfirm: () => { if (isCurrent()) void runDeploy(target); },
     });
     setConfirmOpen(true);
-  }, [connection, deployRunning, busyAction, runDeploy]);
+  }, [connection, deployRunning, deploy?.status, busyAction, runDeploy]);
 
   // ---- 接続・切断
   const handleConnect = useCallback(async () => {
@@ -415,7 +415,7 @@ function Console() {
       if (!profile || busyAction || connection?.connected_at == null) return;
       const target = { profile_id: profile.id, connected_at: connection.connected_at };
       const isCurrent = requestScope.current.current();
-      if (deployRunning) {
+      if (deployRunning || deploy?.status === "unknown") {
         const unknown = deploy?.status === "unknown";
         notify({
           tone: unknown ? "critical" : "info",

@@ -352,6 +352,69 @@ test("デプロイ完了時には自動更新OFFでもインサイトを強制�
   assert.deepEqual(forces, [true]);
 });
 
+test("状態不明で完了したデプロイは一度だけ通知・状態更新し、定期取得を止める", async (t) => {
+  const previousWindow = globalThis.window;
+  const timers = new Map();
+  let nextTimer = 0;
+  globalThis.window = {
+    addEventListener: () => {},
+    setTimeout: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const runtime = renderer();
+  t.after(() => { runtime.unmount(); globalThis.window = previousWindow; });
+  // 実際のusePollingも動かし、実行中の1秒タイマーが完了後に解除されることを確かめる。
+  const hooks = compile(await source("hooks.ts"), { react: runtime.hooks });
+  const notices = [];
+  let fetches = 0, refreshes = 0, finished = false;
+  const { useDeployController } = compile(controllerSource, {
+    react: runtime.hooks, "./hooks": hooks,
+    "./api": { api: { deploy: async () => {
+      fetches++;
+      return { running: !finished, deploy: { profile_id: "A", status: finished ? "unknown" : "running", message: "架空の終了未確認" } };
+    } } },
+  });
+  const scope = { requestScope: { current: new scopes.RequestScope() }, wasConnected: { current: true },
+    connectionChanging: { current: false }, connectionProfileId: { current: "A" } };
+  const render = () => runtime.render(() => useDeployController(scope, (notice) => notices.push(notice), () => refreshes++, true, "A:1"));
+  const settle = () => new Promise(setImmediate);
+  render(); runtime.commit(); await settle();
+  assert.equal(render().deployRunning, true);
+  runtime.commit(); await settle();
+  assert.deepEqual([...timers.values()].map(({ delay }) => delay), [1000]);
+  finished = true;
+  const [timerId, timer] = [...timers][0];
+  timers.delete(timerId);
+  await timer.callback();
+  assert.equal(render().deployRunning, false);
+  runtime.commit(); await settle();
+  assert.equal(timers.size, 0);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].tone, "critical");
+  assert.match(notices[0].title, /状態不明/);
+  assert.equal(refreshes, 1);
+  const stoppedAt = fetches;
+  render(); runtime.commit(); await settle();
+  assert.equal(fetches, stoppedAt);
+  await render().refreshDeploy();
+  assert.equal(notices.length, 1);
+  assert.equal(refreshes, 1);
+});
+
+test("状態不明でタスク完了後もデプロイとサービス操作の確認を開かない", async () => {
+  const harness = consoleHarness({
+    deploy: async () => ({ running: false, deploy: { profile_id: "A", status: "unknown" } }),
+  });
+  harness.render().applyConnection(connection("A"));
+  await harness.render().refreshDeploy();
+  harness.render().requestDeploy();
+  assert.equal(harness.render().confirmOpen, false);
+  harness.render().requestAction("restart");
+  assert.equal(harness.render().confirmOpen, false);
+  assert.equal(harness.notices.at(-1).tone, "critical");
+  assert.match(harness.notices.at(-1).title, /状態不明/);
+});
+
 
 test("開始前のデプロイGETは開始POSTより遅れても実行中表示を戻さない", async () => {
   const old = deferred(), started = deferred();

@@ -101,3 +101,23 @@ test("接続前・操作中・デプロイ中の停止ガードを両画面で�
     for (const page of ["operations", "overview"]) assert.equal(stopControl(page, current, overrides).disabled, true);
   }
 });
+
+test("状態不明でタスク完了後も両画面のサービス操作とデプロイを無効にする", () => {
+  const deploy = { status: "unknown", profile_id: "A", steps: [], commits: [], message: "架空の終了未確認" };
+  const current = service("active", "running");
+  const props = { connected: true, connecting: false, profile: null, service: current, status: { service: current },
+    samples: [], deployRunning: false, deployUnknown: true, deploy, busyAction: null, operations: [], now: 0 };
+  const operations = nodes(OperationsPage(props));
+  const actions = operations.filter((node) => node.type === "Button" && ["stop", "restart", "play"].includes(node.props.icon));
+  assert.equal(actions.length, 3);
+  assert.ok(actions.every((node) => node.props.disabled));
+  const hero = nodes(OverviewPage(props)).find((node) => node.type?.name === "ServiceHero");
+  const overview = nodes(hero.type(hero.props));
+  assert.equal(overview.find((node) => node.type === "SplitButton").props.disabled, true);
+  for (const page of [operations, overview]) {
+    assert.ok(page.some((node) => node.type === "StatusChip" && /状態不明/.test(node.props.label)));
+  }
+  const card = DeployCard({ deploy, running: false, connected: true, disabled: false, profile: null, git: null, now: 0 });
+  assert.equal(card.props.actions.props.disabled, true);
+  assert.equal(card.props.actions.props.busy, false);
+});

@@ -22,7 +22,7 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_deploy_requires_confirmed_profile_and_connection_time(self):
         selected = profile()
         session = SimpleNamespace(require_profile=lambda: selected, connected_at=100)
-        manager = SimpleNamespace(running=False, current=None, start=Mock())
+        manager = SimpleNamespace(running=False, state_unknown=False, current=None, start=Mock())
         with patch.object(app, "session", session), patch.object(app, "deploys", manager):
             for target in (None, {"profile_id": "old", "connected_at": 100}, {"profile_id": selected.id, "connected_at": 99}):
                 status, _ = await request("/api/deploy", method="POST", body=target)
@@ -37,7 +37,7 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
         session = SimpleNamespace(require_profile=lambda: selected, connected_at=100,
             run=AsyncMock(return_value=CommandResult("", "", 0, 1)), require_command_completion=lambda: None)
         app._insights_cache["fictional"] = (0, 0, {})
-        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=False)):
+        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=False, state_unknown=False)):
             operation = await app.control_service("restart", app.ServiceTarget(profile_id=selected.id, connected_at=100))
         self.assertTrue(operation["ok"])
         self.assertFalse(app._insights_cache)

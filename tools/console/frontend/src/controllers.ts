@@ -59,7 +59,8 @@ export function useDeployController(
       // 記録は補助情報なので、取れなくても画面は止めない
     }
   }, [notify, refreshAfterChange]);
-  usePolling(refreshDeploy, deployRunning ? 1000 : 15000, connected, connectionKey);
+  // 状態不明でタスクが終わった後は、手動更新・再接続まで定期取得を止める。
+  usePolling(refreshDeploy, deployRunning ? 1000 : 15000, connected && (deployRunning || deploy?.status !== "unknown"), connectionKey);
 
   const runDeploy = useCallback(async (target: ServiceTarget) => {
     if (!wasConnected.current || connectionChanging.current || deployStarting.current?.()) return;

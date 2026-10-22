@@ -148,7 +148,7 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             run=AsyncMock(side_effect=run), disconnect=AsyncMock(side_effect=lambda: self.events.append("disconnect")),
             snapshot=Mock(return_value={}),
         )
-        self.manager = SimpleNamespace(running=False, active=False, current=None)
+        self.manager = SimpleNamespace(running=False, active=False, state_unknown=False, current=None)
 
         def start(*args, **kwargs):
             self.events.append("deploy-start")
@@ -251,6 +251,17 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(app.HTTPException) as error:
             await service
         self.assertEqual(error.exception.status_code, 409)
+        self.session.run.assert_not_awaited()
+
+    async def test_waiting_service_rechecks_unknown_deploy_after_lock(self):
+        async with app._connection_change_lock:
+            service = self.spawn(app.control_service("stop", self.target))
+            await asyncio.sleep(0)
+            self.manager.state_unknown = True
+        with self.assertRaises(app.HTTPException) as error:
+            await service
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertFalse(self.manager.running)
         self.session.run.assert_not_awaited()
 
     async def test_repeated_cancellation_keeps_lock_until_sent_operation_finishes(self):

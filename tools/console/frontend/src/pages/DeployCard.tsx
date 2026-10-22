@@ -83,7 +83,7 @@ export function DeployCard({
       source="ssh"
       className="span-12 deploy-card"
       actions={
-        <Button variant="filled" icon="rocket" onClick={onDeploy} disabled={!connected || running || disabled} busy={running && !unknown}>
+        <Button variant="filled" icon="rocket" onClick={onDeploy} disabled={!connected || running || unknown || disabled} busy={running && !unknown}>
           {unknown ? "状態不明（デプロイを停止）" : running ? "デプロイしています…" : "デプロイする"}
         </Button>
       }
