@@ -139,7 +139,7 @@ class SshIntegrationTest(unittest.IsolatedAsyncioTestCase):
             rc.db_summary_command(self.profile.bot_dir), label="DB", input=rc.DB_SUMMARY_SCRIPT
         )
         self.assertEqual(result.exit_status, 0)
-        self.assertIn('"schema_version": 11', result.stdout)
+        self.assertIn('"schema_version": 12', result.stdout)
 
     async def test_db_table_via_stdin(self):
         await self.session.connect(self.profile)
