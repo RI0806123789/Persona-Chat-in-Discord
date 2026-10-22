@@ -108,6 +108,14 @@ MODERATION_TIMEOUT_SECONDS = 10.0
 # UI 側の DISCORD_SELECT_LABEL_MAX_LENGTH と数値は同じだが意味がまったく違うので別名にする。
 MODERATION_NG_WORD_SAMPLE_LIMIT = 100
 
+# 通常会話は入力AI判定・画像読込より前に確保し、満杯なら待たずに見送る。
+CHAT_RATE_WINDOW_SECONDS = 60.0
+CHAT_MAX_REQUESTS_PER_USER = 5
+CHAT_MAX_CONCURRENT_PER_GUILD = 2
+CHAT_MAX_CONCURRENT_GLOBAL = 4
+# 期間内の受付記録を持つ人数。満杯時は新しい利用者を見送り、既存記録を消さない。
+CHAT_RATE_MAX_USERS = 4096
+
 # 会話要約 (/functions → 📋 会話要約) 用
 # 対象メッセージがこの件数を超えたら要約せず自動停止する（トークン超過・
 # API 取得時間・レート制限の暴発を防ぐ安全弁）。
