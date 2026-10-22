@@ -595,7 +595,7 @@ class FeedbackPruneIndexTests(unittest.TestCase):
         self.migrate()
         self.assertEqual(self.rows(), original)
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         after = self.prune_plan(len(original))
         self.assertIn(self.INDEX, after)
         self.assertNotIn("TEMP B-TREE", after)
@@ -621,6 +621,62 @@ class FeedbackPruneIndexTests(unittest.TestCase):
                     self.assertEqual(rows, [row for row in original if row[0] in expected])
                     candidate.close()
 
+
+
+class PendingLogIndexTests(unittest.TestCase):
+    """記憶圧縮の巡回が使う利用者別の検索で、全件走査を避ける索引を確認する（#207）。"""
+
+    INDEX = "idx_pending_log_user_id"
+    SELECT = "SELECT * FROM pending_log WHERE user_id = ? ORDER BY id"
+    DELETE = "DELETE FROM pending_log WHERE user_id = ? AND id <= ?"
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "bot.db"
+        self.db = Database(self.path)
+        self.addCleanup(lambda: self.db.close())
+        with patch.object(database, "SCHEMA_VERSION", 12):
+            self.db.initialize()
+        # 利用者を交互に並べ、追記順（id）と利用者ごとの順が食い違う状態にする。
+        for index in range(6):
+            self.db.pending_append(f"user-{index % 3}", f"2026-01-01 00:00:0{index} UTC", f"架空の質問{index}", f"架空の回答{index}")
+
+    def plan(self, statement: str, *params) -> str:
+        with closing(sqlite3.connect(self.path)) as connection:
+            return " / ".join(row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}", params))
+
+    def migrate(self) -> None:
+        self.db.close()
+        self.db = Database(self.path)
+        self.db.initialize()
+        self.db.initialize()
+
+    def test_version_twelve_migration_adds_index_and_keeps_user_separation(self) -> None:
+        original = {user: self.db.pending_fetch_entries(user) for user in ("user-0", "user-1", "user-2")}
+        self.assertIn("SCAN pending_log", self.plan(self.SELECT, "user-1"))
+        self.migrate()
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        for statement, params in ((self.SELECT, ("user-1",)), (self.DELETE, ("user-1", 4))):
+            with self.subTest(statement=statement[:20]):
+                plan = self.plan(statement, *params)
+                self.assertIn(self.INDEX, plan)
+                self.assertNotIn("SCAN pending_log", plan)
+                self.assertNotIn("TEMP B-TREE", plan)
+        # 取得内容・順序・利用者ごとの分離は索引の有無で変わらない。
+        for user, entries in original.items():
+            self.assertEqual(self.db.pending_fetch_entries(user), entries)
+            self.assertEqual([entry["user_id"] for entry in entries], [user] * 2)
+        self.assertEqual(self.db.pending_distinct_user_ids(), ["user-0", "user-1", "user-2"])
+
+    def test_range_delete_only_removes_the_target_users_older_rows(self) -> None:
+        self.migrate()
+        first, second = (entry["id"] for entry in self.db.pending_fetch_entries("user-1"))
+        self.db.pending_clear_upto("user-1", first)
+        self.assertEqual([entry["id"] for entry in self.db.pending_fetch_entries("user-1")], [second])
+        self.assertEqual(len(self.db.pending_fetch_entries("user-0")), 2)
+        self.assertEqual(len(self.db.pending_fetch_entries("user-2")), 2)
 
 
 class QueueCapacityTests(unittest.TestCase):
