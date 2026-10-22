@@ -191,6 +191,11 @@ class SettingsTemplateTests(PersonaFolderTestCase):
                 self.assertEqual(dict(catalog.voice_profile(personas.persona_value(name))), entry["voice"])
                 self.assertIn(entry["voice"]["voice"], (constants.EDGE_TTS_VOICE_FEMALE, constants.EDGE_TTS_VOICE_MALE))
                 self.assertIn(entry["voice"]["eq"], constants.VOICE_EQ_PROFILES)
+                # サブエージェントの進捗の定型文（#170）も、書いた項目だけが反映される
+                lines = catalog.agent_lines(personas.persona_value(name))
+                self.assertEqual(set(lines), set(constants.AGENT_LINE_KEYS))
+                for key, line in entry.get("agent", {}).items():
+                    self.assertEqual(lines[key], line)
 
     def test_template_itself_is_not_read_as_settings(self) -> None:
         for name in self.template["personas"]:
@@ -201,6 +206,45 @@ class SettingsTemplateTests(PersonaFolderTestCase):
         names = sorted(self.template["personas"])
         self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(name) for name in names])
         self.assertEqual([p.name for p in catalog.personas], [Path(name).stem for name in names])
+
+
+class AgentLinesTests(PersonaFolderTestCase):
+    """サブエージェントの進捗の定型文（personas.json の "agent"。#170）。"""
+
+    def test_written_lines_override_defaults_and_others_stay(self) -> None:
+        self.write("a.txt")
+        self.write_settings({"personas": {"a.txt": {"agent": {"progress": " {step}中だよ（{current}/{total}） "}}}})
+        lines = self.load().agent_lines("../prompts/a.txt")
+        self.assertEqual(lines["progress"], "{step}中だよ（{current}/{total}）")
+        self.assertEqual(lines["start"], constants.AGENT_DEFAULT_LINES["start"])
+
+    def test_unknown_or_unregistered_persona_uses_defaults(self) -> None:
+        catalog = self.load()
+        for value in (None, "", "../prompts/無い.txt"):
+            with self.subTest(value=value):
+                self.assertEqual(dict(catalog.agent_lines(value)), constants.AGENT_DEFAULT_LINES)
+
+    def test_invalid_lines_are_warned_and_replaced_by_defaults(self) -> None:
+        self.write("a.txt")
+        self.write_settings({"personas": {"a.txt": {"agent": {
+            "start": "{rol}に任せたよ", "progress": "閉じ忘れ{", "done": 3, "failed": "  ", "未知": "架空",
+            "busy": "{{かっこ}}も書ける",
+        }}}})
+        with patch("builtins.print") as logging:
+            lines = self.load().agent_lines("../prompts/a.txt")
+        for key in ("start", "progress", "done", "failed"):
+            with self.subTest(key=key):
+                self.assertEqual(lines[key], constants.AGENT_DEFAULT_LINES[key])
+        self.assertEqual(lines["busy"], "{{かっこ}}も書ける")
+        self.assertEqual(logging.call_count, 5)
+        # 警告に設定の中身（利用者の書いた文面）を出さない
+        self.assertFalse(any("閉じ忘れ" in str(call) for call in logging.call_args_list))
+
+    def test_non_object_agent_is_ignored(self) -> None:
+        self.write("a.txt")
+        self.write_settings({"personas": {"a.txt": {"agent": "架空"}}})
+        with patch("builtins.print"):
+            self.assertEqual(dict(self.load().agent_lines("../prompts/a.txt")), constants.AGENT_DEFAULT_LINES)
 
 
 class SelectablePersonaTests(PersonaFolderTestCase):

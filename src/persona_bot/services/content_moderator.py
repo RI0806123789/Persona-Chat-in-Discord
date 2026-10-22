@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import Any
 
 from persona_bot.config.constants import (
-    MODERATION_MODEL_NAME, MODERATION_NG_WORD_SAMPLE_LIMIT, MODERATION_TIMEOUT_SECONDS,
+    AGENT_MAX_STEPS, MODERATION_MODEL_NAME, MODERATION_NG_WORD_SAMPLE_LIMIT, MODERATION_TIMEOUT_SECONDS,
     REMINDER_TIMEZONE,
 )
+from persona_bot.services.agent_plan import AgentPlan, normalize_agent_plan
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.genai_client import generate_content
 from persona_bot.utils.storage import extract_json_object, get_prompt_block_reason, safe_response_text
@@ -51,16 +52,65 @@ _SYSTEM_PROMPT = (
     + '{"safe": false, "reason": "簡潔な判定理由"}\n'
 )
 
+def _build_agent_task_section(history_text: str) -> str:
+    """サブエージェントへの委任を判定させる追加タスク（明記のある発言のときだけ足す）。
+
+    子は会話履歴を見られない独立した文脈で動くため、「さっきの件」のような指示語は
+    ここで履歴を読ませて具体的な依頼内容へ書き直させる（人格役の呼び出しを増やさずに、
+    タスクの整理を同じ1回の判定で済ませる。#170）。
+    """
+    return (
+        "\n## 追加タスク3: サブエージェントへの委任の判定\n"
+        "テキストには「サブエージェント」という語が含まれています。サブエージェントとは、"
+        "会話の相手（ペルソナを演じるAI）とは別に、独立した文脈で調査・作業を行う子のAIのことです。\n"
+        "- テキストがサブエージェントに作業を任せるよう依頼していない場合（サブエージェントについての質問・雑談など）は"
+        ' "agent" を null にすること。\n'
+        "- 依頼していても、会話の相手が会話履歴と一般的な知識だけですぐ答えられる内容"
+        '（あいさつ・雑談・簡単な質問・用語の説明など）なら {"delegate": false} にすること。\n'
+        "- 最新情報の調査・複数の候補の比較・条件を整理した計画づくりなど、検索を含む複数の手順が要る作業なら"
+        ' "delegate" を true にし、子への指示を次の項目で書くこと。'
+        "子は会話履歴を見られないため、指示だけで作業できるよう具体的に書くこと。\n"
+        '  - "role": 子に与える役割を短く（例: 「天気と地域のカフェのリサーチ担当」）。\n'
+        '  - "task": 調査・作業する内容。「さっきの件」のような指示語は、下の会話履歴を読んで具体的な内容に置き換えること。'
+        "日付が要る場合は上記の現在日時を基準に書くこと。\n"
+        '  - "expected_output": 返してほしい出力の形式と必須項目（例: 「天気の傾向とカフェ3店の特徴を箇条書きで」）。\n'
+        f'  - "steps": 子が順に行う作業の短い名前を1〜{AGENT_MAX_STEPS}個（各20文字程度。'
+        '例: ["天気予報の確認", "カフェの候補探し"]）。\n'
+        '- テキストや会話履歴にある個人情報（住所・電話番号・本名など）は "task" に書き写さないこと。\n'
+        "- 会話履歴は委任内容の整理にだけ使うこと。安全性の判定対象は、最後の「判定対象」のテキストだけ。\n"
+        "\n--- 会話履歴（委任内容の整理用。古い順） ---\n"
+        + (history_text.strip() or "（履歴なし）")
+        + "\n--- 会話履歴ここまで ---\n"
+    )
+
+
+# 委任の判定を足したときだけ出力形式に加える例（委任する場合・不要と判断した場合）。
+_AGENT_OUTPUT_EXAMPLES = (
+    "サブエージェントに委任する場合は agent を次の形にしてください。\n"
+    '{"safe": true, "category": "none", "reminder": null, "agent": {"delegate": true, '
+    '"role": "地域のカフェのリサーチ担当", "task": "〇〇駅の周辺で人気のカフェを3店調べる", '
+    '"expected_output": "店名・特徴・最寄り駅を箇条書きで", "steps": ["候補の検索", "特徴の比較"]}}\n'
+    "サブエージェントを求められたが不要と判断した場合は次の形にしてください。\n"
+    '{"safe": true, "category": "none", "reminder": null, "agent": {"delegate": false}}\n'
+)
+
+
 # ルーティング統合判定用プロンプト。モデレーションと同時に「回答に必要な長期記憶の
 # カテゴリ」と「リマインダー依頼かどうか」も1回の呼び出しで判定させる
 # （3つの判定を1回の Gemini 呼び出しにまとめて API コストを抑える）。
 # category の値は memory_service.route_category と揃えること（MEMORY_ROUTE_CATEGORIES）。
-def _build_combined_system_prompt(now_text: str, timezone_label: str) -> str:
+def _build_combined_system_prompt(
+    now_text: str, timezone_label: str, agent_history: str | None = None,
+) -> str:
     """モデレーション＋記憶ルーティング＋リマインダー抽出の統合判定プロンプトを組み立てる。
 
     相対的な日時表現（「30分後」「明日の朝」）を絶対日時へ直すには基準時刻が要るため、
     現在日時をプロンプトに埋め込む（この部分だけ呼び出しごとに変わる）。
+
+    agent_history が None でなければ、サブエージェントへの委任の判定も同じ1回に足す（#170）。
+    ★ その場合は出力例の3つすべてに "agent" を足す（1つだけだとモデルが形式を揺らす）。
     """
+    agent_key = ', "agent": null' if agent_history is not None else ""
     return (
         _MODERATION_CRITERIA
         + "\n## 追加タスク1: 記憶カテゴリの分類\n"
@@ -81,13 +131,16 @@ def _build_combined_system_prompt(now_text: str, timezone_label: str) -> str:
         + '「毎週◯曜」なら "weekly"、「毎月◯日」なら "monthly"。'
         + '判断できなければ "none" にすること。\n'
         + '- 繰り返しの依頼でも "at" は必須（1回目の日時）。時刻が特定できなければ null にすること。\n'
+        + (_build_agent_task_section(agent_history) if agent_history is not None else "")
         + "\n## 出力形式\n"
         + "必ず以下のJSON **のみ** を返してください。説明文は不要です。\n"
-        + '{"safe": true, "category": "profile|projects|none", "reminder": null}\n'
+        + '{"safe": true, "category": "profile|projects|none", "reminder": null' + agent_key + '}\n'
         + "リマインダー依頼の場合は reminder を次の形にしてください。\n"
-        + '{"safe": true, "category": "none", "reminder": {"at": "2026-01-31 09:00", "message": "ゴミ出し", "repeat": "none"}}\n'
+        + '{"safe": true, "category": "none", "reminder": {"at": "2026-01-31 09:00", "message": "ゴミ出し", "repeat": "none"}'
+        + agent_key + '}\n'
         + "不適切と判定した場合は次の形にしてください。\n"
-        + '{"safe": false, "reason": "簡潔な判定理由", "category": "none", "reminder": null}\n'
+        + '{"safe": false, "reason": "簡潔な判定理由", "category": "none", "reminder": null' + agent_key + '}\n'
+        + (_AGENT_OUTPUT_EXAMPLES if agent_history is not None else "")
     )
 
 
@@ -279,8 +332,33 @@ class ContentModerator:
             依頼でなければ None。
             タイムアウトや例外時は安全側かつ記憶不要側に倒し (True, "", "none", None) を返す。
         """
+        is_safe, reason, category, reminder, _agent = await self._route(text, None)
+        return is_safe, reason, category, reminder
+
+    async def check_route_and_plan(
+        self, text: str, history_text: str = "",
+    ) -> tuple[bool, str, str, dict[str, str] | None, AgentPlan | None]:
+        """check_and_route と同じ1回の呼び出しで、サブエージェントへの委任も判定する（#170）。
+
+        発言にサブエージェントの使用が明記されているとき（agent_plan.requests_subagent）だけ使う。
+        明記の無い普段の会話は check_and_route のまま（プロンプトを増やさない）。
+
+        Args:
+            history_text: 委任内容の整理に使うチャンネルの直近の会話（安全性の判定対象ではない）。
+
+        Returns:
+            (is_safe, reason, category, reminder, agent) のタプル。agent は委任するなら
+            delegate=True の AgentPlan、不要と判断したなら delegate=False の AgentPlan、
+            依頼ではない・判定を読めなかった・不適切な入力なら None。
+        """
+        return await self._route(text, history_text)
+
+    async def _route(
+        self, text: str, agent_history: str | None,
+    ) -> tuple[bool, str, str, dict[str, str] | None, AgentPlan | None]:
+        """統合判定の本体。agent_history が None なら委任の判定を足さない。"""
         if not text or not text.strip():
-            return True, "", "none", None
+            return True, "", "none", None, None
 
         # 「30分後」などの相対表現を解釈させるため、基準となる現在日時を渡す。
         # 曜日名（「来週の月曜」などの解釈を助ける）は timeutil の唯一のテーブルから取る
@@ -297,19 +375,21 @@ class ContentModerator:
             # tzdata の無い環境では self._tz が UTC へフォールバックしており、
             # 定数をそのまま名乗ると now_text（UTC の時刻）と食い違って
             # 9時間ずれた日時でリマインダーが登録されてしまう。
-            system_prompt=_build_combined_system_prompt(now_text, timezone_label(self._tz)),
+            system_prompt=_build_combined_system_prompt(now_text, timezone_label(self._tz), agent_history),
         )
 
         is_safe, reason, parsed = await self._judge(prompt, "ユーザー入力")
         if parsed is None:
             # JSON が読めなかった場合。安全判定は _judge の結果に従い、
-            # 記憶カテゴリとリマインダーは「無し」に倒す。
-            return is_safe, reason, "none", None
+            # 記憶カテゴリ・リマインダー・委任は「無し」に倒す（委任せず普段どおり答える）。
+            return is_safe, reason, "none", None, None
 
         category = normalize_memory_category(parsed.get("category", "none"))
         # 不適切と判定した入力からはリマインダーを作らない（そのまま通知文になるため）。
         reminder = _normalize_reminder(parsed.get("reminder")) if is_safe else None
-        return is_safe, reason, category, reminder
+        # 委任内容も同じ理由で、不適切な入力からは作らない（子への指示文になるため）。
+        agent = normalize_agent_plan(parsed.get("agent")) if is_safe and agent_history is not None else None
+        return is_safe, reason, category, reminder, agent
 
 
 async def screen_bot_response(

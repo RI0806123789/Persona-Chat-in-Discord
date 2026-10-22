@@ -37,6 +37,18 @@ class UsageTracker:
         self.output_tokens.append(self._read_token_count(usage_info, "candidates_token_count", "candidatesTokenCount"))
         self.total_tokens.append(self._read_token_count(usage_info, "total_token_count", "totalTokenCount"))
 
+    def log_tokens(self, context_label: str, usage_info: Any | None) -> None:
+        """会話ではない Gemini 呼び出し（サブエージェントの作業など）のトークンだけを記録する。
+
+        log_snapshot の「User (…)：」行を出さないため、管理コンソールの会話件数には数えず、
+        「Total token count：」行で Gemini の呼び出し回数とトークン数にだけ数える。本文は出さない。
+        """
+        if not usage_info:
+            return
+        self.record(usage_info)
+        print(f"[{context_label}] Prompt token count：{self.input_tokens[-1]}")
+        print(f"Total token count：{self.total_tokens[-1]}")
+
     def log_snapshot(
         self,
         context_label: str,

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import string
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -33,6 +34,8 @@ from typing import Any, Mapping
 
 from persona_bot.config import constants
 from persona_bot.config.constants import (
+    AGENT_DEFAULT_LINES,
+    AGENT_LINE_KEYS,
     DISCORD_SELECT_VALUE_MAX_LENGTH,
     PERSONA_SETTINGS_TEMPLATE_FILE_NAME,
     PERSONA_VALUE_PREFIX,
@@ -52,6 +55,8 @@ BUILTIN_PERSONA_DISPLAY_NAME = "標準（組み込み）"
 _EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
 _EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
 _VOICE_KEYS = ("voice", "pitch", "rate", "eq")
+# サブエージェントの進捗の定型文（personas.json の "agent"）に書ける差し込み（#170）。
+_AGENT_LINE_FIELDS = frozenset({"role", "step", "current", "total"})
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,8 @@ class Persona:
     value: str
     name: str
     voice: Mapping[str, Any]
+    # サブエージェントの進捗の定型文。書いた項目だけを持ち、残りは AGENT_DEFAULT_LINES を使う。
+    agent_lines: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,14 @@ class PersonaCatalog:
     def voice_profile(self, value: str | None) -> Mapping[str, Any]:
         persona = self.get(value)
         return persona.voice if persona is not None else VOICE_PROFILE_FALLBACK
+
+    def agent_lines(self, value: str | None) -> Mapping[str, str]:
+        """サブエージェントの進捗の定型文。書いていない項目は既定の文面で補う。"""
+        persona = self.get(value)
+        lines = dict(AGENT_DEFAULT_LINES)
+        if persona is not None:
+            lines.update(persona.agent_lines)
+        return MappingProxyType(lines)
 
 
 _catalog = PersonaCatalog()
@@ -267,6 +282,7 @@ def _build_persona(file_name: str, entry: Any) -> Persona:
         value=persona_value(file_name),
         name=display or Path(file_name).stem,
         voice=MappingProxyType(_build_voice(file_name, entry.get("voice"))),
+        agent_lines=MappingProxyType(_build_agent_lines(file_name, entry.get("agent"))),
     )
 
 
@@ -292,6 +308,45 @@ def _build_voice(file_name: str, voice: Any) -> dict[str, Any]:
             continue
         profile[key] = value
     return profile
+
+
+def _build_agent_lines(file_name: str, agent: Any) -> dict[str, str]:
+    """サブエージェントの進捗の定型文を点検する（案A。LLM を呼ばない。#170）。
+
+    差し込みの書き間違い（{stpe} や閉じ忘れの {）は表示のたびに例外になるため、
+    読み込み時に確かめて、その項目だけ既定の文面に戻す（ファイルは書き換えない）。
+    """
+    if agent is None:
+        return {}
+    if not isinstance(agent, dict):
+        print(f"警告: personas.json の「{file_name}」の agent はオブジェクト（{{ }}）で書いてください。既定の文面を使います。")
+        return {}
+    lines: dict[str, str] = {}
+    for key, value in agent.items():
+        if key not in AGENT_LINE_KEYS:
+            print(f"警告: personas.json の「{file_name}」の agent に未対応の項目があります（{key}）。使える項目: {', '.join(AGENT_LINE_KEYS)}")
+            continue
+        if not isinstance(value, str) or not value.strip():
+            print(f"警告: personas.json の「{file_name}」の agent.{key} は文字列で書いてください。既定の文面を使います。")
+            continue
+        if not _is_valid_agent_line(value):
+            print(
+                f"警告: personas.json の「{file_name}」の agent.{key} の差し込みが不正です。"
+                f"使えるのは {{{'}, {'.join(sorted(_AGENT_LINE_FIELDS))}}} だけで、"
+                "文字の { } は {{ }} と書きます。既定の文面を使います。"
+            )
+            continue
+        lines[key] = value.strip()
+    return lines
+
+
+def _is_valid_agent_line(text: str) -> bool:
+    try:
+        fields = [name for _literal, name, _spec, _conversion in string.Formatter().parse(text) if name is not None]
+        text.format(role="", step="", current=1, total=1)
+    except (ValueError, KeyError, IndexError):
+        return False
+    return all(name in _AGENT_LINE_FIELDS for name in fields)
 
 
 def _resolve_default(default: Any, personas: tuple[Persona, ...]) -> str:

@@ -21,12 +21,17 @@ def build_memory_sections(memory_category: str, memory_context: str, document_co
     return "".join(sections)
 
 
-def build_full_prompt(prompt: str, memory_sections: str, history_text: str, question: str, affinity_prompt: str = "") -> str:
+def build_full_prompt(
+    prompt: str, memory_sections: str, history_text: str, question: str, affinity_prompt: str = "",
+    delegation_section: str = "",
+) -> str:
+    """通常チャットの応答プロンプト。delegation_section はサブエージェントの報告などの差し込み（#170）。"""
     return (
         prompt
         + "\n"
         + affinity_prompt
         + memory_sections
+        + delegation_section
         + "\n--- 過去の会話履歴 ---\n"
         + history_text
         + "\n--- 今回の質問 ---\n"
@@ -361,3 +366,105 @@ def build_affinity_prompt(affinity: int, valence: int, arousal: int) -> str:
 Xは機嫌の変動量、Yはテンションの変動量です。（例: `[V:+5, A:-10]` や `[V:0, A:+2]`）
 """
 
+
+
+# --- サブエージェント（委任型。#170） ---
+#
+# 子は人格役（ペルソナ）とは別の、独立したクリーンな文脈で動く。ペルソナ・会話履歴・
+# 長期記憶は渡さない（記憶はユーザー別に分離しているため、作業者へ渡す必要が無いものは
+# 渡さない）。必要な情報はルーターが整理した依頼内容（role / task / expected_output）だけ。
+# 子の出力は利用者へ直接は出さず、人格役が受け取ってペルソナの口調で言い直す。
+
+
+def build_agent_worker_prompt(
+    role: str,
+    task: str,
+    expected_output: str,
+    steps: tuple[str, ...],
+    step_index: int,
+    notes: list[str],
+    now_text: str,
+) -> str:
+    """子（サブエージェント）の1手順分のプロンプトを組み立てる。
+
+    1手順につき検索付きの生成を1回行う（手順の数が子のツール実行の上限になる）。
+    最後の手順では、それまでのメモと合わせて期待する出力形式の最終報告を書かせる。
+
+    Args:
+        steps: ルーターが決めた手順名の一覧。
+        step_index: 今回行う手順の番号（0 始まり）。
+        notes: これまでの手順で書いたメモ（古い順）。
+        now_text: 現在日時の表記（「今日」「来週」などを正しく扱わせるため）。
+    """
+    step_lines = "\n".join(
+        f"{index + 1}. {name}" + ("（今回）" if index == step_index else "")
+        for index, name in enumerate(steps)
+    )
+    note_text = "\n\n".join(
+        f"### 手順{index + 1}「{steps[index]}」のメモ\n{note}" for index, note in enumerate(notes)
+    ) or "（まだありません）"
+    is_last = step_index == len(steps) - 1
+    if is_last:
+        instruction = (
+            f"今回は手順{step_index + 1}「{steps[step_index]}」を行ったうえで、これまでのメモと合わせて、"
+            "下の「期待する出力」に沿った最終報告を Markdown で書いてください。\n"
+            "- 依頼主はこの報告を読んで利用者に説明します。固有名詞・数値・日付は具体的に書くこと。\n"
+            "- 調べても分からなかったこと・情報が古い可能性があることは、そうと明記すること。"
+        )
+    else:
+        instruction = (
+            f"今回は手順{step_index + 1}「{steps[step_index]}」だけを行い、分かった事実を"
+            "Markdown の箇条書きでメモしてください（次の手順へ引き継ぎます）。\n"
+            "- 最終報告はまだ書かないこと。"
+        )
+    return (
+        f"あなたは「{role}」です。依頼主（別のAI）から、次の作業を任されました。\n"
+        f"現在日時は {now_text} です。\n"
+        "\n## 依頼内容\n"
+        + task
+        + "\n\n## 期待する出力\n"
+        + (expected_output or "要点を箇条書きで")
+        + "\n\n## 作業手順\n"
+        + step_lines
+        + "\n\n## これまでのメモ\n"
+        + note_text
+        + "\n\n## 今回の作業\n"
+        + instruction
+        + "\n\n## 守ること\n"
+        "- 最新の情報や事実の確認が要るときは Google 検索を使うこと。\n"
+        "- 推測で事実を作らないこと。推測を書くときは推測と明記すること。\n"
+        "- URL は本文に書かないこと（参照元は別に添えます）。\n"
+        "- キャラクターの口調・感情タグ（[V:.., A:..] の形式）は使わず、中立的な文体で書くこと。\n"
+        "- 個人情報（住所・電話番号・本名など）は書かないこと。\n"
+    )
+
+
+def build_agent_report_section(role: str, report: str) -> str:
+    """子の報告を人格役のプロンプトへ差し込むブロック（build_full_prompt の delegation_section）。
+
+    利用者へ返答するのは常に人格役。報告の具体的な事実を落とさず、ペルソナの口調で
+    会話として言い直させる（見出しや表をそのまま貼らせない）。
+    """
+    return (
+        f"\n--- サブエージェント（{role}）からの報告 ---\n"
+        + report
+        + "\n--- 報告ここまで ---\n"
+        "上の報告は、利用者の依頼を受けてあなたがサブエージェントに任せた作業の結果です。\n"
+        "- 報告にある具体的な事実（固有名詞・数値・日付）は落とさずに、あなたの口調で利用者へ伝えること。\n"
+        "- 報告に無いことを事実のように付け足さないこと。分からなかったことは、そう伝えること。\n"
+        "- 報告の見出しや表をそのまま貼り付けず、会話として自然にまとめること（短い箇条書きは使ってよい）。\n"
+    )
+
+
+def build_agent_declined_section() -> str:
+    """サブエージェントを求められたが、委任は不要と判断したときの差し込み。
+
+    「明記したのに使われなかった」と感じさせないよう、追加の呼び出しをせずに
+    人格役自身の口調で一言添えさせる。
+    """
+    return (
+        "\n--- 補足 ---\n"
+        "利用者はサブエージェント（調査を任せる子のAI）の使用を求めましたが、"
+        "今回は調べ物をしなくても答えられる内容だと判断しました。"
+        "そのことをあなたの口調で短く一言添えてから、質問に直接答えてください。\n"
+    )
