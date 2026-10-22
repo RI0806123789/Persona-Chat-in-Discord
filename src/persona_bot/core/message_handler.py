@@ -11,9 +11,12 @@ from persona_bot.services.affinity_service import extract_affinity_changes
 from persona_bot.core.app_state import BotState, GuildSettings, ResponseSettings
 from persona_bot.core.background import run_in_thread, spawn
 from persona_bot.config.constants import (
-    BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
+    AGENT_ROUTER_HISTORY_LIMIT, BLACKLIST_MAX_VIOLATIONS, GEMINI_RESPONSE_TIMEOUT_SECONDS,
     HISTORY_LIMIT, IMAGE_ONLY_QUESTION, MAX_DOCUMENT_SIZE_BYTES,
 )
+from persona_bot.config.personas import current_persona_catalog
+from persona_bot.services.agent_plan import AgentPlan, requests_subagent
+from persona_bot.services.agent_service import render_agent_line
 from persona_bot.services.content_moderator import screen_bot_response_with_status
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
@@ -22,11 +25,15 @@ from persona_bot.utils.discord_helpers import (
     load_image_attachments, send_long_reply,
 )
 from persona_bot.config.paths import load_persona_template
-from persona_bot.services.prompting import build_full_prompt, build_memory_sections
+from persona_bot.services.prompting import (
+    build_agent_declined_section, build_agent_report_section, build_full_prompt, build_memory_sections,
+)
 from persona_bot.audio.voice import play_tts_response
+from persona_bot.views.agent_view import AgentProgress
 
 if TYPE_CHECKING:
     from persona_bot.services.affinity_service import AffinityService
+    from persona_bot.services.agent_service import AgentService
     from persona_bot.services.auto_topic_service import AutoTopicService
     from persona_bot.services.autonomous_service import AutonomousService
     from persona_bot.services.blacklist_service import BlacklistService
@@ -60,6 +67,7 @@ class MessageHandler:
     gemini: GeminiService
     usage: UsageTracker
     feedback: FeedbackService
+    agent: AgentService
 
     async def notify_violation(self, message: discord.Message, notice: str) -> None:
         """違反を1回記録し、ブロック状況に応じた警告をユーザーに返信する。
@@ -205,8 +213,22 @@ class MessageHandler:
         # memory_categoryは通常チャットの記憶参照へ、reminder_requestは添付の振り分け後の登録へ渡す。
         memory_category = "none"
         reminder_request: dict[str, str] | None = None
+        agent_plan: AgentPlan | None = None
         if question:
-            is_safe, _reason, memory_category, reminder_request = await self.moderator.check_and_route(question)
+            if not is_autonomous_comment and requests_subagent(question):
+                # サブエージェントの使用が明記された発言だけ、同じ1回の判定に委任の判定を足す（#170）。
+                # 「さっきの件」のような依頼を子へ渡せる形に整理させるため、直近の会話も渡す。
+                router_history = await fetch_channel_history_text(
+                    message.channel,
+                    guild_settings.channel_reset_points.get(message.channel.id),
+                    self.client.user,
+                    AGENT_ROUTER_HISTORY_LIMIT,
+                )
+                is_safe, _reason, memory_category, reminder_request, agent_plan = (
+                    await self.moderator.check_route_and_plan(question, router_history)
+                )
+            else:
+                is_safe, _reason, memory_category, reminder_request = await self.moderator.check_and_route(question)
             if not is_safe:
                 await self.notify_violation(message, "不適切な内容が検出されたため、メッセージを処理できません。")
                 return
@@ -287,13 +309,69 @@ class MessageHandler:
                 return
 
         response_settings = guild_settings.snapshot_response()
-        response_text = await self.handle_chat_message(
-            message, question, memory_category, response_settings=response_settings
-        )
+        if agent_plan is not None and agent_plan.delegate:
+            response_text = await self._handle_agent_request(
+                message, question, memory_category, agent_plan, response_settings,
+            )
+        else:
+            # サブエージェントを求められたが不要と判断した場合は、人格役がその旨を一言添えて直接答える。
+            response_text = await self.handle_chat_message(
+                message, question, memory_category, response_settings=response_settings,
+                delegation_section=build_agent_declined_section() if agent_plan is not None else "",
+            )
         if response_text:
             # ボイス接続中なら、自律行動による参加中も読み上げる（未接続なら no-op）。
             # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
             await play_tts_response(message, response_text, response_settings.prompt_file)
+
+    async def _handle_agent_request(
+        self,
+        message: discord.Message,
+        question: str,
+        memory_category: str,
+        plan: AgentPlan,
+        response_settings: ResponseSettings,
+    ) -> str | None:
+        """子（サブエージェント）に作業させ、報告を人格役がペルソナの口調で言い直して返信する（#170）。
+
+        進捗は定型文（案A）で1通のメッセージを書き換えて伝える。子の失敗・期限切れ・中止は
+        定型文で伝えて終える（人格役の生成はしない）。返信の後処理（親密度・モデレーション・
+        評価・記憶）は通常の会話と同じ handle_chat_message に任せる。
+        """
+        user_id = str(message.author.id)
+        lines = current_persona_catalog().agent_lines(response_settings.prompt_file)
+        if not self.agent.try_acquire(user_id):
+            print(f"サブエージェント: 実行中の依頼があるため受け付けませんでした (user_id={user_id})。")
+            try:
+                await message.reply(render_agent_line(lines, "busy"), allowed_mentions=discord.AllowedMentions.none())
+            except discord.DiscordException as error:
+                print(f"サブエージェント: 受付できない旨を送れませんでした: {type(error).__name__}")
+            return None
+        try:
+            # ロールと手順名は進捗メッセージへそのまま出るため、NG ワードを伏せておく。
+            plan = AgentPlan(
+                delegate=True,
+                role=self.ng_filter.mask_with_log(plan.role, label="サブエージェントのロール"),
+                task=plan.task,
+                expected_output=plan.expected_output,
+                steps=tuple(self.ng_filter.mask_with_log(step, label="サブエージェントの手順") for step in plan.steps),
+            )
+            print(f"サブエージェント: 委任します（ロール: {plan.role}、手順: {len(plan.steps)}）。")
+            progress = AgentProgress(message, lines, plan)
+            await progress.start()
+            outcome, report = await progress.run(
+                self.agent.run(plan, response_settings.model_name, progress.update)
+            )
+            await progress.finish(outcome)
+            if report is None:
+                return None
+            return await self.handle_chat_message(
+                message, question, memory_category, response_settings=response_settings,
+                delegation_section=build_agent_report_section(plan.role, report.text),
+                delegated_sources=report.sources,
+            )
+        finally:
+            self.agent.release(user_id)
 
     async def handle_chat_message(
         self,
@@ -302,7 +380,16 @@ class MessageHandler:
         memory_category: str = "none",
         *,
         response_settings: ResponseSettings | None = None,
+        delegation_section: str = "",
+        delegated_sources: list[dict[str, str]] | None = None,
     ) -> str | None:
+        """人格役として返信し、送った本文を返す（読み上げに使う）。
+
+        Args:
+            delegation_section: サブエージェントの報告・委任しなかった旨の差し込み（#170）。
+            delegated_sources: サブエージェントが検索で参照した出典。渡したときは人格役は検索せず
+                （報告の言い直しなので）、この出典を返信に添える。
+        """
         guild_id = message.guild.id if message.guild is not None else None
         guild_settings = self.state.get_guild(guild_id)
         # typing() の開始も待機を伴うため、その前に今回の値を確定する。
@@ -345,21 +432,28 @@ class MessageHandler:
                     build_memory_sections(memory_category, memory_context, document_context),
                     history_text,
                     question,
-                    affinity_prompt=self.affinity.build_dynamic_prompt(str(message.author.id))
+                    affinity_prompt=self.affinity.build_dynamic_prompt(str(message.author.id)),
+                    delegation_section=delegation_section,
                 )
+                delegated = delegated_sources is not None
                 response_text, usage_info, grounding_sources, generated_model = await self.gemini.generate_with_metadata(
                     full_prompt,
                     response_settings.model_name,
                     image_objects,
                     timeout=GEMINI_RESPONSE_TIMEOUT_SECONDS,
-                    grounding=response_settings.grounding_enabled,
+                    grounding=response_settings.grounding_enabled and not delegated,
                 )
 
                 if response_text is None:
                     await message.reply("エラーが発生しました。（Gemini APIの呼び出しに失敗、または非対応の画像形式です）")
                     return None
+                if delegated:
+                    grounding_sources = delegated_sources
 
-                self.usage.log_snapshot("直接会話", question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info)
+                self.usage.log_snapshot(
+                    "サブエージェント経由" if delegated else "直接会話",
+                    question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info,
+                )
 
                 # タグの抽出だけ先に行い、親密度の更新はモデレーション通過後に行う。
                 response_text, emotion_changes = extract_affinity_changes(response_text)

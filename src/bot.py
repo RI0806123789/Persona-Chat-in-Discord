@@ -17,6 +17,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from persona_bot.core.app_state import BotState
 from persona_bot.services.affinity_service import AffinityService
+from persona_bot.services.agent_service import AgentService
 from persona_bot.services.auto_topic_service import AutoTopicService
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core.background import make_guarded_loop, run_in_thread, spawn
@@ -101,12 +102,14 @@ feedback = FeedbackService(client, database)
 # 集計パネル（会話統計 → 👍 フィードバック）は機能ハブ経由で生成されるため、
 # UI 層がこのインスタンスを引けるよう既定として登録しておく。
 set_default_service(feedback)
+# 会話の中でサブエージェントの使用を明記された依頼を、子に委任する（#170）。
+agent = AgentService(gemini, usage)
 
 message_handler = MessageHandler(
     client=client, state=state, auto_topic=auto_topic, autonomous=autonomous,
     blacklist=blacklist, ng_filter=ng_filter, moderator=moderator, stats=stats,
     reminders=reminders, documents=documents, memory=memory, affinity=affinity,
-    gemini=gemini, usage=usage, feedback=feedback,
+    gemini=gemini, usage=usage, feedback=feedback, agent=agent,
 )
 
 register_commands(
