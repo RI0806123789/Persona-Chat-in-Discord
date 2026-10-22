@@ -196,9 +196,13 @@ class DocumentService:
             author_id = str(task.get("author_id") or message.author.id)
             if author_id == "0":
                 author_id = str(message.author.id)
-            question = clean_message_content(message, self._client.user)
-            if not question:
-                question = str(task.get("question", "")).strip() or DOCUMENT_ONLY_QUESTION
+            # 質問は、受付時に NG 判定と入力モデレーションを通した保存済みの値だけを使う（#203）。
+            # 再取得した投稿の本文は、受付後に編集されていても誰も検査していないため生成へ渡さない。
+            # 添付は編集で外すことしかできず差し替えられないので、再取得した一覧を使ってよい。
+            question = str(task.get("question", "")).strip()
+            if clean_message_content(message, self._client.user) != question:
+                print("文書タスク: 受付後に本文が編集されたため、受付時に検査した質問で回答します。")
+            question = question or DOCUMENT_ONLY_QUESTION
 
             # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
             guild_id = message.guild.id if message.guild is not None else None

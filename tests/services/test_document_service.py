@@ -288,7 +288,10 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
 
     async def process_response(self, text: str, sources=None) -> None:
         self.gemini.generate.return_value = (text, None, sources or [])
-        await self.service._process_task({"task_id": "fictional-task", "author_id": "test-user"})
+        # 受付時は on_message が検査済みの本文を question として保存する（実際の流れと揃える）。
+        await self.service._process_task(
+            {"task_id": "fictional-task", "author_id": "test-user", "question": self.message.content},
+        )
 
     def assert_clean_response(self, expected: str, *, sources: bool = False) -> None:
         self.sent.assert_awaited_once()
@@ -303,6 +306,23 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
         self.message.reply.assert_not_awaited()
+
+    async def test_edited_message_body_is_not_sent_to_generation(self) -> None:
+        # 受付後に編集された本文は検査されていないので、受付時の質問で回答する（#203）。
+        for stored, expected in (("文書を要約してください。", "文書を要約してください。"),
+                                 ("", document_service.DOCUMENT_ONLY_QUESTION)):
+            with self.subTest(stored=stored):
+                self.gemini.generate.reset_mock()
+                self.memory.route_category.reset_mock()
+                self.message.content = "受付後に編集した架空の本文"
+                self.gemini.generate.return_value = ("要約です。", None, [])
+                await self.service._process_task(
+                    {"task_id": "fictional-task", "author_id": "test-user", "question": stored},
+                )
+                prompt = self.gemini.generate.await_args.args[0]
+                self.assertIn(expected, prompt)
+                self.assertNotIn("受付後に編集した架空の本文", prompt)
+                self.memory.route_category.assert_awaited_once_with(expected)
 
     async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
         await self.process_response("要約です。[V:1, A:2]")
