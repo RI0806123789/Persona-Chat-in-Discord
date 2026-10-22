@@ -276,16 +276,29 @@ async def _send_chunks(
         await channel.send(chunk, suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
 
 
+# AI の返信で通知を許すのは、返信先（質問した本人）への通知だけ。
+# 本文は AI が生成・引用したものなので、@everyone・@here・ロール・第三者の
+# メンションが含まれていてもボットの権限で通知させない（モデレーションは
+# 通知先の認可を保証しないため、送信側で止める）。
+REPLY_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=False, users=False, roles=False, replied_user=True,
+)
+
+
 async def send_long_reply(
     message: discord.Message,
     text: str,
     *,
     suppress_embeds: bool = False,
+    allowed_mentions: discord.AllowedMentions = REPLY_ALLOWED_MENTIONS,
 ) -> discord.Message | None:
     """2000 文字を超える応答を分割して送信する。
 
     最初のチャンクは元メッセージへの reply、残りは通常の send で送信する。
     suppress_embeds が True の場合、リンクの埋め込みプレビューを抑制する。
+    allowed_mentions は1通目と2通目以降の全チャンクへ同じものを渡す。既定の
+    `REPLY_ALLOWED_MENTIONS` は返信先本人への通知だけを残す（通常会話・文書・
+    配信コメントの返信がすべてここを通るため、呼び出し側で指定しなくてよい）。
 
     戻り値は**1通目**（元メッセージへの reply）。フィードバックのリアクション
     付与など、送信したメッセージを後から参照する用途に使う。2通目以降は
@@ -297,8 +310,10 @@ async def send_long_reply(
     chunks = [chunk for chunk in split_message(text) if chunk.strip()]
     if not chunks:
         return None
-    sent = await message.reply(chunks[0], suppress_embeds=suppress_embeds)
-    await _send_chunks(message.channel, chunks[1:], suppress_embeds=suppress_embeds)
+    sent = await message.reply(chunks[0], suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions)
+    await _send_chunks(
+        message.channel, chunks[1:], suppress_embeds=suppress_embeds, allowed_mentions=allowed_mentions,
+    )
     return sent
 
 

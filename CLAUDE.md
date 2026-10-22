@@ -491,7 +491,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 
 ### Discordの共通処理
 
-自発会話・記念日・リマインダー・公開要約の長文投稿は `discord_helpers.send_long_message` に送信オプションごと渡す。`send_long_reply` の「元発言へ最初の返信を返す」契約は別に維持する。管理者の判定は `discord_helpers.is_administrator` を使う。自発会話・記念日・リマインダーが投稿前に行うチャンネル単位の送信権限の判定（閲覧と、スレッドなら「スレッドで送信」・それ以外は「メッセージを送信」）は `discord_helpers.can_bot_send_messages` に集約している。各サービスで `permissions_for` を書き直さないこと。
+自発会話・記念日・リマインダー・公開要約の長文投稿は `discord_helpers.send_long_message` に送信オプションごと渡す。`send_long_reply` の「元発言へ最初の返信を返す」契約は別に維持する。`send_long_reply` は既定で `REPLY_ALLOWED_MENTIONS`（返信先本人への通知だけを許可し、`@everyone`・`@here`・ロール・本文中のユーザーは通知しない）を1通目と2通目以降の全チャンクへ渡す（#201）。通常会話・文書・配信コメントの返信がすべてここを通るので、呼び出し側で `allowed_mentions` を省略しても安全側になる。本文は AI が生成・引用したもので、モデレーションは通知先の認可を保証しないため、この既定を外さないこと。管理者の判定は `discord_helpers.is_administrator` を使う。自発会話・記念日・リマインダーが投稿前に行うチャンネル単位の送信権限の判定（閲覧と、スレッドなら「スレッドで送信」・それ以外は「メッセージを送信」）は `discord_helpers.can_bot_send_messages` に集約している。各サービスで `permissions_for` を書き直さないこと。
 
 利用トークンとランキングの画像送信は `view_parts.send_graph_ephemeral` に集約する。defer後は `followup=True` を渡し、本人限定で送る。画像バッファの所有権も渡し、成功・失敗・キャンセルのいずれでも `discord.File.close()` の後にバッファを閉じる。Bot応答・自発会話・自律配信・リマインダーの出力マスクは `NgWordFilter.mask_with_log` を使い、文脈別のログと後続のモデレーションを維持する。
 

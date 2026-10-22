@@ -19,7 +19,8 @@ from persona_bot.core import commands
 from persona_bot.services import content_moderator
 from persona_bot.utils import discord_helpers
 from persona_bot.utils.discord_helpers import (
-    build_history_text, is_administrator, send_long_message, send_long_reply, split_message,
+    REPLY_ALLOWED_MENTIONS, build_history_text, is_administrator, send_long_message, send_long_reply,
+    split_message,
 )
 from persona_bot.views import functions_view
 from persona_bot.views import help_view
@@ -70,7 +71,9 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                 channel.send.assert_not_awaited()
                 if text.strip():
                     self.assertIs(result, first)
-                    message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=False)
+                    message.reply.assert_awaited_once_with(
+                        "あ" * 2000, suppress_embeds=False, allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                    )
                 else:
                     self.assertIsNone(result)
                     message.reply.assert_not_awaited()
@@ -91,7 +94,9 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                     result = await send_long_reply(message, "架空の本文", suppress_embeds=True)
                     if valid:
                         self.assertIs(result, first)
-                        message.reply.assert_awaited_once_with(valid[0], suppress_embeds=True)
+                        message.reply.assert_awaited_once_with(
+                            valid[0], suppress_embeds=True, allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                        )
                     else:
                         self.assertIsNone(result)
                         message.reply.assert_not_awaited()
@@ -116,8 +121,18 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(reply=AsyncMock(return_value=first), channel=SimpleNamespace(send=AsyncMock()))
         result = await send_long_reply(message, "あ" * 4001, suppress_embeds=True)
         self.assertIs(result, first)
-        message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=True)
+        message.reply.assert_awaited_once_with("あ" * 2000, suppress_embeds=True, allowed_mentions=REPLY_ALLOWED_MENTIONS)
         self.assertEqual([len(call.args[0]) for call in message.channel.send.call_args_list], [2000, 1])
+
+    async def test_reply_restricts_mentions_in_every_chunk_except_replied_user(self) -> None:
+        # AI の本文に全体・ロール・第三者のメンションが混ざっても、通知は返信先本人だけに限る。
+        text = "@everyone @here <@&22> <@33> " + "あ" * 4001
+        message = SimpleNamespace(reply=AsyncMock(return_value=object()), channel=SimpleNamespace(send=AsyncMock()))
+        await send_long_reply(message, text)
+        calls = [message.reply.await_args, *message.channel.send.await_args_list]
+        self.assertGreater(len(calls), 1)
+        for call in calls:
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), {"parse": [], "replied_user": True})
 
     async def test_topic_and_anniversary_restrict_mentions_in_every_chunk(self) -> None:
         text = "あ" * 4001
