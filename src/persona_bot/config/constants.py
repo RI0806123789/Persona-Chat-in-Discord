@@ -131,6 +131,12 @@ SUMMARY_TIMEZONE = "Asia/Tokyo"
 MAX_DOCUMENT_SIZE_BYTES = 5 * 1024 * 1024
 # 画像も取得前と取得後に容量を確認し、大きな添付の取得・デコードを見送る。
 MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+# 圧縮率の高い画像でも、変換前の寸法・画素数と依頼全体のRGB画素データ量を制限する。
+MAX_IMAGE_PIXELS = 4_000_000
+MAX_IMAGE_DIMENSION = 4096
+MAX_IMAGE_ATTACHMENTS = 4
+IMAGE_RGB_BYTES_PER_PIXEL = 3
+MAX_IMAGE_TOTAL_RGB_BYTES = 24 * 1024 * 1024
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".csv", ".md"}
 # マルチモーダル入力として受け付ける画像の拡張子（Content-Type が空の添付の判定用）。
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}

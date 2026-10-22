@@ -335,6 +335,7 @@ class MessageHandler:
                 # サブエージェントを求められたが不要と判断した場合は、人格役がその旨を一言添えて直接答える。
                 response_text = await self.handle_chat_message(
                     message, question, memory_category, response_settings=response_settings,
+                    image_objects=image_objects,
                     delegation_section=build_agent_declined_section() if agent_plan is not None else "",
                 )
             if response_text:
@@ -403,6 +404,7 @@ class MessageHandler:
         response_settings: ResponseSettings | None = None,
         delegation_section: str = "",
         delegated_sources: list[dict[str, str]] | None = None,
+        image_objects: list | None = None,
     ) -> str | None:
         """人格役として返信し、送った本文を返す（読み上げに使う）。
 
@@ -410,6 +412,7 @@ class MessageHandler:
             delegation_section: サブエージェントの報告・委任しなかった旨の差し込み（#170）。
             delegated_sources: サブエージェントが検索で参照した出典。渡したときは人格役は検索せず
                 （報告の言い直しなので）、この出典を返信に添える。
+            image_objects: 読込済み画像の借用。配信終了後の通常経路でも再読込せず、呼出元が閉じる。
         """
         guild_id = message.guild.id if message.guild is not None else None
         guild_settings = self.state.get_guild(guild_id)
@@ -418,7 +421,9 @@ class MessageHandler:
             response_settings = guild_settings.snapshot_response()
         async with message.channel.typing():
             user_id = str(message.author.id)
-            image_objects = await load_image_attachments(message.attachments)
+            owns_images = image_objects is None
+            if owns_images:
+                image_objects = await load_image_attachments(message.attachments)
             try:
                 if not question:
                     if not image_objects:
@@ -510,7 +515,8 @@ class MessageHandler:
                     spawn(self.memory.flush_if_needed(), label="記憶圧縮（チャット便乗）")
                 return response_text
             finally:
-                close_image_attachments(image_objects)
+                if owns_images:
+                    close_image_attachments(image_objects)
 
     def _track_reply_for_feedback(
         self, sent: discord.Message, user_id: str, response_settings: ResponseSettings, generated_model: str,

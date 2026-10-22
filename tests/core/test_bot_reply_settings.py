@@ -224,6 +224,66 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(ValueError):
                         image.getpixel((0, 0))
 
+    async def test_borrowed_images_are_not_reloaded_or_closed_by_chat(self) -> None:
+        """借用画像は成功・失敗・中断でも再読込せず、所有者に解放を任せる。"""
+        from PIL import Image
+        from persona_bot.core import message_handler
+
+        for case in ("成功", "生成失敗", "履歴失敗", "中断"):
+            with self.subTest(終了=case):
+                images = [Image.new("RGB", (2, 2))]
+                self.addCleanup(images[0].close)
+
+                async def generate(*args, **kwargs):
+                    self.assertIs(args[2], images)
+                    if case == "生成失敗":
+                        raise RuntimeError("架空の生成失敗")
+                    if case == "中断":
+                        raise asyncio.CancelledError
+                    return "架空の返信", None, [], args[1]
+
+                with patch.object(message_handler, "load_image_attachments", AsyncMock()) as loader, patch.object(
+                    message_handler, "fetch_channel_history_text", AsyncMock(
+                        side_effect=RuntimeError("架空の履歴失敗") if case == "履歴失敗" else None,
+                        return_value="",
+                    ),
+                ), patch.object(self.namespace["gemini"], "generate_with_metadata", AsyncMock(side_effect=generate)):
+                    call = self.handler.handle_chat_message(self.message, "架空の質問", image_objects=images)
+                    if case == "成功":
+                        await call
+                    else:
+                        with self.assertRaises(asyncio.CancelledError if case == "中断" else RuntimeError):
+                            await call
+                loader.assert_not_awaited()
+                images[0].getpixel((0, 0))
+                images[0].close()
+
+    async def test_ended_comment_stream_reuses_and_releases_preloaded_images(self) -> None:
+        """配信の画像確認中に終了しても通常応答で二重に展開せず、外側で一度だけ閉じる。"""
+        from PIL import Image
+        from persona_bot.core import message_handler
+
+        image = Image.new("RGB", (2, 2))
+        self.addCleanup(image.close)
+        images = [image]
+        self.message.content = ""
+        self.message.attachments = [SimpleNamespace(filename="fictional.png", content_type="image/png", size=10)]
+        self.namespace["autonomous"].is_comment_channel.side_effect = [True, False, False]
+
+        async def generate(*args, **kwargs):
+            self.assertIs(args[2], images)
+            image.getpixel((0, 0))
+            return "架空の返信", None, [], args[1]
+
+        with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=images)) as loader, patch.object(
+            self.namespace["gemini"], "generate_with_metadata", AsyncMock(side_effect=generate),
+        ), patch.object(image, "close", wraps=image.close) as close:
+            await self.handler.on_message(self.message)
+            loader.assert_awaited_once()
+            close.assert_called_once()
+        with self.assertRaises(ValueError):
+            image.getpixel((0, 0))
+
     async def test_settings_are_captured_before_typing_await(self) -> None:
         self.stage = "typing"
         await self.check_old_settings_are_used()
