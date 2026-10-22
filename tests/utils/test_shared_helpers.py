@@ -19,8 +19,8 @@ from persona_bot.core import commands
 from persona_bot.services import content_moderator
 from persona_bot.utils import discord_helpers
 from persona_bot.utils.discord_helpers import (
-    REPLY_ALLOWED_MENTIONS, build_history_text, is_administrator, send_long_message, send_long_reply,
-    split_message,
+    REPLY_ALLOWED_MENTIONS, build_history_text, fetch_channel_history_text, is_administrator, send_long_message,
+    send_long_reply, split_message,
 )
 from persona_bot.views import functions_view
 from persona_bot.views import help_view
@@ -58,6 +58,24 @@ def make_member(*, admin: bool):
     member = Mock(spec=discord.Member, id=11)
     member.guild_permissions = SimpleNamespace(administrator=admin)
     return member
+
+
+class HistoryExclusionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_excluded_message_is_left_out_of_history(self) -> None:
+        # 文書の元の投稿は、受付後に編集された本文がプロンプトへ入らないよう履歴から除く（#203）。
+        messages = [
+            SimpleNamespace(id=message_id, content=content, author=None, attachments=[])
+            for message_id, content in ((3, "後の発言"), (2, "受付後に編集した架空の本文"), (1, "前の発言"))
+        ]
+
+        async def history(**kwargs):
+            for message in messages:
+                yield message
+
+        channel = SimpleNamespace(id=10, history=Mock(side_effect=history))
+        text = await fetch_channel_history_text(channel, None, SimpleNamespace(id=99), 50, exclude_message_id=2)
+        self.assertEqual(text, "ユーザーの質問: 前の発言\nユーザーの質問: 後の発言")
+        self.assertIn("受付後に編集した架空の本文", await fetch_channel_history_text(channel, None, SimpleNamespace(id=99), 50))
 
 
 class LongMessageTests(unittest.IsolatedAsyncioTestCase):

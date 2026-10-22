@@ -221,11 +221,14 @@ class DocumentService:
             memory_context, document_context = await self._memory.build_contexts(
                 memory_category, author_id, limit=max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments)),
             )
+            # 元の投稿は履歴から除く。受付後に編集された本文が履歴経由でプロンプトへ入ると、
+            # 保存済みの質問だけを使っても入力検査を迂回できてしまう（#203）。
             history_text = await fetch_channel_history_text(
                 message.channel,
                 guild_settings.channel_reset_points.get(message.channel.id),
                 self._client.user,
                 HISTORY_LIMIT,
+                exclude_message_id=message.id,
             )
             full_prompt = build_full_prompt(
                 prompt,

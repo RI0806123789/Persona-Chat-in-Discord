@@ -256,6 +256,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
             moderator=self.moderator,
         )
         self.message = SimpleNamespace(
+            id=30,
             content="文書を要約してください。",
             guild=SimpleNamespace(id=10),
             channel=SimpleNamespace(id=20),
@@ -323,6 +324,9 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(expected, prompt)
                 self.assertNotIn("受付後に編集した架空の本文", prompt)
                 self.memory.route_category.assert_awaited_once_with(expected)
+                # 元の投稿は履歴からも除く（編集後の本文が履歴経由で入らないように）。
+                history = document_service.fetch_channel_history_text.await_args
+                self.assertEqual(history.kwargs["exclude_message_id"], self.message.id)
 
     async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
         await self.process_response("要約です。[V:1, A:2]")

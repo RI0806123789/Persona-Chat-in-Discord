@@ -102,8 +102,13 @@ async def fetch_channel_history_text(
     reset_message_id: int | None,
     bot_user: Any,
     limit: int,
+    *,
+    exclude_message_id: int | None = None,
 ) -> str:
     """チャンネルの直近履歴を、プロンプトへ差し込める1つのテキストに整形する。
+
+    exclude_message_id を渡すと、その発言を履歴から除く（文書ワーカーが、受付後に
+    編集されうる元の投稿の本文をプロンプトへ入れないために使う。#203）。
 
     履歴の取得に失敗した場合は例外を外へ出さず、空文字を返して会話を続行する
     （フェイルオープン）。この関数は on_message の主経路から呼ばれるため、
@@ -120,6 +125,8 @@ async def fetch_channel_history_text(
     channel_id = getattr(channel, "id", "不明")
     try:
         async for history_message in channel.history(limit=limit, after=after, oldest_first=False):
+            if exclude_message_id is not None and history_message.id == exclude_message_id:
+                continue
             history_messages.append(history_message)
     # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること
     # （順序を逆にすると権限エラーが一時障害として扱われ、原因がログから消える）。

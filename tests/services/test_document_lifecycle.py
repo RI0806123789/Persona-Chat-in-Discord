@@ -50,7 +50,7 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.gemini, SimpleNamespace(log_snapshot=Mock()), self.db,
         )
         self.message = SimpleNamespace(
-            content="架空の質問", guild=SimpleNamespace(id=1), channel=SimpleNamespace(id=10),
+            id=30, content="架空の質問", guild=SimpleNamespace(id=1), channel=SimpleNamespace(id=10),
             attachments=[SimpleNamespace(filename=f"fictional-{i}.txt") for i in range(4)], reply=AsyncMock(),
         )
         self.service._fetch_message_from_task = AsyncMock(return_value=self.message)
