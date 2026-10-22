@@ -25,9 +25,27 @@ def profile():
 
 
 class ConnectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_deploy_keeps_api_exclusion_after_task_finishes(self):
+        """終了未確認のデプロイはタスク完了後もサービス操作・再デプロイを拒否する。"""
+        selected = profile()
+        manager = DeployManager()
+        manager.current = new_record(1, selected)
+        manager.current.status = "unknown"
+        session = SimpleNamespace(require_profile=lambda: selected, connected_at=100,
+                                  require_command_completion=lambda: None, run=AsyncMock())
+        target = {"profile_id": selected.id, "connected_at": 100}
+        with patch.object(app, "session", session), patch.object(app, "deploys", manager), patch.object(
+            app, "_connection_change_lock", asyncio.Lock(),
+        ):
+            for path in ("/api/service/start", "/api/service/stop", "/api/service/restart", "/api/deploy"):
+                with self.subTest(path=path):
+                    status, _ = await request(path, method="POST", body=target)
+                    self.assertEqual(status, 409)
+        session.run.assert_not_awaited()
+
     async def test_running_deploy_rejects_connect_and_disconnect_before_side_effects(self):
         session = SimpleNamespace(connect=AsyncMock(), disconnect=AsyncMock())
-        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=True)), patch.object(
+        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(active=True)), patch.object(
             app, "load_profiles", side_effect=AssertionError("接続設定を読む前に拒否する"),
         ):
             for path, body in (("/api/connect", {"profile_id": "test"}), ("/api/disconnect", None)):
@@ -39,13 +57,13 @@ class ConnectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_connect_waits_for_deploy_start_lock_then_rechecks_running(self):
         with patch.object(app, "_connection_change_lock", asyncio.Lock()), patch.object(
-            app, "deploys", SimpleNamespace(running=False),
+            app, "deploys", SimpleNamespace(active=False),
         ):
             async with app._connection_change_lock:
                 task = asyncio.create_task(app.connect(app.ConnectRequest(profile_id="test")))
                 await asyncio.sleep(0)
                 self.assertFalse(task.done())
-                app.deploys.running = True
+                app.deploys.active = True
             with self.assertRaises(app.HTTPException) as error:
                 await task
             self.assertEqual(error.exception.status_code, 409)
@@ -126,10 +144,11 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.session = SimpleNamespace(
             require_profile=Mock(return_value=self.selected), connected_at=100,
+            require_command_completion=lambda: None,
             run=AsyncMock(side_effect=run), disconnect=AsyncMock(side_effect=lambda: self.events.append("disconnect")),
             snapshot=Mock(return_value={}),
         )
-        self.manager = SimpleNamespace(running=False, current=None)
+        self.manager = SimpleNamespace(running=False, active=False, current=None)
 
         def start(*args, **kwargs):
             self.events.append("deploy-start")

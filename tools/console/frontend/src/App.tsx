@@ -416,7 +416,12 @@ function Console() {
       const target = { profile_id: profile.id, connected_at: connection.connected_at };
       const isCurrent = requestScope.current.current();
       if (deployRunning) {
-        notify({ tone: "info", title: "デプロイを実行中です", detail: "終わってから操作してください。" });
+        const unknown = deploy?.status === "unknown";
+        notify({
+          tone: unknown ? "critical" : "info",
+          title: unknown ? "デプロイの状態不明のためサービス操作を停止しています" : "デプロイを実行中です",
+          detail: unknown ? "概要・ログ・DB閲覧と再接続は利用できます。サービス操作のページで対処手順を確認してください。" : "終わってから操作してください。",
+        });
         return;
       }
       const isProduction = profile.environment === "production";
@@ -444,7 +449,7 @@ function Console() {
       });
       setConfirmOpen(true);
     },
-    [connection, busyAction, deployRunning, notify, runAction],
+    [connection, busyAction, deployRunning, deploy?.status, notify, runAction],
   );
 
   const manualRefresh = useCallback(() => {
@@ -645,6 +650,7 @@ function Console() {
                   onRequestAction={requestAction}
                   busyAction={busyAction}
                   deployRunning={deployRunning}
+                  deployUnknown={deploy?.status === "unknown"}
                   onConnect={() => void handleConnect()}
                   selectedProfile={selectedProfile}
                   now={now}

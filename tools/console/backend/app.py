@@ -32,7 +32,7 @@ from deploy import DeployManager
 from local_repo import local_schema_version
 from managed_server import MANAGED_ENV, run_server
 from profiles import Profile, ProfileError, load_profiles
-from ssh_session import NotConnectedError, SshError, SshSession
+from ssh_session import CommandStateUnknownError, NotConnectedError, SshError, SshSession
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -89,6 +89,11 @@ async def handle_ssh_error(_request: Request, error: SshError) -> JSONResponse:
     return JSONResponse({"detail": str(error)}, status_code=502)
 
 
+@app.exception_handler(CommandStateUnknownError)
+async def handle_command_state_unknown(_request: Request, error: CommandStateUnknownError) -> JSONResponse:
+    return JSONResponse({"detail": str(error)}, status_code=409)
+
+
 @app.exception_handler(ProfileError)
 async def handle_profile_error(_request: Request, error: ProfileError) -> JSONResponse:
     return JSONResponse({"detail": f"接続先の設定エラー: {error}"}, status_code=500)
@@ -121,7 +126,7 @@ async def connect(body: ConnectRequest) -> dict:
 
 
 def _reject_connection_change_during_deploy() -> None:
-    if deploys.running:
+    if deploys.active:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。接続先の変更・切断は完了後に行ってください。")
 
 
@@ -346,6 +351,7 @@ async def control_service(action: str, body: ServiceTarget | None = None) -> dic
 
 
 async def _control_service(action: str, body: ServiceTarget | None) -> dict:
+    session.require_command_completion()
     if deploys.running:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()

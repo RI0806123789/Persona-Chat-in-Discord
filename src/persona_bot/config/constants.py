@@ -108,6 +108,16 @@ MODERATION_TIMEOUT_SECONDS = 10.0
 # UI 側の DISCORD_SELECT_LABEL_MAX_LENGTH と数値は同じだが意味がまったく違うので別名にする。
 MODERATION_NG_WORD_SAMPLE_LIMIT = 100
 
+# 通常会話は入力AI判定・画像読込より前に確保し、満杯なら待たずに見送る。
+CHAT_RATE_WINDOW_SECONDS = 60.0
+CHAT_MAX_REQUESTS_PER_USER = 5
+CHAT_MAX_CONCURRENT_PER_GUILD = 2
+CHAT_MAX_CONCURRENT_GLOBAL = 4
+# 期間内の受付・見送り案内の記録をそれぞれ持つ人数。生きた記録は追い出さない。
+CHAT_RATE_MAX_USERS = 4096
+CHAT_RATE_LIMIT_NOTICE = "短時間に多くの発言を受け付けたため、少し待ってからもう一度話しかけてください。"
+CHAT_BUSY_NOTICE = "ただいま混み合っています。少し待ってからもう一度話しかけてください。"
+
 # 会話要約 (/functions → 📋 会話要約) 用
 # 対象メッセージがこの件数を超えたら要約せず自動停止する（トークン超過・
 # API 取得時間・レート制限の暴発を防ぐ安全弁）。
@@ -123,6 +133,20 @@ SUMMARY_TIMEZONE = "Asia/Tokyo"
 MAX_DOCUMENT_SIZE_BYTES = 5 * 1024 * 1024
 # 画像も取得前と取得後に容量を確認し、大きな添付の取得・デコードを見送る。
 MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+# 1GBのVPS向け。縮小デコードできない形式は1200万画素（RGBA換算48MB）まで。
+# 1080×8000のPNGを許容しつつ、通常会話4件でも元画像だけで約192MBに抑える。
+MAX_IMAGE_PIXELS = 12_000_000
+# JPEGはdraftで縮小デコードし、8064×6048の写真を含む5000万画素まで許容する。
+# draftは2/4/8分の1の縮小なので、2048pxへ近づけて元のRGB領域の確保を抑える。
+# デコーダー固有の一時領域もあるため、JPEGでも元画像の上限自体は設ける。
+MAX_IMAGE_JPEG_PIXELS = 50_000_000
+# 細長すぎる入力もヘッダーだけで拒否。保持画像は長辺2048px以下へ縮小する。
+MAX_IMAGE_SOURCE_DIMENSION = 16384
+MAX_IMAGE_DIMENSION = 2048
+MAX_IMAGE_ATTACHMENTS = 4
+IMAGE_RGB_BYTES_PER_PIXEL = 3
+# 縮小後のRGB画素データだけを合計する。Pillow内部や一時領域を含む総メモリではない。
+MAX_IMAGE_TOTAL_RGB_BYTES = 24 * 1024 * 1024
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".csv", ".md"}
 # マルチモーダル入力として受け付ける画像の拡張子（Content-Type が空の添付の判定用）。
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}

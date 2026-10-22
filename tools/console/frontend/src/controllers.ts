@@ -24,9 +24,10 @@ export function useConnectionScope() {
 const DEPLOY_DONE: Record<Exclude<DeployStatus, "running">, { tone: "good" | "critical" | "info"; title: string }> = {
   succeeded: { tone: "good", title: "デプロイしました" },
   up_to_date: { tone: "info", title: "最新でした（何も変えていません）" },
-  failed: { tone: "critical", title: "デプロイを止めました（何も変えていません）" },
+  failed: { tone: "critical", title: "デプロイを止めました" },
   rolled_back: { tone: "critical", title: "デプロイに失敗したため、前の版へ戻しました" },
   rollback_failed: { tone: "critical", title: "巻き戻しにも失敗しました。手動の対応が必要です" },
+  unknown: { tone: "critical", title: "遠隔処理の終了を確認できず、状態不明です" },
 };
 const ACTION_LABELS: Record<ServiceAction, string> = { start: "起動", stop: "停止", restart: "再起動" };
 

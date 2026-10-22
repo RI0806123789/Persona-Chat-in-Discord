@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 
 import remote_commands as rc
 from profiles import Profile
-from ssh_session import CommandResult, SshError, SshSession
+from ssh_session import CommandResult, CommandStateUnknownError, SshError, SshSession
 
 # 1つのステップに残す出力の長さ（長いと画面と通信が重くなる。末尾を残す）
 OUTPUT_MAX_CHARS = 8000
@@ -88,7 +88,7 @@ class DeployRecord:
     branch: str
     started_at: float
     steps: list[Step]
-    # running / succeeded / up_to_date / failed / rolled_back / rollback_failed
+    # running / succeeded / up_to_date / failed / rolled_back / rollback_failed / unknown
     status: str = "running"
     finished_at: float | None = None
     before_commit: str | None = None
@@ -151,12 +151,41 @@ class DeployRunner:
     async def run(self) -> DeployRecord:
         try:
             await self._run_all()
+        except CommandStateUnknownError as error:
+            self._finish_unknown(str(error))
         except asyncio.CancelledError:
-            self._finish("failed", "デプロイが中断されました（バックエンドが止まった可能性があります）。サーバーの状態を確かめてください。")
+            # SSH実行の終了を待った後で巻き戻す。追加キャンセルでも復旧を先に打ち切らない。
+            recovery = asyncio.create_task(self._recover_canceled())
+            while True:
+                try:
+                    await asyncio.shield(recovery)
+                    break
+                except asyncio.CancelledError:
+                    if recovery.cancelled():
+                        raise
             raise
         except Exception as error:  # noqa: BLE001 — 想定外の失敗でも、画面に「動いたまま」と見せないため記録して終える
             self._finish("failed", f"想定外のエラーでデプロイを止めました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。")
         return self.record
+
+    def _finish_unknown(self, detail: str) -> None:
+        self._skip_rest("遠隔処理の終了を確認できないため、実行しません。")
+        self._finish("unknown", "遠隔処理の終了を確認できず、状態不明です。デプロイ・巻き戻し・サービス操作を停止します。読み取りと再接続は利用できます。" + detail)
+
+    async def _recover_canceled(self) -> None:
+        for step in self.record.steps:
+            if step.status == "running":
+                step.status = "failed"
+                step.message = "中断されました。遠隔コマンドの終了を待ってから復旧します。"
+        self._skip_rest("デプロイが中断されたため、実行しません。")
+        try:
+            self.session.require_command_completion()
+            if self._code_changed:
+                await self._rollback()
+            else:
+                self._finish("failed", "デプロイが中断されました。実行済みの遠隔コマンドは終了しています。")
+        except CommandStateUnknownError as error:
+            self._finish_unknown(str(error))
 
     async def _run_all(self) -> None:
         if not await self._step("precheck", self._precheck):
@@ -208,6 +237,8 @@ class DeployRunner:
         except (StepFailed, SshError, ValueError) as error:
             step.status = "failed"
             step.message = str(error)
+            if isinstance(error, CommandStateUnknownError):
+                raise
         else:
             if step.status == "running":
                 step.status = "succeeded"
@@ -221,7 +252,13 @@ class DeployRunner:
         """コマンドを実行し、ステップにコマンドと出力を残す（quiet なら残さない。状態の取り直しに使う）。"""
         if not quiet:
             step.commands.append(command)
-        result = await self.session.run(command, label=f"デプロイ: {label}", timeout=timeout)
+        def waiting() -> None:
+            step.message = "応答期限または中断の要求を受けました。遠隔処理の状態は不明のため、終了確認を待っています。"
+            self.record.message = step.message
+
+        result = await self.session.run(
+            command, label=f"デプロイ: {label}", timeout=timeout, wait_for_exit=True, on_waiting=waiting,
+        )
         if not quiet:
             parts = [f"$ {command}"]
             if result.stdout.strip():
@@ -304,6 +341,8 @@ class DeployRunner:
         self._code_changed = True
         try:
             result = await self._run(step, rc.deploy_merge_command(bot_dir, branch), label="git pull（早送り）", timeout=FETCH_TIMEOUT)
+        except CommandStateUnknownError:
+            raise  # 未終了の更新とHEAD確認・巻き戻しを並行させない。
         except SshError:
             await self._check_pull_result(step, before)
             raise
@@ -493,7 +532,8 @@ class DeployRunner:
 
     async def _rollback(self) -> None:
         for key, title, description in ROLLBACK_STEPS:
-            self.record.steps.append(Step(key, title, description, phase="rollback"))
+            if not any(step.key == key for step in self.record.steps):
+                self.record.steps.append(Step(key, title, description, phase="rollback"))
 
         if not await self._step("rollback_code", self._rollback_code):
             self._skip_rest("コードを戻せなかったため、実行しません。")
@@ -568,12 +608,18 @@ class DeployManager:
         self._ids = itertools.count(1)
 
     @property
-    def running(self) -> bool:
+    def active(self) -> bool:
+        """遠隔処理・巻き戻しを待っている間は接続を変更させない。"""
         return self._task is not None and not self._task.done()
+
+    @property
+    def running(self) -> bool:
+        return self.active or (self.current is not None and self.current.status == "unknown")
 
     def start(self, session: SshSession, profile: Profile, *, on_finished: Callable[[], None] | None = None, **runner_options) -> DeployRecord:
         if self.running:
             raise RuntimeError("デプロイを実行中です。終わるまで待ってください。")
+        session.require_command_completion()
         record = new_record(next(self._ids), profile)
         self.current = record
         runner = DeployRunner(session, profile, record, **runner_options)
