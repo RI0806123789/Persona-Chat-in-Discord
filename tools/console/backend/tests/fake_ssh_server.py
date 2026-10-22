@@ -424,9 +424,9 @@ def insights_output(bot: FakeBot) -> str:
 # 本当に実行する（件数と中身が食い違わず、スクリプトそのものも SSH 越しに確かめられるように）。
 # 人・サーバー・チャンネル・メッセージの ID と名前、会話の文はすべて架空のもの。
 
-# ボットの bot.db（スキーマ バージョン11）と同じ形。src/persona_bot/core/database.py の初版の定義に
+# ボットの bot.db（スキーマ バージョン12）と同じ形。src/persona_bot/core/database.py の初版の定義に
 # 移行をすべて適用した後の形を書き写したもの（ボットのコードは import しない）。
-FAKE_DB_SCHEMA_VERSION = 11
+FAKE_DB_SCHEMA_VERSION = 12
 FAKE_DB_TABLES = (
     "CREATE TABLE affinity (user_id TEXT PRIMARY KEY, affinity INTEGER NOT NULL DEFAULT 50, "
     "valence INTEGER NOT NULL DEFAULT 50, arousal INTEGER NOT NULL DEFAULT 50, last_interaction REAL NOT NULL DEFAULT 0)",
@@ -456,6 +456,7 @@ FAKE_DB_TABLES = (
     "CREATE TABLE feedback (message_id INTEGER NOT NULL, user_id TEXT NOT NULL, guild_id INTEGER NOT NULL DEFAULT 0, "
     "channel_id INTEGER NOT NULL DEFAULT 0, target_user_id TEXT NOT NULL DEFAULT '', model_name TEXT NOT NULL DEFAULT '', "
     "prompt_file TEXT NOT NULL DEFAULT '', rating INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (message_id, user_id))",
+    "CREATE INDEX idx_feedback_created_message ON feedback (created_at DESC, message_id DESC)",
 )
 # 架空の利用者（ID, 表示名）。最後の人は会話統計の収集を止めている
 FAKE_USERS = [

@@ -542,5 +542,85 @@ class ReminderUserIndexTests(unittest.TestCase):
         self.assertEqual([row["reminder_id"] for row in self.db.reminder_list_pending("test-user")], [reminder_id])
 
 
+class FeedbackPruneIndexTests(unittest.TestCase):
+    """評価の保持結果を変えず、移行で一時ソートを省けることを確認する（#188）。"""
+
+    INDEX = "idx_feedback_created_message"
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "bot.db"
+        self.db = Database(self.path)
+        self.addCleanup(lambda: self.db.close())
+        with patch.object(database, "SCHEMA_VERSION", 11):
+            self.db.initialize()
+        # 日時とIDの大小を逆にし、同じ日時・同じ返信への複数票も用意する。
+        for message_id, user_id, day in ((40, "user-a", 1), (10, "user-a", 3),
+                                        (20, "user-b", 2), (20, "user-a", 2), (30, "user-a", 2)):
+            self.db.feedback_record(
+                message_id=message_id, user_id=user_id, guild_id=1, channel_id=10,
+                target_user_id="target-user", model_name="架空のモデル", prompt_file="架空のペルソナ",
+                rating=1, created_at=f"2026-01-{day:02d}T00:00:00+00:00",
+            )
+
+    def rows(self) -> list[tuple]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            return connection.execute("SELECT rowid, * FROM feedback ORDER BY rowid").fetchall()
+
+    def prune_plan(self, max_keep: int) -> str:
+        # 実際の削除SQLを捕捉し、サブクエリを含めた実行計画を調べる。
+        statements: list[str] = []
+        self.db._conn.set_trace_callback(statements.append)
+        try:
+            self.db.feedback_prune(max_keep)
+        finally:
+            self.db._conn.set_trace_callback(None)
+        targets = [statement for statement in statements if statement.startswith("DELETE FROM feedback")]
+        self.assertEqual(len(targets), 1)
+        with closing(sqlite3.connect(self.path)) as connection:
+            return " / ".join(row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {targets[0]}"))
+
+    def migrate(self) -> None:
+        self.db.close()
+        self.db = Database(self.path)
+        self.db.initialize()
+        self.db.initialize()
+
+    def test_version_eleven_migration_removes_temporary_sort_and_preserves_feedback(self):
+        original = self.rows()
+        before = self.prune_plan(len(original))
+        self.assertIn("USE TEMP B-TREE FOR ORDER BY", before)
+        self.assertNotIn(self.INDEX, before)
+        self.migrate()
+        self.assertEqual(self.rows(), original)
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 12)
+        after = self.prune_plan(len(original))
+        self.assertIn(self.INDEX, after)
+        self.assertNotIn("TEMP B-TREE", after)
+        self.assertEqual(self.rows(), original)
+
+    def test_prune_keeps_same_newest_rows_before_and_after_migration(self):
+        original = self.rows()
+        for max_keep, expected in ((0, []), (1, [2]), (3, [2, 3, 5]), (4, [2, 3, 4, 5]), (10, [1, 2, 3, 4, 5])):
+            for version in (11, 12):
+                with self.subTest(max_keep=max_keep, version=version):
+                    # 同一の旧DBを複製し、それぞれで移行前後の削除結果を比較する。
+                    candidate_path = self.path.with_name(f"feedback-{max_keep}-{version}.db")
+                    with closing(sqlite3.connect(candidate_path)) as connection:
+                        self.db._conn.backup(connection)
+                    candidate = Database(candidate_path)
+                    self.addCleanup(candidate.close)
+                    with patch.object(database, "SCHEMA_VERSION", version):
+                        candidate.initialize()
+                    candidate.feedback_prune(max_keep)
+                    rows = [tuple(row) for row in candidate._conn.execute(
+                        "SELECT rowid, * FROM feedback ORDER BY rowid"
+                    )]
+                    self.assertEqual(rows, [row for row in original if row[0] in expected])
+                    candidate.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,6 +93,19 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.moderator.check.assert_not_awaited()
         self.channel.send.assert_not_awaited()
 
+    async def test_anniversary_checks_skip_invalid_entries_and_keep_leap_day_fallback(self):
+        birthday = {"label": "誕生日", "month": 2, "day": 29}
+        entries = [None, {}, {**birthday, "label": 123}, {**birthday, "month": True},
+                   {**birthday, "day": "28"}, {**birthday, "day": 30},
+                   {**birthday, "month": 10**100}, {**birthday, "label": "架空の私的な記念日"},
+                   {**birthday, "label": " 誕生日 "}]
+        self.service._db = SimpleNamespace(profile_load_all_for_key=Mock(return_value={"test-user": entries}))
+        with patch.object(auto_topic_service, "datetime") as clock, \
+                patch.object(self.service, "_celebrate_user", AsyncMock()) as celebrate:
+            clock.now.return_value = datetime(2026, 2, 28, tzinfo=timezone.utc)
+            await self.service.run_anniversary_checks()
+        celebrate.assert_awaited_once_with("test-user", "誕生日", "2026-02-28")
+
     async def test_dm_is_not_watched_or_updated(self):
         self.service.watch_channel(20, None)
         self.assertEqual(self.state.dm_settings.auto_topic_channels, {})

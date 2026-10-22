@@ -18,6 +18,7 @@ from persona_bot.config.constants import (
 from persona_bot.services.content_moderator import ContentModerator
 from persona_bot.core.background import run_in_thread
 from persona_bot.core.database import Database
+from persona_bot.utils.anniversaries import parse_anniversary
 from persona_bot.utils.discord_helpers import (
     can_bot_send_messages,
     channel_display_name,
@@ -305,13 +306,10 @@ class AutoTopicService:
             if not isinstance(entries, list):
                 continue
             for entry in entries:
-                if not isinstance(entry, dict):
+                anniversary = parse_anniversary(entry)
+                if anniversary is None:
                     continue
-                label = str(entry.get("label", "")).strip()
-                month = entry.get("month")
-                day = entry.get("day")
-                if not label or not isinstance(month, int) or not isinstance(day, int):
-                    continue
+                label, month, day = anniversary
                 # 私的な記念日を共有チャンネルへ出さないための許可リスト照合。
                 # 対象外は「記憶としては持つがお祝いはしない」だけの正常な状態で、
                 # 毎時の見回りで何度も通るためログは出さず静かにスキップする。

@@ -26,6 +26,7 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.database import Database
 from persona_bot.services.genai_client import generate_content
+from persona_bot.utils.anniversaries import parse_anniversary
 from persona_bot.utils.normalization import normalize_memory_category
 from persona_bot.utils.timeutil import parse_iso_datetime, utc_now_iso
 from persona_bot.services.prompting import build_memory_compaction_prompt, build_router_prompt
@@ -58,6 +59,41 @@ def default_profile_memory() -> dict[str, Any]:
 def default_projects_memory() -> dict[str, Any]:
     """projects.json の空の初期構造（ユーザー別スキーマ）。"""
     return {"_schema": _PROJECTS_SCHEMA, "users": {}}
+
+
+def merge_anniversary_profile(snapshot: dict[str, Any], compacted: dict[str, Any]) -> dict[str, Any]:
+    """入力を変更せず、圧縮結果へ既存の記念日をラベル単位で引き継ぐ。"""
+    result = copy.deepcopy(compacted)
+    incoming = compacted.get(ANNIVERSARY_PROFILE_KEY)
+    if not isinstance(incoming, list):
+        if ANNIVERSARY_PROFILE_KEY in snapshot:
+            result[ANNIVERSARY_PROFILE_KEY] = copy.deepcopy(snapshot[ANNIVERSARY_PROFILE_KEY])
+        else:
+            result.pop(ANNIVERSARY_PROFILE_KEY, None)
+        return result
+
+    # LLMだけでは削除できなくなるが、省略で失う記念日は戻せないため保持を優先する。
+    # 既存の不正な要素も消さず、読取側の共通判定で読み飛ばす。新しい不正な要素は採用しない。
+    existing = snapshot.get(ANNIVERSARY_PROFILE_KEY)
+    entries: list[Any] = []
+    positions: dict[str, int] = {}
+    for source, preserve_invalid in ((existing, True), (incoming, False)):
+        if not isinstance(source, list):
+            continue
+        for entry in source:
+            anniversary = parse_anniversary(entry)
+            if anniversary is None:
+                if preserve_invalid:
+                    entries.append(copy.deepcopy(entry))
+                continue
+            label, _, _ = anniversary
+            if label in positions:
+                entries[positions[label]] = copy.deepcopy(entry)
+            else:
+                positions[label] = len(entries)
+                entries.append(copy.deepcopy(entry))
+    result[ANNIVERSARY_PROFILE_KEY] = entries
+    return result
 
 
 class MemoryService:
@@ -370,6 +406,7 @@ class MemoryService:
             )
             return
 
+        profile_data = merge_anniversary_profile(profile_snapshot, profile_data)
         async with self.io_lock:
             await run_in_thread(self._save_compacted_memory, user_id, profile_data, projects_data, max_entry_id)
 

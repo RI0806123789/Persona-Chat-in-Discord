@@ -59,7 +59,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -192,6 +192,12 @@ _MIGRATIONS: dict[int, list[str]] = {
             content_hash TEXT NOT NULL,
             PRIMARY KEY (source_name, content_hash)
         )""",
+    ],
+    # バージョン12: 全サーバーの古い評価を削除する際の一時ソートを避ける索引。
+    #   ORDER BY created_at DESC, message_id DESC と同じ降順で前向きに走査する。
+    #   両列が同じ票は末尾の暗黙のrowidが昇順となり、従来の同順位の順序も保つ。
+    12: [
+        "CREATE INDEX IF NOT EXISTS idx_feedback_created_message ON feedback (created_at DESC, message_id DESC)",
     ],
 }
 

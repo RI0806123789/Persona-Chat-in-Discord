@@ -14,11 +14,79 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.core.background import spawn
-from persona_bot.config.constants import DOCUMENT_SUMMARY_LIMIT, MEMORY_COMPACT_MAX_FAILURES
+from persona_bot.config.constants import ANNIVERSARY_PROFILE_KEY, DOCUMENT_SUMMARY_LIMIT, MEMORY_COMPACT_MAX_FAILURES
 from persona_bot.core.database import Database
 from persona_bot.services import memory_service
-from persona_bot.services.memory_service import MemoryService, default_projects_memory
+from persona_bot.services.memory_service import MemoryService, default_projects_memory, merge_anniversary_profile
 from persona_bot.utils.storage import load_json_file, write_json_file
+
+
+class AnniversaryProfileMergeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.birthday = {"label": "誕生日", "month": 5, "day": 1}
+        self.other = {"label": "架空の記念日", "month": 8, "day": 15}
+        self.snapshot = {ANNIVERSARY_PROFILE_KEY: [self.birthday, self.other], "趣味": "古い趣味"}
+
+    def test_missing_empty_or_non_list_output_keeps_existing_anniversaries(self):
+        for compacted in ({}, {ANNIVERSARY_PROFILE_KEY: []}, {ANNIVERSARY_PROFILE_KEY: None},
+                          {ANNIVERSARY_PROFILE_KEY: "不正"}, {ANNIVERSARY_PROFILE_KEY: {}},
+                          {ANNIVERSARY_PROFILE_KEY: 1}):
+            with self.subTest(compacted=compacted):
+                result = merge_anniversary_profile(self.snapshot, compacted)
+                self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], self.snapshot[ANNIVERSARY_PROFILE_KEY])
+
+    def test_invalid_output_entries_do_not_replace_existing_anniversaries(self):
+        invalid = [None, "不正", [], {}, {"label": 123, "month": 5, "day": 1}]
+        for changes in ({"label": " "}, {"label": None}, {"month": "5"}, {"month": True},
+                        {"day": False}, {"day": 1.5}, {"month": 0}, {"month": 13},
+                        {"month": 4, "day": 31}, {"month": 2, "day": 30},
+                        {"day": 0}, {"day": 10**100}, {"month": 10**100}):
+            invalid.append({**self.birthday, **changes})
+        result = merge_anniversary_profile(self.snapshot, {ANNIVERSARY_PROFILE_KEY: invalid})
+        self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], self.snapshot[ANNIVERSARY_PROFILE_KEY])
+
+    def test_same_label_correction_overrides_snapshot_and_keeps_other_labels(self):
+        corrected = {**self.birthday, "day": 2}
+        result = merge_anniversary_profile(self.snapshot, {ANNIVERSARY_PROFILE_KEY: [corrected]})
+        self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], [corrected, self.other])
+
+    def test_new_private_label_and_leap_day_are_added(self):
+        added = {"label": "架空の私的な記念日", "month": 2, "day": 29}
+        result = merge_anniversary_profile(self.snapshot, {ANNIVERSARY_PROFILE_KEY: [added]})
+        self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], [self.birthday, self.other, added])
+
+    def test_other_profile_keys_follow_compaction_without_mutating_inputs(self):
+        compacted = {ANNIVERSARY_PROFILE_KEY: [{**self.birthday, "day": 2}], "職業": ["架空の職業"]}
+        original_snapshot, original_compacted = deepcopy(self.snapshot), deepcopy(compacted)
+        result = merge_anniversary_profile(self.snapshot, compacted)
+        self.assertNotIn("趣味", result)
+        self.assertEqual(result["職業"], compacted["職業"])
+        result[ANNIVERSARY_PROFILE_KEY][0]["day"] = 3
+        result[ANNIVERSARY_PROFILE_KEY][1]["day"] = 16
+        result["職業"].append("別の職業")
+        self.assertEqual(self.snapshot, original_snapshot)
+        self.assertEqual(compacted, original_compacted)
+
+    def test_existing_invalid_values_are_preserved_for_reader_to_skip(self):
+        for existing in (None, "不正", {"架空": "値"}, [None, {"label": "手書き途中"}, self.birthday]):
+            with self.subTest(existing=existing):
+                snapshot = {ANNIVERSARY_PROFILE_KEY: existing}
+                self.assertEqual(merge_anniversary_profile(snapshot, {})[ANNIVERSARY_PROFILE_KEY], existing)
+                if isinstance(existing, list):
+                    self.assertEqual(merge_anniversary_profile(snapshot, {ANNIVERSARY_PROFILE_KEY: []})[
+                        ANNIVERSARY_PROFILE_KEY
+                    ], existing)
+
+    def test_missing_snapshot_accepts_only_valid_new_entries(self):
+        self.assertEqual(merge_anniversary_profile({}, {ANNIVERSARY_PROFILE_KEY: None}), {})
+        result = merge_anniversary_profile({}, {ANNIVERSARY_PROFILE_KEY: [None, self.birthday]})
+        self.assertEqual(result, {ANNIVERSARY_PROFILE_KEY: [self.birthday]})
+
+    def test_duplicate_and_padded_labels_merge_like_reader(self):
+        corrected = {**self.birthday, "label": " 誕生日 ", "day": 2}
+        compacted = {ANNIVERSARY_PROFILE_KEY: [self.birthday, corrected]}
+        result = merge_anniversary_profile(self.snapshot, compacted)
+        self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], [corrected, self.other])
 
 
 class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
@@ -39,6 +107,31 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.db.initialize()
         self.addCleanup(self.db.close)
         self.service = MemoryService(None, None, self.db)
+
+    async def test_compaction_preserves_anniversaries_before_replacing_profile(self):
+        birthday = {"label": "誕生日", "month": 5, "day": 1}
+        corrected = {**birthday, "day": 2}
+        added = {"label": "架空の記念日", "month": 2, "day": 29}
+        other_profile = {ANNIVERSARY_PROFILE_KEY: [added], "趣味": "別の趣味"}
+        self.db.profile_replace_all("other-user", other_profile)
+        for compacted, expected in (
+            ({}, [birthday]),
+            ({ANNIVERSARY_PROFILE_KEY: []}, [birthday]),
+            ({ANNIVERSARY_PROFILE_KEY: "不正"}, [birthday]),
+            ({ANNIVERSARY_PROFILE_KEY: [None, {**birthday, "month": True}]}, [birthday]),
+            ({ANNIVERSARY_PROFILE_KEY: [corrected, added]}, [corrected, added]),
+        ):
+            with self.subTest(compacted=compacted):
+                self.db.profile_replace_all("test-user", {ANNIVERSARY_PROFILE_KEY: [birthday], "趣味": "古い趣味"})
+                await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
+                output = {**compacted, "職業": "架空の職業"}
+                self.service._compact_memory = AsyncMock(return_value=(output, {}))
+                await self.service.flush_if_needed(force=True)
+                self.assertEqual(self.db.profile_load("test-user"), {
+                    ANNIVERSARY_PROFILE_KEY: expected, "職業": "架空の職業",
+                })
+                self.assertEqual(self.db.profile_load("other-user"), other_profile)
+                self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
 
     async def test_idle_flush_uses_each_users_persisted_latest_activity_after_restart(self):
         now = datetime.now(timezone.utc)
