@@ -127,6 +127,18 @@ class MessageHandler:
         await self.notify_violation(message, notice)
         return True
 
+    async def _try_acquire_chat_slot(self, message: discord.Message, guild_id: int | None) -> bool:
+        """受付判定と案内枠の記録を、最初の await より前に済ませる。"""
+        notice = self._chat_admission.try_acquire(message.author.id, guild_id)
+        if notice is None:
+            return True
+        if self._chat_admission.try_claim_notice(message.author.id):
+            try:
+                await message.reply(notice, allowed_mentions=discord.AllowedMentions.none())
+            except Exception as error:
+                print(f"通常会話: 見送り案内の送信に失敗しました: {type(error).__name__}")
+        return False
+
     async def on_message(self, message: discord.Message) -> None:
         if self.client.user is None:
             return
@@ -217,7 +229,7 @@ class MessageHandler:
         if claimed_comment_session is None:
             if not accepts_normally:
                 return
-            normal_slot_acquired = self._chat_admission.try_acquire(message.author.id, guild_id)
+            normal_slot_acquired = await self._try_acquire_chat_slot(message, guild_id)
             if not normal_slot_acquired:
                 return
         try:
@@ -274,7 +286,7 @@ class MessageHandler:
 
             # 配信終了後に通常会話へ移る場合も、通常の受付制限を通す。
             if not normal_slot_acquired:
-                normal_slot_acquired = self._chat_admission.try_acquire(message.author.id, guild_id)
+                normal_slot_acquired = await self._try_acquire_chat_slot(message, guild_id)
                 if not normal_slot_acquired:
                     return
 

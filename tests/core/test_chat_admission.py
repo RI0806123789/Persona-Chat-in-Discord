@@ -41,56 +41,76 @@ class ChatAdmissionTests(unittest.TestCase):
     def test_user_window_is_shared_across_guilds_and_dm(self):
         """同じ利用者は別サーバーやDMへ移っても期間内の受付上限を共有する。"""
         for guild in (1, 2):
-            self.assertTrue(self.admission.try_acquire(11, guild))
+            self.assertIsNone(self.admission.try_acquire(11, guild))
             self.admission.release(guild)
-        self.assertFalse(self.admission.try_acquire(11, None))
-        self.assertTrue(self.admission.try_acquire(12, None))
+        self.assertIsNotNone(self.admission.try_acquire(11, None))
+        self.assertIsNone(self.admission.try_acquire(12, None))
 
     def test_window_expires_at_exact_boundary(self):
         """期間の境界で受付を再開し、見送った入力で時刻を延ばさない。"""
         for now in (100.0, 105.0):
             self.clock.return_value = now
-            self.assertTrue(self.admission.try_acquire(11, 1))
+            self.assertIsNone(self.admission.try_acquire(11, 1))
             self.admission.release(1)
         self.clock.return_value = 109.999
-        self.assertFalse(self.admission.try_acquire(11, 1))
+        self.assertIsNotNone(self.admission.try_acquire(11, 1))
         self.clock.return_value = 110.0
-        self.assertTrue(self.admission.try_acquire(11, 1))
+        self.assertIsNone(self.admission.try_acquire(11, 1))
         self.admission.release(1)
         self.assertEqual(list(self.admission._accepted[11]), [105.0, 110.0])
 
     def test_full_guild_does_not_consume_user_window(self):
         """満杯時に新しい利用者の受付記録を作らず、後で再試行できる。"""
-        self.assertTrue(self.admission.try_acquire(11, 1))
-        self.assertTrue(self.admission.try_acquire(12, 1))
-        self.assertFalse(self.admission.try_acquire(13, 1))
+        self.assertIsNone(self.admission.try_acquire(11, 1))
+        self.assertIsNone(self.admission.try_acquire(12, 1))
+        self.assertIsNotNone(self.admission.try_acquire(13, 1))
         self.assertNotIn(13, self.admission._accepted)
         self.admission.release(1)
-        self.assertTrue(self.admission.try_acquire(13, 1))
+        self.assertIsNone(self.admission.try_acquire(13, 1))
 
     def test_record_capacity_preserves_live_windows_and_recovers(self):
         """記録上限でも期間内の利用者を追い出さず、期限切れだけを掃除する。"""
         for user in (11, 12, 13):
-            self.assertTrue(self.admission.try_acquire(user, 1))
+            self.assertIsNone(self.admission.try_acquire(user, 1))
             self.admission.release(1)
-        self.assertFalse(self.admission.try_acquire(14, 1))
-        self.assertTrue(self.admission.try_acquire(11, 1))
+        self.assertIsNotNone(self.admission.try_acquire(14, 1))
+        self.assertIsNone(self.admission.try_acquire(11, 1))
         self.admission.release(1)
-        self.assertFalse(self.admission.try_acquire(11, 1))
+        self.assertIsNotNone(self.admission.try_acquire(11, 1))
         self.assertEqual(len(self.admission._accepted), 3)
         self.clock.return_value = 110.0
-        self.assertTrue(self.admission.try_acquire(14, 1))
+        self.assertIsNone(self.admission.try_acquire(14, 1))
         self.assertEqual(list(self.admission._accepted), [14])
 
     def test_expiration_uses_last_acceptance_order(self):
         """再受付した利用者を末尾へ移し、他の期限切れ記録を残さない。"""
         for user, now in ((11, 100.0), (12, 101.0), (11, 105.0)):
             self.clock.return_value = now
-            self.assertTrue(self.admission.try_acquire(user, 1))
+            self.assertIsNone(self.admission.try_acquire(user, 1))
             self.admission.release(1)
         self.clock.return_value = 111.0
-        self.assertTrue(self.admission.try_acquire(13, 1))
+        self.assertIsNone(self.admission.try_acquire(13, 1))
         self.assertEqual(list(self.admission._accepted), [11, 13])
+
+    def test_notice_capacity_preserves_live_records_and_expires(self):
+        """案内は人数上限を守り、生きた記録を追い出さず期限ちょうどで回復する。"""
+        for user in (11, 12, 13):
+            self.assertTrue(self.admission.try_claim_notice(user))
+        for user in (11, 14):
+            self.assertFalse(self.admission.try_claim_notice(user))
+        self.assertEqual(list(self.admission._notified), [11, 12, 13])
+        self.clock.return_value = 109.999
+        self.assertFalse(self.admission.try_claim_notice(11))
+        self.clock.return_value = 110.0
+        self.assertTrue(self.admission.try_claim_notice(14))
+        self.assertEqual(list(self.admission._notified), [14])
+
+    def test_record_capacity_returns_busy_notice(self):
+        """受付記録が満杯の新規利用者には混雑を理由とする。"""
+        for user in (11, 12, 13):
+            self.assertIsNone(self.admission.try_acquire(user, 1))
+            self.admission.release(1)
+        self.assertEqual(self.admission.try_acquire(14, 1), chat_admission.CHAT_BUSY_NOTICE)
 
 
 def close_coroutine(coro, **kwargs):
@@ -162,6 +182,89 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.handler._chat_admission._running, 0)
         self.assertEqual(self.handler._chat_admission._running_by_guild, {})
 
+    async def test_rejection_notice_is_shared_across_reasons_guilds_and_dm(self):
+        """連投と混雑の案内を区別し、理由・サーバー・DMをまたいで期間内1回にする。"""
+        admission = self.handler._chat_admission
+        clock = Mock(return_value=99.0)
+        with patch.object(chat_admission.time, "monotonic", clock):
+            for _ in range(2):
+                self.assertIsNone(admission.try_acquire(11, 1))
+                admission.release(1)
+            clock.return_value = 100.0
+            rate = self.message(content="サブエージェントに架空の資料を調べてほしい")
+            await self.handler.on_message(rate)
+            self.assertEqual(rate.reply.call_args.args[0], chat_admission.CHAT_RATE_LIMIT_NOTICE)
+            self.assertEqual(rate.reply.call_args.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+            duplicate = self.message(guild=None)
+            await self.handler.on_message(duplicate)
+            duplicate.reply.assert_not_awaited()
+
+            # 受付記録が消え、別の人で混雑した時も案内自身の期間を基準にする。
+            clock.return_value = 159.0
+            for user in (21, 22):
+                self.assertIsNone(admission.try_acquire(user, 2))
+            busy_duplicate = self.message(guild=2)
+            await self.handler.on_message(busy_duplicate)
+            busy_duplicate.reply.assert_not_awaited()
+            clock.return_value = 160.0
+            busy = self.message(guild=2)
+            await self.handler.on_message(busy)
+            self.assertEqual(busy.reply.call_args.args[0], chat_admission.CHAT_BUSY_NOTICE)
+            self.assertEqual(busy.reply.call_args.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+            await self.handler.on_message(busy)
+            busy.reply.assert_awaited_once()
+            admission.release(2)
+            admission.release(2)
+        self.moderator.check_and_route.assert_not_awaited()
+        self.moderator.check_route_and_plan.assert_not_awaited()
+        self.handler.handle_chat_message.assert_not_awaited()
+        self.images.assert_not_awaited()
+        self.assert_released()
+
+    async def test_notice_is_claimed_before_send_finishes(self):
+        """最初の案内送信が待機中でも同時入力から二重送信しない。"""
+        admission = self.handler._chat_admission
+        for user in (21, 22):
+            self.assertIsNone(admission.try_acquire(user, 1))
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+
+        async def send(*args, **kwargs):
+            entered.set()
+            await proceed.wait()
+
+        first = self.message()
+        first.reply.side_effect = send
+        task = self.start(first)
+        await asyncio.wait_for(entered.wait(), 2)
+        others = [self.message() for _ in range(20)]
+        await asyncio.gather(*(self.handler.on_message(message) for message in others))
+        self.assertTrue(all(message.reply.await_count == 0 for message in others))
+        proceed.set()
+        await task
+        first.reply.assert_awaited_once()
+        self.moderator.check_and_route.assert_not_awaited()
+        admission.release(1)
+        admission.release(1)
+
+    async def test_notice_send_failure_is_logged_and_not_retried(self):
+        """Discord障害・その他の送信例外を外へ漏らさず、連投による再試行も防ぐ。"""
+        for user in (21, 22):
+            self.assertIsNone(self.handler._chat_admission.try_acquire(user, 1))
+        for user, error in ((11, discord.DiscordException("架空の失敗")), (12, RuntimeError("架空の失敗"))):
+            with self.subTest(例外=type(error).__name__):
+                message = self.message(user=user)
+                message.reply.side_effect = error
+                with patch("builtins.print") as log:
+                    await self.handler.on_message(message)
+                self.assertIn(type(error).__name__, log.call_args.args[0])
+                await self.handler.on_message(message)
+                message.reply.assert_awaited_once()
+        self.moderator.check_and_route.assert_not_awaited()
+        self.handler.handle_chat_message.assert_not_awaited()
+        self.handler._chat_admission.release(1)
+        self.handler._chat_admission.release(1)
+
     async def test_parallel_user_input_is_bounded_before_moderation(self):
         """同じ利用者の20件が入力AIや応答へ無制限に並行到達しない。"""
         entered = asyncio.Event()
@@ -184,7 +287,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         proceed.set()
         await asyncio.gather(*tasks)
         self.assertEqual(self.handler.handle_chat_message.await_count, 2)
-        self.assertTrue(all(message.reply.await_count == 0 for message in messages))
+        self.assertEqual(sum(message.reply.await_count for message in messages), 1)
         await self.handler.on_message(self.message(guild=2))
         self.assertEqual(self.moderator.check_and_route.await_count, 2)
         await self.handler.on_message(self.message(user=12))
@@ -208,7 +311,8 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.on_message(rejected)
         self.assertEqual(self.moderator.check_and_route.await_count, 2)
         self.images.assert_not_awaited()
-        rejected.reply.assert_not_awaited()
+        rejected.reply.assert_awaited_once()
+        self.assertEqual(rejected.reply.call_args.args[0], chat_admission.CHAT_BUSY_NOTICE)
         self.start(self.message(13, 2))
         await asyncio.wait_for(entered.get(), 2)
         await self.handler.on_message(self.message(14, None))
@@ -240,7 +344,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         """受付が満杯でも先行するブラックリスト・宛先・ローカルNGの判定を保つ。"""
         admission = self.handler._chat_admission
         for user in (21, 22):
-            self.assertTrue(admission.try_acquire(user, 1))
+            self.assertIsNone(admission.try_acquire(user, 1))
         self.handler.blacklist.is_blocked.return_value = True
         await self.handler.on_message(self.message())
         self.handler.auto_topic.mark_activity.assert_not_called()
@@ -256,6 +360,8 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.handler.notify_violation.assert_awaited_once()
         self.moderator.check_and_route.assert_not_awaited()
         self.assertNotIn(11, admission._accepted)
+        message.reply.assert_not_awaited()
+        self.assertEqual(admission._notified, {})
         admission.release(1)
         admission.release(1)
 
@@ -276,7 +382,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
                     self.moderator.check_route_and_plan.return_value = (True, "", "none", None, AgentPlan(delegate=True))
                 await self.handler.on_message(message)
                 self.assert_released()
-                self.assertTrue(self.handler._chat_admission.try_acquire(50 + index, 1))
+                self.assertIsNone(self.handler._chat_admission.try_acquire(50 + index, 1))
                 self.handler._chat_admission.release(1)
         self.handler.documents.enqueue_from_message.assert_awaited_once()
         self.handler.reminders.create_from_request.assert_awaited_once()
@@ -348,7 +454,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_admission_skips_agent_history_and_planning(self):
         """通常枠が満杯なら委任の判定や履歴取得にも進まない。"""
         for user in (21, 22):
-            self.assertTrue(self.handler._chat_admission.try_acquire(user, 1))
+            self.assertIsNone(self.handler._chat_admission.try_acquire(user, 1))
         await self.handler.on_message(self.message(content="サブエージェントを使って架空の資料を調べて"))
         self.moderator.check_and_route.assert_not_awaited()
         self.moderator.check_route_and_plan.assert_not_awaited()
@@ -392,7 +498,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_comment_limit_is_preserved_when_normal_slots_are_full(self):
         """通常会話が満杯でも配信コメントは専用の受付枠を使う。"""
         for user in (21, 22):
-            self.assertTrue(self.handler._chat_admission.try_acquire(user, 1))
+            self.assertIsNone(self.handler._chat_admission.try_acquire(user, 1))
         self.handler.autonomous.is_comment_channel.return_value = True
         await self.handler.on_message(self.message())
         self.handler.autonomous.claim_comment_slot.assert_called_once()
@@ -400,6 +506,7 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.handler.autonomous.claim_comment_slot.return_value = None
         await self.handler.on_message(self.message())
         self.assertEqual(self.moderator.check_and_route.await_count, 1)
+        self.assertEqual(self.handler._chat_admission._notified, {})
         self.handler._chat_admission.release(1)
         self.handler._chat_admission.release(1)
         self.assert_released()
@@ -407,11 +514,13 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_ended_comment_stream_must_acquire_normal_slot(self):
         """配信が判定中に終わっても満杯の通常経路へ抜けられない。"""
         for user in (21, 22):
-            self.assertTrue(self.handler._chat_admission.try_acquire(user, 1))
+            self.assertIsNone(self.handler._chat_admission.try_acquire(user, 1))
         self.handler.autonomous.is_comment_channel.side_effect = [True, True, False]
-        await self.handler.on_message(self.message())
+        rejected = self.message()
+        await self.handler.on_message(rejected)
         self.moderator.check_and_route.assert_awaited_once()
         self.handler.handle_chat_message.assert_not_awaited()
+        self.assertEqual(rejected.reply.call_args.args[0], chat_admission.CHAT_BUSY_NOTICE)
         self.handler._chat_admission.release(1)
         self.handler._chat_admission.release(1)
         self.handler.autonomous.is_comment_channel.side_effect = [True, True, False]

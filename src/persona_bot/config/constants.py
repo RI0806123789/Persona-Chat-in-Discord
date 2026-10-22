@@ -113,8 +113,10 @@ CHAT_RATE_WINDOW_SECONDS = 60.0
 CHAT_MAX_REQUESTS_PER_USER = 5
 CHAT_MAX_CONCURRENT_PER_GUILD = 2
 CHAT_MAX_CONCURRENT_GLOBAL = 4
-# 期間内の受付記録を持つ人数。満杯時は新しい利用者を見送り、既存記録を消さない。
+# 期間内の受付・見送り案内の記録をそれぞれ持つ人数。生きた記録は追い出さない。
 CHAT_RATE_MAX_USERS = 4096
+CHAT_RATE_LIMIT_NOTICE = "短時間に多くの発言を受け付けたため、少し待ってからもう一度話しかけてください。"
+CHAT_BUSY_NOTICE = "ただいま混み合っています。少し待ってからもう一度話しかけてください。"
 
 # 会話要約 (/functions → 📋 会話要約) 用
 # 対象メッセージがこの件数を超えたら要約せず自動停止する（トークン超過・
