@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import app
 import remote_commands as rc
+from deploy import DeployManager, new_record
 from fake_ssh_server import start_fake_server
 from profiles import Profile
 from ssh_session import CommandResult, NotConnectedError, SshError, SshSession
@@ -84,6 +85,48 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 422)
         status, _ = await request("/api/service/reboot", method="POST")
         self.assertEqual(status, 400)
+
+    async def test_unknown_deploy_allows_reads_and_reconnect_but_blocks_mutations(self):
+        """状態不明でも概要・ログ・DB閲覧と再接続を許可し、更新操作だけを409にする。"""
+        manager = DeployManager()
+        self.session.command_state_unknown = True
+        with mock.patch.object(app, "deploys", manager), mock.patch.object(
+            app, "_connection_change_lock", asyncio.Lock(),
+        ), mock.patch.object(app, "load_profiles", return_value=({self.profile.id: self.profile}, "検証用設定")):
+            # 記録の排他とセッションのフラグをそれぞれ確認する。再接続でも両方を維持する。
+            for recorded in (True, False):
+                with self.subTest(recorded=recorded):
+                    manager.current = new_record(1, self.profile) if recorded else None
+                    if manager.current is not None:
+                        manager.current.status = "unknown"
+                    self.assertFalse(manager.active)
+                    with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+                        for path in ("/api/status", "/api/logs", "/api/db", "/api/db/tables/feedback",
+                                     "/api/insights?refresh=true", "/api/connection", "/api/history", "/api/deploy"):
+                            status, _ = await request(path)
+                            self.assertEqual(status, 200, path)
+                        self.assertTrue(run.await_count)
+                        self.assertTrue(all(not call.kwargs.get("wait_for_exit", False) for call in run.await_args_list))
+
+                    for reconnect in (False, True):
+                        if reconnect:
+                            self.assertEqual((await request("/api/disconnect", method="POST"))[0], 200)
+                            self.assertTrue(self.session.command_state_unknown)
+                            status, body = await request(
+                                "/api/connect", method="POST", body={"profile_id": self.profile.id},
+                            )
+                            self.assertEqual(status, 200)
+                            self.assertIsNotNone(json.loads(body)["server"])
+                            self.assertTrue(self.session.command_state_unknown)
+                            self.assertEqual((await request("/api/status"))[0], 200)
+                        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+                        with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+                            for path in ("/api/service/start", "/api/service/stop", "/api/service/restart", "/api/deploy"):
+                                status, _ = await request(path, method="POST", body=target)
+                                self.assertEqual(status, 409, path)
+                            run.assert_not_awaited()
+                        self.assertTrue(self.session.command_state_unknown)
+                        self.assertIsNone(manager._task)
 
     async def test_service_actions_record_results_and_change_service_state(self):
         target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -31,6 +32,10 @@ class SshError(Exception):
 
 class NotConnectedError(SshError):
     """まだ接続していない（または切れた）ときのエラー。"""
+
+
+class CommandStateUnknownError(SshError):
+    """開始済みの遠隔コマンドが終了したことを確認できない。"""
 
 
 @dataclass
@@ -79,6 +84,7 @@ class SshSession:
         self.last_error: str | None = None
         self.history: deque[CommandRecord] = deque(maxlen=HISTORY_MAX)
         self.generation = 0  # 接続し直す前の集計結果を使い回さないための世代
+        self.command_state_unknown = False
 
     # ------------------------------------------------------------ 状態
 
@@ -223,8 +229,14 @@ class SshSession:
         label: str,
         input: str | None = None,
         timeout: float = COMMAND_TIMEOUT_SECONDS,
+        wait_for_exit: bool = False,
+        on_waiting: Callable[[], None] | None = None,
     ) -> CommandResult:
-        """コマンドを1つ実行して、終わるまで待つ。終了コードが 0 以外でも例外にはしない。"""
+        """単発実行。デプロイだけ wait_for_exit を指定し、期限・中断後も終了を待つ。"""
+        if wait_for_exit:
+            return await self._run_waiting_for_exit(
+                command, label=label, input=input, timeout=timeout, on_waiting=on_waiting,
+            )
         conn = self._require_conn()
         started = time.perf_counter()
         try:
@@ -237,6 +249,86 @@ class SshSession:
             message = f"{label}: 通信に失敗しました（{type(error).__name__}: {error}）。"
             self._record(label, command, None, started, ok=False, error=message)
             raise SshError(message) from error
+
+        exit_status = result.exit_status
+        duration_ms = self._record(label, command, exit_status, started, ok=exit_status == 0)
+        return CommandResult(
+            stdout=str(result.stdout or ""),
+            stderr=str(result.stderr or ""),
+            exit_status=exit_status,
+            duration_ms=duration_ms,
+        )
+
+    async def _run_waiting_for_exit(
+        self,
+        command: str,
+        *,
+        label: str,
+        input: str | None,
+        timeout: float,
+        on_waiting: Callable[[], None] | None,
+    ) -> CommandResult:
+        """デプロイの実行は終了確認と回収まで所有し、次の更新との競合を防ぐ。"""
+        self.require_command_completion()
+        conn = self._require_conn()
+        started = time.perf_counter()
+
+        async def execute():
+            process = None
+            try:
+                try:
+                    process = await conn.create_process(command, input=input, errors="replace")
+                    result = await process.wait(check=False)
+                    # チャネル切断やシェルへのシグナルだけでは、子の更新処理の終了を保証できない。
+                    if result.exit_status is None or result.exit_status < 0:
+                        raise CommandStateUnknownError(f"{label}: 遠隔コマンドの終了コードを確認できませんでした。")
+                    return result
+                finally:
+                    if process is not None:
+                        process.close()
+                        await process.wait_closed()
+            except (asyncssh.Error, OSError) as error:
+                raise CommandStateUnknownError(
+                    f"{label}: 通信に失敗し、遠隔コマンドの終了を確認できません（{type(error).__name__}: {error}）。"
+                ) from error
+
+        # 開始途中も保護する。create_process のキャンセルで参照を失う経路を作らない。
+        task = asyncio.create_task(execute())
+        canceled = False
+        try:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as error:
+                canceled = isinstance(error, asyncio.CancelledError)
+                if on_waiting is not None:
+                    on_waiting()
+                # 終了要求は送らず、フォアグラウンドの処理が自然に終わるのを待つ。
+                # シェルだけを止めると git/pip が残り、巻き戻しと競合しうる。
+                while True:
+                    try:
+                        await asyncio.shield(task)
+                        break
+                    except asyncio.CancelledError:
+                        if task.cancelled():
+                            self.command_state_unknown = True
+                            raise
+                        canceled = True
+                if canceled:
+                    message = f"{label}: 中断されました。遠隔コマンドの終了とチャネルの回収を確認しました。"
+                    self._record(label, command, task.result().exit_status, started, ok=False, error=message)
+                    raise asyncio.CancelledError
+                raise SshError(f"{label}: {timeout:g} 秒以内に応答がありませんでした。遠隔コマンドの終了を確認しました。") from error
+        except CommandStateUnknownError as error:
+            self.command_state_unknown = True
+            message = str(error) + " 状態不明のため、サーバーで処理の終了と状態を確認してからバックエンドを起動し直してください。"
+            self._record(label, command, None, started, ok=False, error=message)
+            if canceled:
+                raise asyncio.CancelledError from error
+            raise CommandStateUnknownError(message) from error
+        except SshError as error:
+            message = str(error)
+            self._record(label, command, None, started, ok=False, error=message)
+            raise
 
         exit_status = result.exit_status
         duration_ms = self._record(label, command, exit_status, started, ok=exit_status == 0)
@@ -267,6 +359,13 @@ class SshSession:
         if self._conn is None:
             raise NotConnectedError("SSH に接続していません。接続してからもう一度試してください。")
         return self._conn
+
+    def require_command_completion(self) -> None:
+        """再接続後も、終了不明のデプロイと次の更新・サービス操作を並行させない。"""
+        if self.command_state_unknown:
+            raise CommandStateUnknownError(
+                "遠隔コマンドの終了が未確認で、状態不明です。サーバーで処理の終了と状態を確認してからバックエンドを起動し直してください。"
+            )
 
     def _record(
         self,

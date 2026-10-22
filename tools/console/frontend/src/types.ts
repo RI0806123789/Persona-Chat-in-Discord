@@ -164,7 +164,7 @@ export interface DbTablePage {
 // ---- デプロイ（backend/deploy.py の DeployRecord）
 
 export type DeployStepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type DeployStatus = "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back" | "rollback_failed";
+export type DeployStatus = "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back" | "rollback_failed" | "unknown";
 
 export interface DeployCheck {
   label: string;

@@ -72,7 +72,10 @@ export function OperationsPage({
             <StatusChip tone={tone.tone} label={tone.label} pulse={active} />
             <code className="body-small">{profile ? `sudo -n systemctl <操作> ${profile.service}` : ""}</code>
             {profile?.environment === "production" && <StatusChip tone="serious" icon="shield" label="本番環境に接続中" />}
-            {deployRunning && <StatusChip tone="info" icon="rocket" label="デプロイ中は操作できません" />}
+            {deployRunning && (
+              <StatusChip tone={deploy?.status === "unknown" ? "critical" : "info"} icon="rocket"
+                label={deploy?.status === "unknown" ? "デプロイの状態不明のためサービス操作を停止しています" : "デプロイ中は操作できません"} />
+            )}
           </div>
           <div className="action-grid">
             {ACTIONS.map((item) => {

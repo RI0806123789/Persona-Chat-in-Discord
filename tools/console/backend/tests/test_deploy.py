@@ -6,27 +6,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "helpers"))
 
+import fake_ssh_server  # noqa: E402
 import remote_commands as rc  # noqa: E402
 from deploy import DeployManager, DeployRecord, DeployRunner, new_record  # noqa: E402
 from fake_ssh_server import start_fake_server  # noqa: E402
 from profiles import Profile  # noqa: E402
+from network_guard import block_network  # noqa: E402
 from ssh_session import CommandResult, SshError, SshSession  # noqa: E402
 
 FAST = {"restart_settle_timeout": 5, "health_timeout": 5, "poll_interval": 0.05}
 
 
 class DeployTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        block_network(self)
+
     async def asyncSetUp(self) -> None:
         self.key_dir = Path(tempfile.mkdtemp(prefix="pbc-deploy-"))
         # 実際の時間を待たないよう、再起動や起動ログの待ち時間を小さくする
@@ -346,7 +355,20 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
     async def test_broken_version_rolls_back_and_restarts_previous(self) -> None:
         before = self.repo.head
         self.repo.broken = {self.repo.origin}
-        record = await self.deploy()
+        health_started = asyncio.Event()
+        original_startup, original_health = self.bot._startup_logs, DeployRunner._health
+
+        async def startup():
+            # 停止はヘルスチェック開始後に起こし、再起動確認との時間依存を除く。
+            await health_started.wait()
+            await original_startup()
+
+        async def health(runner, step):
+            health_started.set()
+            await original_health(runner, step)
+
+        with patch.object(self.bot, "_startup_logs", new=startup), patch.object(DeployRunner, "_health", new=health):
+            record = await self.deploy()
 
         self.assertEqual(record.status, "rolled_back", record.message)
         statuses = self.statuses(record)
@@ -376,6 +398,188 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("手動", record.message)
 
     # ------------------------------------------------------------ 同時に1つだけ
+
+    @asynccontextmanager
+    async def hold_command(self, fragment, *, timeout=None):
+        """最初の対象コマンドだけを、遠隔で更新する直前に待機させる。"""
+        gate = SimpleNamespace(started=asyncio.Event(), release=asyncio.Event(), finished=asyncio.Event())
+        original = fake_ssh_server.dispatch
+        original_run = self.session.run
+
+        async def run(command, **kwargs):
+            if timeout is not None and fragment in command and not gate.started.is_set():
+                kwargs["timeout"] = timeout
+            return await original_run(command, **kwargs)
+
+        async def dispatch(command, process, bot):
+            if fragment in command and not gate.started.is_set():
+                gate.started.set()
+                await gate.release.wait()
+                try:
+                    return await original(command, process, bot)
+                finally:
+                    gate.finished.set()
+            return await original(command, process, bot)
+
+        with patch.object(fake_ssh_server, "dispatch", new=dispatch), patch.object(self.session, "run", side_effect=run):
+            try:
+                yield gate
+            finally:
+                gate.release.set()
+                if gate.started.is_set():
+                    await asyncio.wait_for(gate.finished.wait(), timeout=5)
+
+    async def wait_until(self, predicate):
+        """期限超過の表示など、検証対象の状態が届くまで短く待つ。"""
+        async def wait():
+            while not predicate():
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(wait(), timeout=5)
+
+    async def test_delayed_merge_timeout_waits_then_rolls_back(self):
+        """取り込みが期限を越えても旧HEADだけで未変更と判定しない。"""
+        before = self.repo.head
+        manager = DeployManager()
+        async with self.hold_command("git merge --ff-only", timeout=0.02) as gate:
+            record = manager.start(self.session, self.profile, **FAST)
+            try:
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                await self.wait_until(lambda: "終了確認を待って" in self.step(record, "pull").message)
+                self.assertTrue(manager.running)
+                self.assertIsNone(record.after_commit)
+                self.assertIsNone(record.finished_at)
+                self.assertEqual(self.repo.head, before)
+                self.assertFalse(any("git reset" in command for command in self.repo.commands))
+                with self.assertRaises(RuntimeError):
+                    manager.start(self.session, self.profile, **FAST)
+            finally:
+                gate.release.set()
+                await asyncio.wait_for(manager.wait(), timeout=5)
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(record.after_commit, self.repo.origin)
+        self.assertEqual(self.repo.head, before)
+        self.assertFalse(manager.running)
+        self.assertEqual(len(self.session._conn._channels), 0)
+
+    async def test_delayed_pip_timeout_finishes_before_rollback_install(self):
+        """期限を越えたpipと巻き戻しのpipを同時実行しない。"""
+        before = self.repo.head
+        self.repo.requirements_changed_at = {3}
+        manager = DeployManager()
+        async with self.hold_command("-m pip install", timeout=0.02) as gate:
+            record = manager.start(self.session, self.profile, **FAST)
+            try:
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                await self.wait_until(lambda: "終了確認を待って" in self.step(record, "deps").message)
+                self.assertTrue(manager.running)
+                self.assertEqual(self.repo.head, self.repo.origin)
+                self.assertFalse(any("git reset" in command for command in self.repo.commands))
+                self.assertEqual(self.sent("pip install"), [])
+            finally:
+                gate.release.set()
+                await asyncio.wait_for(manager.wait(), timeout=5)
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(self.repo.head, before)
+        commands = self.repo.commands
+        installs = [index for index, command in enumerate(commands) if "pip install" in command]
+        reset = next(index for index, command in enumerate(commands) if "git reset" in command)
+        self.assertEqual(len(installs), 2)
+        self.assertLess(installs[0], reset)
+        self.assertLess(reset, installs[1])
+
+    async def test_repeated_deploy_cancellation_waits_then_rolls_back(self):
+        """取り込み中の追加キャンセルでも終了と巻き戻しを先に完了する。"""
+        before = self.repo.head
+        manager = DeployManager()
+        async with self.hold_command("git merge --ff-only") as gate:
+            record = manager.start(self.session, self.profile, **FAST)
+            try:
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                for _ in range(3):
+                    manager._task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertTrue(manager.running)
+                    self.assertIsNone(record.finished_at)
+                    self.assertFalse(any("git reset" in command for command in self.repo.commands))
+            finally:
+                gate.release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await manager.wait()
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(self.repo.head, before)
+        self.assertFalse(manager.running)
+        self.assertEqual(len(self.session._conn._channels), 0)
+
+    async def test_repeated_cancellation_during_rollback_waits_for_recovery(self):
+        """巻き戻し中のキャンセルでも復旧を完了し、ステップを重複させない。"""
+        before = self.repo.head
+        self.repo.requirements_changed_at = {3}
+        self.repo.pip_fails_at = {self.repo.origin}
+        manager = DeployManager()
+        async with self.hold_command("git reset --hard") as gate:
+            record = manager.start(self.session, self.profile, **FAST)
+            try:
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                for _ in range(2):
+                    manager._task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertTrue(manager.running)
+            finally:
+                gate.release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await manager.wait()
+        self.assertEqual(record.status, "rolled_back", record.message)
+        self.assertEqual(self.repo.head, before)
+        keys = [step.key for step in record.steps]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    async def test_channel_close_without_exit_keeps_deploy_unknown_and_blocks_retry(self):
+        """終了通知のない切断は状態不明を保持し、旧HEAD確認や巻き戻しを送らない。"""
+        original = fake_ssh_server.dispatch
+        after_merge = []
+
+        async def dispatch(command, process, bot):
+            if "git merge --ff-only" in command:
+                process.close()  # チャネル切断だけでは遠隔処理の終了と扱わない。
+                return 0
+            after_merge.append(command)
+            return await original(command, process, bot)
+
+        manager = DeployManager()
+        with patch.object(fake_ssh_server, "dispatch", new=dispatch):
+            record = manager.start(self.session, self.profile, **FAST)
+            await asyncio.wait_for(manager.wait(), timeout=5)
+        self.assertEqual(record.status, "unknown", record.message)
+        self.assertIn("状態不明", record.message)
+        self.assertNotIn("変えていません", record.message)
+        self.assertNotIn("戻しました", record.message)
+        self.assertEqual(len(after_merge), 2)  # 事前確認とfetchだけ。
+        self.assertEqual(self.sent("git reset"), [])
+        self.assertTrue(manager.running)
+        with self.assertRaises(RuntimeError):
+            manager.start(self.session, self.profile, **FAST)
+
+    async def test_unknown_pip_does_not_start_rollback(self):
+        """pipの終了未確認時はコードと依存の巻き戻しを始めない。"""
+        self.repo.requirements_changed_at = {3}
+        original = fake_ssh_server.dispatch
+
+        async def dispatch(command, process, bot):
+            if "-m pip install" in command:
+                process.close()
+                return 0
+            return await original(command, process, bot)
+
+        manager = DeployManager()
+        with patch.object(fake_ssh_server, "dispatch", new=dispatch):
+            record = manager.start(self.session, self.profile, **FAST)
+            await asyncio.wait_for(manager.wait(), timeout=5)
+        self.assertEqual(record.status, "unknown", record.message)
+        self.assertEqual(self.repo.head, self.repo.origin)
+        self.assertEqual(self.sent("git reset"), [])
+        self.assertEqual(self.sent("pip check"), [])
+        self.assertFalse(any(step.phase == "rollback" for step in record.steps))
 
     async def test_manager_runs_one_deploy_at_a_time(self) -> None:
         manager = DeployManager()

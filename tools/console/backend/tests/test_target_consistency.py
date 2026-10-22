@@ -35,7 +35,7 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_success_and_deploy_completion_invalidate_insights(self):
         selected = profile()
         session = SimpleNamespace(require_profile=lambda: selected, connected_at=100,
-            run=AsyncMock(return_value=CommandResult("", "", 0, 1)))
+            run=AsyncMock(return_value=CommandResult("", "", 0, 1)), require_command_completion=lambda: None)
         app._insights_cache["fictional"] = (0, 0, {})
         with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=False)):
             operation = await app.control_service("restart", app.ServiceTarget(profile_id=selected.id, connected_at=100))
