@@ -13,8 +13,10 @@ from persona_bot.config.constants import (
     IMAGE_RGB_BYTES_PER_PIXEL,
     MAX_IMAGE_ATTACHMENTS,
     MAX_IMAGE_DIMENSION,
+    MAX_IMAGE_JPEG_PIXELS,
     MAX_IMAGE_PIXELS,
     MAX_IMAGE_SIZE_BYTES,
+    MAX_IMAGE_SOURCE_DIMENSION,
     MAX_IMAGE_TOTAL_RGB_BYTES,
     SUMMARY_TIMEZONE,
     SUPPORTED_DOCUMENT_EXTENSIONS,
@@ -187,13 +189,20 @@ async def fetch_messages_since(
 
 
 def _decode_image_bytes(image_bytes: bytes, remaining_rgb_bytes: int) -> Image.Image:
-    """画像の展開とRGB変換をワーカーで行い、入力を閉じた後も使える画像を返す。"""
+    """ヘッダーで絶対上限を確認し、縮小・RGB変換した画像の所有権を渡す。"""
     with io.BytesIO(image_bytes) as buffer, Image.open(buffer) as image:
         width, height = image.size
         pixels = width * height
-        if width <= 0 or height <= 0 or max(width, height) > MAX_IMAGE_DIMENSION or pixels > MAX_IMAGE_PIXELS:
+        max_pixels = MAX_IMAGE_JPEG_PIXELS if image.format == "JPEG" else MAX_IMAGE_PIXELS
+        if width <= 0 or height <= 0 or max(width, height) > MAX_IMAGE_SOURCE_DIMENSION or pixels > max_pixels:
             raise ValueError("画像の寸法・画素数が上限を超えているため見送ります。")
-        if pixels * IMAGE_RGB_BYTES_PER_PIXEL > remaining_rgb_bytes:
+        if image.format == "JPEG":
+            # アスペクト比に沿った目標を渡し、縦長・横長でも縮小デコードを効かせる。
+            scale = min(1.0, MAX_IMAGE_DIMENSION / max(width, height))
+            image.draft("RGB", (max(1, int(width * scale)), max(1, int(height * scale))))
+        image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
+        width, height = image.size
+        if width * height * IMAGE_RGB_BYTES_PER_PIXEL > remaining_rgb_bytes:
             raise ValueError("画像の展開後の合計容量が上限を超えるため見送ります。")
         return image.convert("RGB")
 
