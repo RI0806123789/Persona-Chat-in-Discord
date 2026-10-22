@@ -41,6 +41,7 @@ export function OperationsPage({
   git,
   deploy,
   deployRunning,
+  stateUnknown,
   onDeploy,
   now,
 }: {
@@ -56,12 +57,14 @@ export function OperationsPage({
   git: GitInfo | null;
   deploy: DeployRecord | null;
   deployRunning: boolean;
+  stateUnknown: boolean;
   onDeploy: () => void;
   now: number;
 }) {
   const privacy = usePrivacy();
   const tone = serviceTone(service);
   const active = service?.active_state === "active";
+  const deployUnknown = stateUnknown || deploy?.status === "unknown";
 
   return (
     <div className="grid">
@@ -72,15 +75,15 @@ export function OperationsPage({
             <StatusChip tone={tone.tone} label={tone.label} pulse={active} />
             <code className="body-small">{profile ? `sudo -n systemctl <操作> ${profile.service}` : ""}</code>
             {profile?.environment === "production" && <StatusChip tone="serious" icon="shield" label="本番環境に接続中" />}
-            {deployRunning && (
-              <StatusChip tone={deploy?.status === "unknown" ? "critical" : "info"} icon="rocket"
-                label={deploy?.status === "unknown" ? "デプロイの状態不明のためサービス操作を停止しています" : "デプロイ中は操作できません"} />
+            {(deployRunning || deployUnknown) && (
+              <StatusChip tone={deployUnknown ? "critical" : "info"} icon="rocket"
+                label={deployUnknown ? "デプロイの状態不明のためサービス操作を停止しています" : "デプロイ中は操作できません"} />
             )}
           </div>
           <div className="action-grid">
             {ACTIONS.map((item) => {
               const disabled =
-                busyAction !== null || deployRunning || !service || (item.action === "start" && active) || (item.action === "stop" && !canStopService(service));
+                busyAction !== null || deployRunning || deployUnknown || !service || (item.action === "start" && active) || (item.action === "stop" && !canStopService(service));
               return (
                 <div key={item.action} className={`action-card action-${item.variant}`}>
                   <span className="action-icon">{busyAction === item.action ? <LoadingIndicator size={40} /> : <Icon name={item.icon} size={28} />}</span>
@@ -103,6 +106,7 @@ export function OperationsPage({
       <DeployCard
         deploy={deploy}
         running={deployRunning}
+        stateUnknown={deployUnknown}
         connected={connected}
         profile={profile ?? selectedProfile}
         git={git}

@@ -115,7 +115,12 @@ def get_profiles() -> dict:
 
 @app.get("/api/connection")
 def get_connection() -> dict:
-    return session.snapshot()
+    return _connection_snapshot()
+
+
+def _connection_snapshot() -> dict:
+    """接続先によらない更新操作の停止状態も、接続・切断の応答に含める。"""
+    return {**session.snapshot(), "state_unknown": session.command_state_unknown or deploys.state_unknown}
 
 
 @app.post("/api/connect")
@@ -147,7 +152,7 @@ async def _connect(body: ConnectRequest) -> dict:
             session.server_info = rc.parse_server_info(result.stdout)
     except SshError:
         pass  # サーバー情報が取れなくても接続自体は成功扱いにする
-    return session.snapshot()
+    return _connection_snapshot()
 
 
 @app.post("/api/disconnect")
@@ -155,7 +160,7 @@ async def disconnect() -> dict:
     async with _connection_change_lock:
         _reject_connection_change_during_deploy()
         await session.disconnect()
-        return session.snapshot()
+        return _connection_snapshot()
 
 
 @app.get("/api/history")
@@ -352,6 +357,8 @@ async def control_service(action: str, body: ServiceTarget | None = None) -> dic
 
 async def _control_service(action: str, body: ServiceTarget | None) -> dict:
     session.require_command_completion()
+    if deploys.state_unknown:
+        raise HTTPException(status_code=409, detail="デプロイの状態不明のため、サービス操作を停止しています。サーバーの状態を確認してください。")
     if deploys.running:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()
@@ -415,6 +422,8 @@ async def start_deploy(body: ServiceTarget | None = None) -> dict:
             raise HTTPException(status_code=409, detail="確認後に接続状態が変わりました。接続先を確認してデプロイをやり直してください。")
         if profile.unset_fields:
             raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
+        if deploys.state_unknown:
+            raise HTTPException(status_code=409, detail="デプロイの状態不明のため、更新操作を停止しています。サーバーの状態を確認してください。")
         if deploys.running:
             raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
         _invalidate_insights()

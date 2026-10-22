@@ -58,7 +58,7 @@ function renderer() {
 
 const connection = (id) => ({ connected: !!id, profile: id ? { id, label: `架空の${id}` } : null, connected_at: id ? 1 : null });
 
-function consoleHarness(api) {
+function consoleHarness(api, renderTree = false) {
   const runtime = renderer();
   const notices = [];
   const privacy = compile(privacySource, { react: runtime.hooks });
@@ -73,12 +73,17 @@ function consoleHarness(api) {
     "./navigation": { PAGES: [{ id: "overview" }], isPageId: () => true },
     "./profiles": { unsetFieldsOf: () => [] },
     "./theme/theme": { SEED_OPTIONS: [{ id: "test", hex: "#123456" }] },
+    "./pages/OverviewPage": { OverviewPage: "OverviewPage" },
+    "./pages/OperationsPage": { OperationsPage: "OperationsPage" },
   };
   modules["./controllers"] = compile(controllerSource, modules);
-  const exposed = "return {busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
-  const instrumented = appSource.replace("function Console() {", "export function Console() {")
-    .replace("  return (\n    <PrivacyContext.Provider", `  ${exposed}\n  return (\n    <PrivacyContext.Provider`);
-  assert.ok(instrumented.includes(exposed));
+  const controls = "busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, stateUnknown, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, setStoredPage, notify";
+  const exported = appSource.replace("function Console() {", "export function Console() {");
+  const instrumented = renderTree
+    ? exported.replace("  return (\n    <PrivacyContext.Provider", "  const tree = (\n    <PrivacyContext.Provider")
+      .replace("    </PrivacyContext.Provider>\n  );", `    </PrivacyContext.Provider>\n  );\n  return {${controls}, tree};`)
+    : exported.replace("  return (\n    <PrivacyContext.Provider", `  return {${controls}};\n  return (\n    <PrivacyContext.Provider`);
+  assert.ok(instrumented.includes(`return {${controls}`));
   const component = compile(instrumented, modules).Console;
   return { render: () => runtime.render(component), notices, privacy };
 }
@@ -350,6 +355,118 @@ test("デプロイ完了時には自動更新OFFでもインサイトを強制�
   await harness.render().refreshDeploy();
   await Promise.resolve();
   assert.deepEqual(forces, [true]);
+});
+
+test("状態不明で完了したデプロイは一度だけ通知・状態更新し、定期取得を止める", async (t) => {
+  const previousWindow = globalThis.window;
+  const timers = new Map();
+  let nextTimer = 0;
+  globalThis.window = {
+    addEventListener: () => {},
+    setTimeout: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const runtime = renderer();
+  t.after(() => { runtime.unmount(); globalThis.window = previousWindow; });
+  // 実際のusePollingも動かし、実行中の1秒タイマーが完了後に解除されることを確かめる。
+  const hooks = compile(await source("hooks.ts"), { react: runtime.hooks });
+  const notices = [];
+  let fetches = 0, refreshes = 0, finished = false;
+  const { useDeployController } = compile(controllerSource, {
+    react: runtime.hooks, "./hooks": hooks,
+    "./api": { api: { deploy: async () => {
+      fetches++;
+      return { running: !finished, deploy: { profile_id: "A", status: finished ? "unknown" : "running", message: "架空の終了未確認" } };
+    } } },
+  });
+  const scope = { requestScope: { current: new scopes.RequestScope() }, wasConnected: { current: true },
+    connectionChanging: { current: false }, connectionProfileId: { current: "A" } };
+  const render = () => runtime.render(() => useDeployController(scope, (notice) => notices.push(notice), () => refreshes++, true, "A:1"));
+  const settle = () => new Promise(setImmediate);
+  render(); runtime.commit(); await settle();
+  assert.equal(render().deployRunning, true);
+  runtime.commit(); await settle();
+  assert.deepEqual([...timers.values()].map(({ delay }) => delay), [1000]);
+  finished = true;
+  const [timerId, timer] = [...timers][0];
+  timers.delete(timerId);
+  await timer.callback();
+  assert.equal(render().deployRunning, false);
+  runtime.commit(); await settle();
+  assert.equal(timers.size, 0);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].tone, "critical");
+  assert.match(notices[0].title, /状態不明/);
+  assert.equal(refreshes, 1);
+  const stoppedAt = fetches;
+  render(); runtime.commit(); await settle();
+  assert.equal(fetches, stoppedAt);
+  await render().refreshDeploy();
+  assert.equal(notices.length, 1);
+  assert.equal(refreshes, 1);
+});
+
+test("状態不明でタスク完了後もデプロイとサービス操作の確認を開かない", async () => {
+  const harness = consoleHarness({
+    deploy: async () => ({ running: false, deploy: { profile_id: "A", status: "unknown" } }),
+  });
+  harness.render().applyConnection(connection("A"));
+  await harness.render().refreshDeploy();
+  harness.render().requestDeploy();
+  assert.equal(harness.render().confirmOpen, false);
+  harness.render().requestAction("restart");
+  assert.equal(harness.render().confirmOpen, false);
+  assert.equal(harness.notices.at(-1).tone, "critical");
+  assert.match(harness.notices.at(-1).title, /状態不明/);
+});
+
+test("別接続先へ移ってデプロイ記録を捨てても状態不明の警告・案内と操作停止を維持する", async () => {
+  const calls = [];
+  let snapshot = { ...connection("A"), state_unknown: true };
+  const harness = consoleHarness({
+    connection: async () => snapshot,
+    disconnect: async () => (snapshot = { ...connection(null), state_unknown: true }),
+    connect: async (id) => (snapshot = { ...connection(id), state_unknown: true }),
+    deploy: async () => ({ running: false, deploy: { profile_id: "A", status: "unknown" } }),
+    service: (...args) => calls.push(args), startDeploy: (...args) => calls.push(args),
+  }, true);
+  const nodes = (node) => Array.isArray(node) ? node.flatMap(nodes)
+    : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : [];
+  harness.render().applyConnection(snapshot);
+  await harness.render().refreshDeploy();
+  assert.equal(harness.render().deploy.status, "unknown");
+  harness.render().setSelectedProfileId("B");
+  for (const action of ["handleDisconnect", "handleConnect"]) {
+    await harness.render()[action]();
+    await harness.render().refreshDeploy();
+    const current = harness.render();
+    assert.equal(current.deploy, null);
+    assert.equal(current.stateUnknown, true);
+    const warning = nodes(current.tree).find((node) => node.props?.role === "alert");
+    assert.ok(warning);
+    const text = JSON.stringify(warning.props.children);
+    assert.match(text, /このセッション全体/);
+    assert.match(text, /接続先を変えても解除されません/);
+    assert.match(text, /残留処理の終了とコード・依存関係・サービスの状態を確認してから/);
+    assert.match(text, /バックエンドを起動し直して/);
+    current.requestDeploy();
+    for (const action of ["start", "stop", "restart"]) harness.render().requestAction(action);
+    assert.equal(harness.render().confirmOpen, false);
+  }
+  const overview = nodes(harness.render().tree).find((node) => node.type === "OverviewPage");
+  assert.equal(overview.props.deployUnknown, true);
+  harness.render().setStoredPage("operations");
+  const operations = nodes(harness.render().tree).find((node) => node.type === "OperationsPage");
+  assert.equal(operations.props.stateUnknown, true);
+  assert.equal(operations.props.deploy, null);
+  assert.deepEqual(calls, []);
+  // 手動確認後に再起動したバックエンドが通常状態を返したときだけ解除される。
+  harness.render().applyConnection({ ...connection("B"), state_unknown: false });
+  const recovered = harness.render();
+  assert.equal(recovered.stateUnknown, false);
+  assert.equal(nodes(recovered.tree).some((node) => node.props?.role === "alert"), false);
+  recovered.requestDeploy();
+  assert.equal(harness.render().confirmOpen, true);
 });
 
 

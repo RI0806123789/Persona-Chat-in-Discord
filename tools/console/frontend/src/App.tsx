@@ -309,10 +309,11 @@ function Console() {
   const { busyAction, runAction } = useServiceController(
     { requestScope, wasConnected, connectionChanging }, notify, refreshOperations, refreshAfterChange,
   );
+  const stateUnknown = connection?.state_unknown === true || deploy?.status === "unknown";
 
   const requestDeploy = useCallback(() => {
     const profile = connection?.profile;
-    if (!profile || deployRunning || busyAction || connection?.connected_at == null) return;
+    if (!profile || deployRunning || stateUnknown || busyAction || connection?.connected_at == null) return;
     const target = { profile_id: profile.id, connected_at: connection.connected_at };
     const branch = profile.deploy_branch ?? "main";
     const isProduction = profile.environment === "production";
@@ -348,7 +349,7 @@ function Console() {
       onConfirm: () => { if (isCurrent()) void runDeploy(target); },
     });
     setConfirmOpen(true);
-  }, [connection, deployRunning, busyAction, runDeploy]);
+  }, [connection, deployRunning, stateUnknown, busyAction, runDeploy]);
 
   // ---- 接続・切断
   const handleConnect = useCallback(async () => {
@@ -415,8 +416,8 @@ function Console() {
       if (!profile || busyAction || connection?.connected_at == null) return;
       const target = { profile_id: profile.id, connected_at: connection.connected_at };
       const isCurrent = requestScope.current.current();
-      if (deployRunning) {
-        const unknown = deploy?.status === "unknown";
+      if (deployRunning || stateUnknown) {
+        const unknown = stateUnknown;
         notify({
           tone: unknown ? "critical" : "info",
           title: unknown ? "デプロイの状態不明のためサービス操作を停止しています" : "デプロイを実行中です",
@@ -449,7 +450,7 @@ function Console() {
       });
       setConfirmOpen(true);
     },
-    [connection, busyAction, deployRunning, deploy?.status, notify, runAction],
+    [connection, busyAction, deployRunning, stateUnknown, notify, runAction],
   );
 
   const manualRefresh = useCallback(() => {
@@ -626,6 +627,16 @@ function Console() {
               <span className="body-medium">{privacy.redact(backendError)}</span>
             </div>
           )}
+          {stateUnknown && (
+            <div className="m3-banner is-error" role="alert">
+              <Icon name="error" size={20} filled />
+              <span className="body-medium">
+                遠隔処理の終了が未確認で、状態不明です。このセッション全体でデプロイ・巻き戻し・サービスの起動・停止・再起動を停止しています。
+                概要・ログ・DB閲覧とSSHの再接続・切断は利用できます。接続先を変えても解除されません。
+                状態不明になったサーバーで残留処理の終了とコード・依存関係・サービスの状態を確認してから、バックエンドを起動し直してください。
+              </span>
+            </div>
+          )}
           {production && (
             <div className="m3-banner is-production">
               <Icon name="shield" size={20} filled />
@@ -650,7 +661,7 @@ function Console() {
                   onRequestAction={requestAction}
                   busyAction={busyAction}
                   deployRunning={deployRunning}
-                  deployUnknown={deploy?.status === "unknown"}
+                  deployUnknown={stateUnknown}
                   onConnect={() => void handleConnect()}
                   selectedProfile={selectedProfile}
                   now={now}
@@ -680,6 +691,7 @@ function Console() {
                   git={status?.git ?? null}
                   deploy={deploy}
                   deployRunning={deployRunning}
+                  stateUnknown={stateUnknown}
                   onDeploy={requestDeploy}
                   now={now}
                 />

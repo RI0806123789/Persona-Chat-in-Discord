@@ -163,6 +163,13 @@ class DeployRunner:
                 except asyncio.CancelledError:
                     if recovery.cancelled():
                         raise
+                except Exception as error:  # noqa: BLE001 — 復旧の失敗で元のキャンセルと終了記録を失わない
+                    detail = f"中断後の復旧で想定外のエラーが発生しました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。"
+                    if self.session.command_state_unknown or isinstance(error, CommandStateUnknownError):
+                        self._finish_unknown(detail)
+                    else:
+                        self._finish("failed", detail)
+                    break
             raise
         except Exception as error:  # noqa: BLE001 — 想定外の失敗でも、画面に「動いたまま」と見せないため記録して終える
             self._finish("failed", f"想定外のエラーでデプロイを止めました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。")
@@ -614,9 +621,17 @@ class DeployManager:
 
     @property
     def running(self) -> bool:
-        return self.active or (self.current is not None and self.current.status == "unknown")
+        """画面へ返す実行状態は、デプロイタスクの生存期間だけに合わせる。"""
+        return self.active
+
+    @property
+    def state_unknown(self) -> bool:
+        """タスク完了後・再接続後も、状態不明の記録がある間は更新操作を拒否する。"""
+        return self.current is not None and self.current.status == "unknown"
 
     def start(self, session: SshSession, profile: Profile, *, on_finished: Callable[[], None] | None = None, **runner_options) -> DeployRecord:
+        if self.state_unknown:
+            raise RuntimeError("デプロイの状態不明のため、更新操作を停止しています。サーバーの状態を確認してください。")
         if self.running:
             raise RuntimeError("デプロイを実行中です。終わるまで待ってください。")
         session.require_command_completion()
