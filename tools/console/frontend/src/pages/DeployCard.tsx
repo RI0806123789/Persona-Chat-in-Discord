@@ -21,9 +21,10 @@ const RESULT: Record<DeployStatus, { label: string; tone: Tone; icon: IconName }
   running: { label: "実行中", tone: "info", icon: "timer" },
   succeeded: { label: "デプロイ完了", tone: "good", icon: "checkCircle" },
   up_to_date: { label: "最新でした", tone: "info", icon: "checkCircle" },
-  failed: { label: "失敗（何も変えていない）", tone: "critical", icon: "error" },
+  failed: { label: "失敗", tone: "critical", icon: "error" },
   rolled_back: { label: "失敗したため前の版へ戻した", tone: "warning", icon: "undo" },
   rollback_failed: { label: "巻き戻しにも失敗", tone: "critical", icon: "error" },
+  unknown: { label: "状態不明（終了未確認）", tone: "critical", icon: "error" },
 };
 
 // まだ一度もデプロイしていないときに見せる、これから行うこと
@@ -49,6 +50,7 @@ function stepDuration(step: DeployStep, now: number): string | null {
 export function DeployCard({
   deploy,
   running,
+  stateUnknown,
   connected,
   profile,
   git,
@@ -58,6 +60,7 @@ export function DeployCard({
 }: {
   deploy: DeployRecord | null;
   running: boolean;
+  stateUnknown: boolean;
   connected: boolean;
   profile: Profile | null;
   git: GitInfo | null;
@@ -73,6 +76,7 @@ export function DeployCard({
   const allSteps = deploy?.steps ?? [];
   const done = allSteps.filter((step) => step.status !== "pending" && step.status !== "running").length;
   const current = allSteps.find((step) => step.status === "running");
+  const unknown = stateUnknown || deploy?.status === "unknown";
 
   return (
     <Card
@@ -81,8 +85,8 @@ export function DeployCard({
       source="ssh"
       className="span-12 deploy-card"
       actions={
-        <Button variant="filled" icon="rocket" onClick={onDeploy} disabled={!connected || running || disabled} busy={running}>
-          {running ? "デプロイしています…" : "デプロイする"}
+        <Button variant="filled" icon="rocket" onClick={onDeploy} disabled={!connected || running || unknown || disabled} busy={running && !unknown}>
+          {unknown ? "状態不明（デプロイを停止）" : running ? "デプロイしています…" : "デプロイする"}
         </Button>
       }
     >
@@ -121,7 +125,7 @@ export function DeployCard({
 
       {deploy && (
         <>
-          {running && (
+          {running && !unknown && (
             <div className="deploy-progress">
               <span className="body-medium">
                 {current ? `「${current.title}」を実行中` : "準備中"}（{done} / {allSteps.length}）
@@ -129,10 +133,16 @@ export function DeployCard({
               <WavyProgress value={allSteps.length ? done / allSteps.length : 0} label="デプロイの進み具合" />
             </div>
           )}
-          {!running && deploy.message && (
+          {(!running || unknown) && deploy.message && (
             <p className={`deploy-result m3-status-banner tone-${RESULT[deploy.status].tone}`} role="status">
               <Icon name={RESULT[deploy.status].icon} size={20} filled />
               <span className="body-medium">{privacy.redact(deploy.message)}</span>
+            </p>
+          )}
+          {unknown && (
+            <p className="body-small muted">
+              デプロイ・巻き戻し・サービスの起動・停止・再起動を停止しています。概要・ログ・DB閲覧とSSHの再接続は利用できます。
+              再接続では状態不明は解除されません。サーバーで残留処理の終了とコード・依存関係・サービスの状態を確認してから、バックエンドを起動し直してください。
             </p>
           )}
 

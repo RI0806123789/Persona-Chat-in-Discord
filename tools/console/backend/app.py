@@ -32,7 +32,7 @@ from deploy import DeployManager
 from local_repo import local_schema_version
 from managed_server import MANAGED_ENV, run_server
 from profiles import Profile, ProfileError, load_profiles
-from ssh_session import NotConnectedError, SshError, SshSession
+from ssh_session import CommandStateUnknownError, NotConnectedError, SshError, SshSession
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -89,6 +89,11 @@ async def handle_ssh_error(_request: Request, error: SshError) -> JSONResponse:
     return JSONResponse({"detail": str(error)}, status_code=502)
 
 
+@app.exception_handler(CommandStateUnknownError)
+async def handle_command_state_unknown(_request: Request, error: CommandStateUnknownError) -> JSONResponse:
+    return JSONResponse({"detail": str(error)}, status_code=409)
+
+
 @app.exception_handler(ProfileError)
 async def handle_profile_error(_request: Request, error: ProfileError) -> JSONResponse:
     return JSONResponse({"detail": f"接続先の設定エラー: {error}"}, status_code=500)
@@ -110,7 +115,12 @@ def get_profiles() -> dict:
 
 @app.get("/api/connection")
 def get_connection() -> dict:
-    return session.snapshot()
+    return _connection_snapshot()
+
+
+def _connection_snapshot() -> dict:
+    """接続先によらない更新操作の停止状態も、接続・切断の応答に含める。"""
+    return {**session.snapshot(), "state_unknown": session.command_state_unknown or deploys.state_unknown}
 
 
 @app.post("/api/connect")
@@ -121,7 +131,7 @@ async def connect(body: ConnectRequest) -> dict:
 
 
 def _reject_connection_change_during_deploy() -> None:
-    if deploys.running:
+    if deploys.active:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。接続先の変更・切断は完了後に行ってください。")
 
 
@@ -142,7 +152,7 @@ async def _connect(body: ConnectRequest) -> dict:
             session.server_info = rc.parse_server_info(result.stdout)
     except SshError:
         pass  # サーバー情報が取れなくても接続自体は成功扱いにする
-    return session.snapshot()
+    return _connection_snapshot()
 
 
 @app.post("/api/disconnect")
@@ -150,7 +160,7 @@ async def disconnect() -> dict:
     async with _connection_change_lock:
         _reject_connection_change_during_deploy()
         await session.disconnect()
-        return session.snapshot()
+        return _connection_snapshot()
 
 
 @app.get("/api/history")
@@ -346,6 +356,9 @@ async def control_service(action: str, body: ServiceTarget | None = None) -> dic
 
 
 async def _control_service(action: str, body: ServiceTarget | None) -> dict:
+    session.require_command_completion()
+    if deploys.state_unknown:
+        raise HTTPException(status_code=409, detail="デプロイの状態不明のため、サービス操作を停止しています。サーバーの状態を確認してください。")
     if deploys.running:
         raise HTTPException(status_code=409, detail="デプロイを実行中です。終わってから操作してください。")
     profile = session.require_profile()
@@ -409,6 +422,8 @@ async def start_deploy(body: ServiceTarget | None = None) -> dict:
             raise HTTPException(status_code=409, detail="確認後に接続状態が変わりました。接続先を確認してデプロイをやり直してください。")
         if profile.unset_fields:
             raise HTTPException(status_code=400, detail=_unset_profile_message(profile, load_profiles()[1]))
+        if deploys.state_unknown:
+            raise HTTPException(status_code=409, detail="デプロイの状態不明のため、更新操作を停止しています。サーバーの状態を確認してください。")
         if deploys.running:
             raise HTTPException(status_code=409, detail="デプロイを実行中です。終わるまで待ってください。")
         _invalidate_insights()

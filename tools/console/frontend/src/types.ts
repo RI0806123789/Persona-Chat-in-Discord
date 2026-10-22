@@ -33,6 +33,8 @@ export interface ServerInfo {
 
 export interface ConnectionState {
   connected: boolean;
+  /** 接続先を変更しても保持する、セッション全体の遠隔処理の終了未確認 */
+  state_unknown: boolean;
   profile: Profile | null;
   connected_at: number | null;
   fingerprint: string | null;
@@ -164,7 +166,7 @@ export interface DbTablePage {
 // ---- デプロイ（backend/deploy.py の DeployRecord）
 
 export type DeployStepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type DeployStatus = "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back" | "rollback_failed";
+export type DeployStatus = "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back" | "rollback_failed" | "unknown";
 
 export interface DeployCheck {
   label: string;

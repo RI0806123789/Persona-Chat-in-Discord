@@ -22,7 +22,7 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_deploy_requires_confirmed_profile_and_connection_time(self):
         selected = profile()
         session = SimpleNamespace(require_profile=lambda: selected, connected_at=100)
-        manager = SimpleNamespace(running=False, current=None, start=Mock())
+        manager = SimpleNamespace(running=False, state_unknown=False, current=None, start=Mock())
         with patch.object(app, "session", session), patch.object(app, "deploys", manager):
             for target in (None, {"profile_id": "old", "connected_at": 100}, {"profile_id": selected.id, "connected_at": 99}):
                 status, _ = await request("/api/deploy", method="POST", body=target)
@@ -35,9 +35,9 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_success_and_deploy_completion_invalidate_insights(self):
         selected = profile()
         session = SimpleNamespace(require_profile=lambda: selected, connected_at=100,
-            run=AsyncMock(return_value=CommandResult("", "", 0, 1)))
+            run=AsyncMock(return_value=CommandResult("", "", 0, 1)), require_command_completion=lambda: None)
         app._insights_cache["fictional"] = (0, 0, {})
-        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=False)):
+        with patch.object(app, "session", session), patch.object(app, "deploys", SimpleNamespace(running=False, state_unknown=False)):
             operation = await app.control_service("restart", app.ServiceTarget(profile_id=selected.id, connected_at=100))
         self.assertTrue(operation["ok"])
         self.assertFalse(app._insights_cache)
@@ -62,7 +62,8 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_server_metadata_is_not_written_after_generation_change_or_command_failure(self):
         selected = profile()
         for changed, exit_status in ((True, 0), (False, 1)):
-            session = SimpleNamespace(connect=AsyncMock(), generation=1, connected=True, server_info=None, snapshot=lambda: {})
+            session = SimpleNamespace(connect=AsyncMock(), generation=1, connected=True, server_info=None, snapshot=lambda: {},
+                                      command_state_unknown=False)
             async def run(*args, **kwargs):
                 if changed:
                     session.generation += 1

@@ -24,6 +24,7 @@ export function OverviewPage({
   onRequestAction,
   busyAction,
   deployRunning,
+  deployUnknown,
   onConnect,
   selectedProfile,
   now,
@@ -42,6 +43,7 @@ export function OverviewPage({
   onRequestAction: (action: ServiceAction) => void;
   busyAction: ServiceAction | null;
   deployRunning: boolean;
+  deployUnknown: boolean;
   onConnect: () => void;
   selectedProfile: Profile | null;
   now: number;
@@ -58,6 +60,7 @@ export function OverviewPage({
         onRequestAction={onRequestAction}
         busyAction={busyAction}
         deployRunning={deployRunning}
+        deployUnknown={deployUnknown}
         onNavigate={onNavigate}
       />
       <SshCard connection={connection} samples={samples} now={now} />
@@ -76,6 +79,7 @@ function ServiceHero({
   onRequestAction,
   busyAction,
   deployRunning,
+  deployUnknown,
   onNavigate,
 }: {
   status: StatusResponse | null;
@@ -84,6 +88,7 @@ function ServiceHero({
   onRequestAction: (action: ServiceAction) => void;
   busyAction: ServiceAction | null;
   deployRunning: boolean;
+  deployUnknown: boolean;
   onNavigate: (page: PageId) => void;
 }) {
   const service = status?.service ?? null;
@@ -103,7 +108,7 @@ function ServiceHero({
         <div className="hero-text">
           <div className="hero-top">
             <StatusChip tone={tone.tone} label={tone.label} pulse={active} />
-            {deployRunning && <StatusChip tone="info" icon="rocket" label="デプロイ中" />}
+            {(deployRunning || deployUnknown) && <StatusChip tone={deployUnknown ? "critical" : "info"} icon="rocket" label={deployUnknown ? "デプロイの状態不明" : "デプロイ中"} />}
             <span className="label-large mono hero-unit">{service ? `${service.name}.service` : "—"}</span>
           </div>
           <span className="label-large hero-figure-label">{active ? "起動してから" : "状態"}</span>
@@ -134,7 +139,7 @@ function ServiceHero({
           label={active ? "再起動" : "起動"}
           icon={active ? "restart" : "play"}
           onClick={() => onRequestAction(active ? "restart" : "start")}
-          disabled={!service || deployRunning}
+          disabled={!service || deployRunning || deployUnknown}
           busy={busyAction !== null}
           items={[
             { label: "停止", icon: "stop", onSelect: () => onRequestAction("stop"), disabled: !canStopService(service), danger: true },
@@ -145,9 +150,9 @@ function ServiceHero({
         <Button variant="outlined" icon="logs" onClick={() => onNavigate("logs")}>
           ログを見る
         </Button>
-        {deployRunning && (
+        {(deployRunning || deployUnknown) && (
           <Button variant="text" icon="rocket" onClick={() => onNavigate("operations")}>
-            デプロイの進み具合を見る
+            デプロイの記録を見る
           </Button>
         )}
       </div>

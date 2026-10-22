@@ -10,7 +10,14 @@ from PIL import Image
 from persona_bot.config.constants import (
     DISCORD_MESSAGE_MAX_LENGTH,
     IMAGE_EXTENSIONS,
+    IMAGE_RGB_BYTES_PER_PIXEL,
+    MAX_IMAGE_ATTACHMENTS,
+    MAX_IMAGE_DIMENSION,
+    MAX_IMAGE_JPEG_PIXELS,
+    MAX_IMAGE_PIXELS,
     MAX_IMAGE_SIZE_BYTES,
+    MAX_IMAGE_SOURCE_DIMENSION,
+    MAX_IMAGE_TOTAL_RGB_BYTES,
     SUMMARY_TIMEZONE,
     SUPPORTED_DOCUMENT_EXTENSIONS,
     WELCOME_MESSAGE_ENABLED,
@@ -181,18 +188,37 @@ async def fetch_messages_since(
     return collected
 
 
-def _decode_image_bytes(image_bytes: bytes) -> Image.Image:
-    """画像の展開とRGB変換をワーカーで行い、入力を閉じた後も使える画像を返す。"""
-    with Image.open(io.BytesIO(image_bytes)) as image:
+def _decode_image_bytes(image_bytes: bytes, remaining_rgb_bytes: int) -> Image.Image:
+    """ヘッダーで絶対上限を確認し、縮小・RGB変換した画像の所有権を渡す。"""
+    with io.BytesIO(image_bytes) as buffer, Image.open(buffer) as image:
+        width, height = image.size
+        pixels = width * height
+        max_pixels = MAX_IMAGE_JPEG_PIXELS if image.format == "JPEG" else MAX_IMAGE_PIXELS
+        if width <= 0 or height <= 0 or max(width, height) > MAX_IMAGE_SOURCE_DIMENSION or pixels > max_pixels:
+            raise ValueError("画像の寸法・画素数が上限を超えているため見送ります。")
+        if image.format == "JPEG":
+            # アスペクト比に沿った目標を渡し、縦長・横長でも縮小デコードを効かせる。
+            scale = min(1.0, MAX_IMAGE_DIMENSION / max(width, height))
+            image.draft("RGB", (max(1, int(width * scale)), max(1, int(height * scale))))
+        image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
+        width, height = image.size
+        if width * height * IMAGE_RGB_BYTES_PER_PIXEL > remaining_rgb_bytes:
+            raise ValueError("画像の展開後の合計容量が上限を超えるため見送ります。")
         return image.convert("RGB")
 
 
 async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> list[Image.Image]:
     image_objects: list[Image.Image] = []
+    attempted = 0
+    total_rgb_bytes = 0
     try:
         for attachment in attachments:
             if not attachment_is_image(attachment):
                 continue
+            if attempted >= MAX_IMAGE_ATTACHMENTS or total_rgb_bytes >= MAX_IMAGE_TOTAL_RGB_BYTES:
+                break
+            # 失敗した画像も枚数に数え、取得・デコードの試行自体を制限する。
+            attempted += 1
             if attachment.size > MAX_IMAGE_SIZE_BYTES:
                 print("画像読み込み: サイズ上限を超えているため見送ります。")
                 continue
@@ -201,7 +227,10 @@ async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> l
                 if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
                     print("画像読み込み: 取得した画像がサイズ上限を超えているため見送ります。")
                     continue
-                image_objects.append(await run_in_thread(_decode_image_bytes, image_bytes))
+                image = await run_in_thread(_decode_image_bytes, image_bytes, MAX_IMAGE_TOTAL_RGB_BYTES - total_rgb_bytes)
+                image_objects.append(image)
+                width, height = image.size
+                total_rgb_bytes += width * height * IMAGE_RGB_BYTES_PER_PIXEL
             except Exception as error:
                 print(f"画像読み込みエラー: {error}")
         return image_objects
