@@ -163,6 +163,13 @@ class DeployRunner:
                 except asyncio.CancelledError:
                     if recovery.cancelled():
                         raise
+                except Exception as error:  # noqa: BLE001 — 復旧の失敗で元のキャンセルと終了記録を失わない
+                    detail = f"中断後の復旧で想定外のエラーが発生しました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。"
+                    if self.session.command_state_unknown or isinstance(error, CommandStateUnknownError):
+                        self._finish_unknown(detail)
+                    else:
+                        self._finish("failed", detail)
+                    break
             raise
         except Exception as error:  # noqa: BLE001 — 想定外の失敗でも、画面に「動いたまま」と見せないため記録して終える
             self._finish("failed", f"想定外のエラーでデプロイを止めました（{type(error).__name__}: {error}）。サーバーの状態を確かめてください。")

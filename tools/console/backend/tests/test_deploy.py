@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -533,6 +533,60 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repo.head, before)
         keys = [step.key for step in record.steps]
         self.assertEqual(len(keys), len(set(keys)))
+
+    async def test_canceled_rollback_exception_finishes_record_and_notifies(self):
+        """中断後の巻き戻しが例外でも失敗を確定し、通知・排他解放後にキャンセルを伝える。"""
+        manager = DeployManager()
+        finished = Mock()
+        with patch.object(DeployRunner, "_rollback", new=AsyncMock(side_effect=RuntimeError("復旧の解析に失敗"))) as rollback:
+            async with self.hold_command("git merge --ff-only") as gate:
+                record = manager.start(self.session, self.profile, on_finished=finished, **FAST)
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                manager._task.cancel()
+                gate.release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(manager.wait(), timeout=5)
+            rollback.assert_awaited_once()
+        self.assertEqual(record.status, "failed")
+        self.assertIsNotNone(record.finished_at)
+        self.assertIn("RuntimeError", record.message)
+        self.assertTrue(manager._task.cancelled())
+        self.assertFalse(manager.active)
+        self.assertFalse(manager.running)
+        self.assertFalse(manager.state_unknown)
+        finished.assert_called_once_with()
+        self.assertEqual(len(self.session._conn._channels), 0)
+        # 終了確認済みの失敗は実行中の排他を残さない。
+        manager.start(self.session, self.profile, **FAST)
+        await asyncio.wait_for(manager.wait(), timeout=5)
+
+    async def test_canceled_recovery_exception_keeps_unknown_terminal(self):
+        """復旧の補助処理が例外でも終了未確認のフラグを維持し、キャンセルを伝える。"""
+        manager = DeployManager()
+        finished = Mock()
+
+        async def recover():
+            self.session.command_state_unknown = True
+            raise RuntimeError("復旧の後片付けに失敗")
+
+        with patch.object(DeployRunner, "_recover_canceled", new=AsyncMock(side_effect=recover)):
+            async with self.hold_command("git merge --ff-only") as gate:
+                record = manager.start(self.session, self.profile, on_finished=finished, **FAST)
+                await asyncio.wait_for(gate.started.wait(), timeout=5)
+                manager._task.cancel()
+                gate.release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(manager.wait(), timeout=5)
+        self.assertEqual(record.status, "unknown")
+        self.assertIsNotNone(record.finished_at)
+        self.assertIn("RuntimeError", record.message)
+        self.assertTrue(manager._task.cancelled())
+        self.assertFalse(manager.active)
+        self.assertFalse(manager.running)
+        self.assertTrue(manager.state_unknown)
+        finished.assert_called_once_with()
+        with self.assertRaises(RuntimeError):
+            manager.start(self.session, self.profile, **FAST)
 
     async def test_channel_close_without_exit_keeps_deploy_unknown_and_blocks_retry(self):
         """終了通知のない切断は状態不明を保持し、旧HEAD確認や巻き戻しを送らない。"""
