@@ -147,6 +147,7 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             require_command_completion=lambda: None,
             run=AsyncMock(side_effect=run), disconnect=AsyncMock(side_effect=lambda: self.events.append("disconnect")),
             snapshot=Mock(return_value={}),
+            command_state_unknown=False,
         )
         self.manager = SimpleNamespace(running=False, active=False, state_unknown=False, current=None)
 

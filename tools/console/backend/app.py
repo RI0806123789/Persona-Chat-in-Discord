@@ -115,7 +115,12 @@ def get_profiles() -> dict:
 
 @app.get("/api/connection")
 def get_connection() -> dict:
-    return session.snapshot()
+    return _connection_snapshot()
+
+
+def _connection_snapshot() -> dict:
+    """接続先によらない更新操作の停止状態も、接続・切断の応答に含める。"""
+    return {**session.snapshot(), "state_unknown": session.command_state_unknown or deploys.state_unknown}
 
 
 @app.post("/api/connect")
@@ -147,7 +152,7 @@ async def _connect(body: ConnectRequest) -> dict:
             session.server_info = rc.parse_server_info(result.stdout)
     except SshError:
         pass  # サーバー情報が取れなくても接続自体は成功扱いにする
-    return session.snapshot()
+    return _connection_snapshot()
 
 
 @app.post("/api/disconnect")
@@ -155,7 +160,7 @@ async def disconnect() -> dict:
     async with _connection_change_lock:
         _reject_connection_change_during_deploy()
         await session.disconnect()
-        return session.snapshot()
+        return _connection_snapshot()
 
 
 @app.get("/api/history")

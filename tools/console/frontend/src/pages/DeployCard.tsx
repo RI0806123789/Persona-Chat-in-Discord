@@ -50,6 +50,7 @@ function stepDuration(step: DeployStep, now: number): string | null {
 export function DeployCard({
   deploy,
   running,
+  stateUnknown,
   connected,
   profile,
   git,
@@ -59,6 +60,7 @@ export function DeployCard({
 }: {
   deploy: DeployRecord | null;
   running: boolean;
+  stateUnknown: boolean;
   connected: boolean;
   profile: Profile | null;
   git: GitInfo | null;
@@ -74,7 +76,7 @@ export function DeployCard({
   const allSteps = deploy?.steps ?? [];
   const done = allSteps.filter((step) => step.status !== "pending" && step.status !== "running").length;
   const current = allSteps.find((step) => step.status === "running");
-  const unknown = deploy?.status === "unknown";
+  const unknown = stateUnknown || deploy?.status === "unknown";
 
   return (
     <Card

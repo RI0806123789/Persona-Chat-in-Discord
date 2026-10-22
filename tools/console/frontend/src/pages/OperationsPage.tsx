@@ -41,6 +41,7 @@ export function OperationsPage({
   git,
   deploy,
   deployRunning,
+  stateUnknown,
   onDeploy,
   now,
 }: {
@@ -56,13 +57,14 @@ export function OperationsPage({
   git: GitInfo | null;
   deploy: DeployRecord | null;
   deployRunning: boolean;
+  stateUnknown: boolean;
   onDeploy: () => void;
   now: number;
 }) {
   const privacy = usePrivacy();
   const tone = serviceTone(service);
   const active = service?.active_state === "active";
-  const deployUnknown = deploy?.status === "unknown";
+  const deployUnknown = stateUnknown || deploy?.status === "unknown";
 
   return (
     <div className="grid">
@@ -104,6 +106,7 @@ export function OperationsPage({
       <DeployCard
         deploy={deploy}
         running={deployRunning}
+        stateUnknown={deployUnknown}
         connected={connected}
         profile={profile ?? selectedProfile}
         git={git}

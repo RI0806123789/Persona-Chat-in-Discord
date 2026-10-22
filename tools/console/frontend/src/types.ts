@@ -33,6 +33,8 @@ export interface ServerInfo {
 
 export interface ConnectionState {
   connected: boolean;
+  /** 接続先を変更しても保持する、セッション全体の遠隔処理の終了未確認 */
+  state_unknown: boolean;
   profile: Profile | null;
   connected_at: number | null;
   fingerprint: string | null;

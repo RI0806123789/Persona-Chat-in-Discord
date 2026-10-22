@@ -62,7 +62,8 @@ class TargetConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_server_metadata_is_not_written_after_generation_change_or_command_failure(self):
         selected = profile()
         for changed, exit_status in ((True, 0), (False, 1)):
-            session = SimpleNamespace(connect=AsyncMock(), generation=1, connected=True, server_info=None, snapshot=lambda: {})
+            session = SimpleNamespace(connect=AsyncMock(), generation=1, connected=True, server_info=None, snapshot=lambda: {},
+                                      command_state_unknown=False)
             async def run(*args, **kwargs):
                 if changed:
                     session.generation += 1

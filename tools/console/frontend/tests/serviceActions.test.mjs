@@ -121,3 +121,24 @@ test("状態不明でタスク完了後も両画面のサービス操作とデ�
   assert.equal(card.props.actions.props.disabled, true);
   assert.equal(card.props.actions.props.busy, false);
 });
+
+test("再接続後にデプロイ記録がなくてもセッションの状態不明で全更新ボタンを止める", () => {
+  const current = service("active", "running");
+  const props = { connected: true, profile: { id: "B" }, service: current, status: { service: current },
+    samples: [], deploy: null, deployRunning: false, stateUnknown: true, deployUnknown: true,
+    busyAction: null, operations: [], now: 0 };
+  const operations = nodes(OperationsPage(props));
+  const actions = operations.filter((node) => node.type === "Button" && ["stop", "restart", "play"].includes(node.props.icon));
+  assert.equal(actions.length, 3);
+  assert.ok(actions.every((node) => node.props.disabled));
+  const cardProps = operations.find((node) => node.type === "DeployCard").props;
+  assert.equal(cardProps.stateUnknown, true);
+  const card = DeployCard(cardProps);
+  assert.equal(card.props.actions.props.disabled, true);
+  assert.equal(card.props.actions.props.busy, false);
+  assert.match(card.props.actions.props.children, /状態不明/);
+  const hero = nodes(OverviewPage(props)).find((node) => node.type?.name === "ServiceHero");
+  assert.equal(nodes(hero.type(hero.props)).find((node) => node.type === "SplitButton").props.disabled, true);
+  // 状態不明がない通常の接続ではデプロイを許可する。
+  assert.equal(DeployCard({ ...cardProps, stateUnknown: false }).props.actions.props.disabled, false);
+});

@@ -58,7 +58,7 @@ function renderer() {
 
 const connection = (id) => ({ connected: !!id, profile: id ? { id, label: `架空の${id}` } : null, connected_at: id ? 1 : null });
 
-function consoleHarness(api) {
+function consoleHarness(api, renderTree = false) {
   const runtime = renderer();
   const notices = [];
   const privacy = compile(privacySource, { react: runtime.hooks });
@@ -73,12 +73,17 @@ function consoleHarness(api) {
     "./navigation": { PAGES: [{ id: "overview" }], isPageId: () => true },
     "./profiles": { unsetFieldsOf: () => [] },
     "./theme/theme": { SEED_OPTIONS: [{ id: "test", hex: "#123456" }] },
+    "./pages/OverviewPage": { OverviewPage: "OverviewPage" },
+    "./pages/OperationsPage": { OperationsPage: "OperationsPage" },
   };
   modules["./controllers"] = compile(controllerSource, modules);
-  const exposed = "return {busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, notify};";
-  const instrumented = appSource.replace("function Console() {", "export function Console() {")
-    .replace("  return (\n    <PrivacyContext.Provider", `  ${exposed}\n  return (\n    <PrivacyContext.Provider`);
-  assert.ok(instrumented.includes(exposed));
+  const controls = "busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, stateUnknown, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, setStoredPage, notify";
+  const exported = appSource.replace("function Console() {", "export function Console() {");
+  const instrumented = renderTree
+    ? exported.replace("  return (\n    <PrivacyContext.Provider", "  const tree = (\n    <PrivacyContext.Provider")
+      .replace("    </PrivacyContext.Provider>\n  );", `    </PrivacyContext.Provider>\n  );\n  return {${controls}, tree};`)
+    : exported.replace("  return (\n    <PrivacyContext.Provider", `  return {${controls}};\n  return (\n    <PrivacyContext.Provider`);
+  assert.ok(instrumented.includes(`return {${controls}`));
   const component = compile(instrumented, modules).Console;
   return { render: () => runtime.render(component), notices, privacy };
 }
@@ -413,6 +418,55 @@ test("状態不明でタスク完了後もデプロイとサービス操作の�
   assert.equal(harness.render().confirmOpen, false);
   assert.equal(harness.notices.at(-1).tone, "critical");
   assert.match(harness.notices.at(-1).title, /状態不明/);
+});
+
+test("別接続先へ移ってデプロイ記録を捨てても状態不明の警告・案内と操作停止を維持する", async () => {
+  const calls = [];
+  let snapshot = { ...connection("A"), state_unknown: true };
+  const harness = consoleHarness({
+    connection: async () => snapshot,
+    disconnect: async () => (snapshot = { ...connection(null), state_unknown: true }),
+    connect: async (id) => (snapshot = { ...connection(id), state_unknown: true }),
+    deploy: async () => ({ running: false, deploy: { profile_id: "A", status: "unknown" } }),
+    service: (...args) => calls.push(args), startDeploy: (...args) => calls.push(args),
+  }, true);
+  const nodes = (node) => Array.isArray(node) ? node.flatMap(nodes)
+    : node && typeof node === "object" ? [node, ...nodes(node.props?.children)] : [];
+  harness.render().applyConnection(snapshot);
+  await harness.render().refreshDeploy();
+  assert.equal(harness.render().deploy.status, "unknown");
+  harness.render().setSelectedProfileId("B");
+  for (const action of ["handleDisconnect", "handleConnect"]) {
+    await harness.render()[action]();
+    await harness.render().refreshDeploy();
+    const current = harness.render();
+    assert.equal(current.deploy, null);
+    assert.equal(current.stateUnknown, true);
+    const warning = nodes(current.tree).find((node) => node.props?.role === "alert");
+    assert.ok(warning);
+    const text = JSON.stringify(warning.props.children);
+    assert.match(text, /このセッション全体/);
+    assert.match(text, /接続先を変えても解除されません/);
+    assert.match(text, /残留処理の終了とコード・依存関係・サービスの状態を確認してから/);
+    assert.match(text, /バックエンドを起動し直して/);
+    current.requestDeploy();
+    for (const action of ["start", "stop", "restart"]) harness.render().requestAction(action);
+    assert.equal(harness.render().confirmOpen, false);
+  }
+  const overview = nodes(harness.render().tree).find((node) => node.type === "OverviewPage");
+  assert.equal(overview.props.deployUnknown, true);
+  harness.render().setStoredPage("operations");
+  const operations = nodes(harness.render().tree).find((node) => node.type === "OperationsPage");
+  assert.equal(operations.props.stateUnknown, true);
+  assert.equal(operations.props.deploy, null);
+  assert.deepEqual(calls, []);
+  // 手動確認後に再起動したバックエンドが通常状態を返したときだけ解除される。
+  harness.render().applyConnection({ ...connection("B"), state_unknown: false });
+  const recovered = harness.render();
+  assert.equal(recovered.stateUnknown, false);
+  assert.equal(nodes(recovered.tree).some((node) => node.props?.role === "alert"), false);
+  recovered.requestDeploy();
+  assert.equal(harness.render().confirmOpen, true);
 });
 
 

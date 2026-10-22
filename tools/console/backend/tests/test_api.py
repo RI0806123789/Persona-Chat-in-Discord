@@ -166,6 +166,60 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                         run.assert_not_awaited()
                     self.assertTrue(manager.state_unknown)
 
+    async def test_connection_snapshot_keeps_unknown_after_switching_profile(self):
+        """別の接続先へ移っても、接続APIは記録と独立したセッション全体の状態不明を返す。"""
+        other = replace(self.profile, id="other", label="別の架空接続先")
+        manager = DeployManager()
+        with mock.patch.object(app, "deploys", manager), mock.patch.object(
+            app, "_connection_change_lock", asyncio.Lock(),
+        ), mock.patch.object(app, "load_profiles", return_value=(
+            {self.profile.id: self.profile, other.id: other}, "検証用設定",
+        )):
+            for session_unknown, deploy_unknown in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(session_unknown=session_unknown, deploy_unknown=deploy_unknown):
+                    await self.session.connect(self.profile)
+                    self.session.command_state_unknown = session_unknown
+                    manager.current = new_record(1, self.profile) if deploy_unknown else None
+                    if manager.current is not None:
+                        manager.current.status = "unknown"
+                        manager.current.finished_at = 1
+                    expected = session_unknown or deploy_unknown
+                    status, body = await request("/api/connection")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["state_unknown"], expected)
+                    # 切断を挟まない切替でも、接続先とは独立した停止状態を返す。
+                    status, body = await request("/api/connect", method="POST", body={"profile_id": other.id})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["profile"]["id"], other.id)
+                    self.assertEqual(json.loads(body)["state_unknown"], expected)
+                    status, body = await request("/api/disconnect", method="POST")
+                    self.assertEqual(status, 200)
+                    self.assertFalse(json.loads(body)["connected"])
+                    self.assertEqual(json.loads(body)["state_unknown"], expected)
+                    status, body = await request("/api/connect", method="POST", body={"profile_id": other.id})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["profile"]["id"], other.id)
+                    self.assertEqual(json.loads(body)["state_unknown"], expected)
+                    status, body = await request("/api/connection")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["profile"]["id"], other.id)
+                    self.assertEqual(json.loads(body)["state_unknown"], expected)
+                    self.assertEqual(self.session.command_state_unknown, session_unknown)
+                    self.assertEqual(manager.state_unknown, deploy_unknown)
+                    if deploy_unknown:
+                        self.assertNotEqual(manager.current.profile_id, other.id)
+                        status, body = await request("/api/deploy")
+                        self.assertEqual(status, 200)
+                        self.assertFalse(json.loads(body)["running"])
+                        self.assertEqual(json.loads(body)["deploy"]["profile_id"], self.profile.id)
+                    self.assertEqual((await request("/api/status"))[0], 200)
+                    if expected:
+                        target = {"profile_id": other.id, "connected_at": self.session.connected_at}
+                        with mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+                            for path in ("/api/deploy", "/api/service/start", "/api/service/stop", "/api/service/restart"):
+                                self.assertEqual((await request(path, method="POST", body=target))[0], 409, path)
+                            run.assert_not_awaited()
+
     async def test_service_actions_record_results_and_change_service_state(self):
         target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
         old_pid = self.bot.pid
