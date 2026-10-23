@@ -28,7 +28,7 @@ git switch -c feat/short-description
 
 ## 開発環境
 
-Python 3.10以上とGitが必要です。以下はリポジトリルートで実行します。
+Python 3.11以上とGitが必要です。以下はリポジトリルートで実行します。
 
 **Windows / PowerShell**
 
@@ -80,7 +80,7 @@ python -B -m unittest discover -s tests -v
 
 APIキー・`.env` は不要です。外部サービスの呼び出しはモックに置き換え、DBとJSONの確認には一時ディレクトリと架空のデータを使います。`bot.py` のimportは設定読込・DB初期化を行うため避け、メッセージ処理の確認には副作用のない `persona_bot.core.message_handler.MessageHandler` へサービスを注入します。既存の実行時データは使いません。
 
-[回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.10／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
+[回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.11／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
 
 ## 管理コンソールをローカルで確認する
 
@@ -97,7 +97,7 @@ npm test
 npm run build
 ```
 
-WindowsでPowerShellの実行ポリシーにより`npm`が使えない場合は`npm.cmd`を使う。`npm run build`はTypeScript検証も含む。ルートの`tests`とバックエンドの`tests`はimport名が異なる前提のため、上記のように作業ディレクトリを分けて実行する。`tests.yml`でバックエンドはWindows/Linux・Python 3.10/3.13、画面はWindows/Linux・Node.js 24を検証する。
+WindowsでPowerShellの実行ポリシーにより`npm`が使えない場合は`npm.cmd`を使う。`npm run build`はTypeScript検証も含む。ルートの`tests`とバックエンドの`tests`はimport名が異なる前提のため、上記のように作業ディレクトリを分けて実行する。`tests.yml`でバックエンドはWindows/Linux・Python 3.11/3.13、画面はWindows/Linux・Node.js 24を検証する。
 
 ## Discord・Geminiを使う確認
 

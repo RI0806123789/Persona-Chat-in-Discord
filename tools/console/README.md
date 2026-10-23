@@ -78,7 +78,7 @@ SSH の標準入力でサーバーへ送り、サーバーの `python3`（標準
 
 ## 初回セットアップ
 
-Python 3.10 以上と Node.js 20.19 以上（22 系なら 22.12 以上）が要ります。リポジトリのルートで、PowerShell から次を実行します。
+Python 3.11 以上と Node.js 20.19 以上（22 系なら 22.12 以上）が要ります。リポジトリのルートで、PowerShell から次を実行します。
 
 ```powershell
 cd tools\console\backend

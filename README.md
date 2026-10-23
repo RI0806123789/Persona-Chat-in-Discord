@@ -2,7 +2,7 @@
 
 ## 🛠️ 技術スタック
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
 
 Google Gemini を使い、ペルソナ（キャラクター）になりきって会話する Discord ボットです。テキストチャット・ボイスチャンネルでの読み上げ・長期記憶・リマインダーなどの機能を備えています。
 
@@ -96,7 +96,7 @@ Windows と Linux（Ubuntu など）の両方で動作します。
 
 ### 1. 事前準備
 
-- **Python 3.10 以上**
+- **Python 3.11 以上**
 - **Discord Bot トークン**（[Discord Developer Portal](https://discord.com/developers/applications) で取得）
 - **Gemini API キー**（[Google AI Studio](https://aistudio.google.com/app/apikey) で取得）
 - **Opus 共有ライブラリ**（Linux で読み上げを使う場合のみ。手順 4）
@@ -132,7 +132,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.10と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
+直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.11と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
 
 `tzdata`も同時に導入し、WindowsやOSのタイムゾーンDBがない環境でも日本時間を使います。既存環境で「タイムゾーン(Asia/Tokyo)の読み込みに失敗」と出る場合は、同じ仮想環境で上のインストールを行ってからボットを再起動してください。
 
@@ -374,7 +374,7 @@ APIキーや `.env`、Discord接続、Gemini呼び出しは不要です。外部
 
 DBの初期化・設定保存と復元、文書処理の異常系、会話リセット、リマインダー登録・記憶更新の並行処理、生成中の設定変更、コメントの流量制限、JSON保存の中断、長いリマインダー一覧を検証します。`message_handler.py` は起動処理を実行せずimportでき、実際のメッセージ処理へモックを注入してテストします。
 
-[回帰テストCI](.github/workflows/tests.yml) はWindows／LinuxとPython 3.10／3.13で、依存関係・構文・回帰テストを自動確認します。詳しい手順は[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照してください。
+[回帰テストCI](.github/workflows/tests.yml) はWindows／LinuxとPython 3.11／3.13で、依存関係・構文・回帰テストを自動確認します。詳しい手順は[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照してください。
 
 ## 🖥️ 開発者用ダッシュボード
 
@@ -529,6 +529,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 #### 運用・構成の整備
 
+- **Python 3.11 以上が必須に**(BETA): Pillow に出ていた Dependabot のセキュリティ警告（critical・high・medium）の修正版 13.0.0 が Python 3.11 以上を必須とするため、対応する最小の Python を 3.10 から 3.11 へ変更。CI と各ガイドの対象版を 3.11／3.13 に更新し、あわせて pypdf を 6.21.2、管理コンソールの vite を 7.3.7 へ更新して該当の警告を解消。**Python 3.10 で動かしている環境（サーバーを含む）は、更新前に Python 3.11 以上へ入れ替えて `pip install -r requirements.txt` を実行すること**（3.10 のままでは Pillow 13.0.0 を導入できない）
 - **管理コンソールの起動ブラウザ**(BETA): Windowsの専用画面を、Microsoft Edgeが入っていてもGoogle Chromeで開くように変更。Chromeは全てのインストール先を探し、見つからない場合だけ従来どおりEdgeで開く。専用プロファイルはブラウザごとに分け、Chromeでの初回は画面の設定が既定値から始まる
 
 #### 不具合修正
