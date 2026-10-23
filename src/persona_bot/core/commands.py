@@ -47,7 +47,7 @@ async def handle_command_error(
             await interaction.followup.send(notice, ephemeral=True)
         else:
             await interaction.response.send_message(notice, ephemeral=True)
-    except discord.DiscordException as send_error:
+    except Exception as send_error:
         print(f"スラッシュコマンドの失敗通知を送信できませんでした: {type(send_error).__name__}")
 
 
@@ -93,10 +93,22 @@ def register_commands(
     voice_commands = VoiceCommandCoordinator()
 
     def owned_command(callback):
-        """Discordが生成したコマンド本体も、明示した所有者の終了待機へ登録する。"""
+        """Discordが生成したコマンドの本体と失敗通知を、所有者の終了待機へ登録する。"""
         @wraps(callback)
         async def invoke(interaction: discord.Interaction) -> None:
-            await command_tasks.run(callback(interaction))
+            async def run_command() -> None:
+                try:
+                    await callback(interaction)
+                except Exception as error:
+                    # SDKと同じ例外形式を使い、失敗通知を所有期間内で一度だけ行う。
+                    interaction.command_failed = True
+                    if not isinstance(error, app_commands.AppCommandError):
+                        error = app_commands.CommandInvokeError(interaction.command, error)
+                    await wait_for_cleanup(
+                        handle_command_error(interaction, error), label="スラッシュコマンドの失敗通知",
+                    )
+
+            await command_tasks.run(run_command())
 
         return invoke
 

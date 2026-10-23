@@ -44,8 +44,9 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         self.guild = SimpleNamespace(id=1, me=object(), voice_client=None)
         self.interaction = SimpleNamespace(
             guild=self.guild,
+            command=SimpleNamespace(name="join"),
             user=Mock(spec=discord.Member, voice=SimpleNamespace(channel=self.channel)),
-            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), is_done=Mock(return_value=False)),
             followup=SimpleNamespace(send=AsyncMock()),
         )
 
@@ -147,11 +148,12 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("架空の切断失敗", reply)
                 self.channel.connect.assert_not_awaited()
 
-    def another_interaction(self, *, guild=None, channel=None):
+    def another_interaction(self, *, guild=None, channel=None, name="join"):
         return SimpleNamespace(
             guild=guild if guild is not None else self.guild,
+            command=SimpleNamespace(name=name),
             user=Mock(spec=discord.Member, voice=SimpleNamespace(channel=channel or self.channel)),
-            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), is_done=Mock(return_value=False)),
             followup=SimpleNamespace(send=AsyncMock()),
         )
 
@@ -291,13 +293,14 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         """退出の応答保留に失敗しても、接続中の参加を無効にし続けない。"""
         entered, release = asyncio.Event(), asyncio.Event()
         voice = self.connect_to_guild(self.guild, self.channel, started=entered, release=release)
-        leaving = self.another_interaction()
+        leaving = self.another_interaction(name="leave")
         leaving.response.defer.side_effect = OSError("架空の応答失敗")
         joining = asyncio.create_task(self.commands["join"](self.interaction))
         try:
             await asyncio.wait_for(entered.wait(), 2)
-            with self.assertRaises(OSError):
-                await self.commands["leave"](leaving)
+            await self.commands["leave"](leaving)
+            leaving.response.send_message.assert_awaited_once()
+            self.assertTrue(leaving.response.send_message.call_args.kwargs["ephemeral"])
             release.set()
             await asyncio.wait_for(joining, 2)
         finally:
@@ -597,8 +600,13 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(error=type(error).__name__):
                 interaction = self.another_interaction()
                 interaction.response.defer.side_effect = error
-                with self.assertRaises(type(error)):
+                if isinstance(error, asyncio.CancelledError):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await self.commands["join"](interaction)
+                else:
                     await self.commands["join"](interaction)
+                    interaction.response.send_message.assert_awaited_once()
+                    self.assertTrue(interaction.response.send_message.call_args.kwargs["ephemeral"])
                 self.channel.connect.reset_mock()
                 await asyncio.wait_for(self.commands["join"](self.another_interaction()), 2)
                 self.channel.connect.assert_awaited_once()
