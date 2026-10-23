@@ -356,6 +356,7 @@ function BotInsightsCard({
 }
 
 function GitCard({ status, now }: { status: StatusResponse | null; now: number }) {
+  const privacy = usePrivacy();
   const git = status?.git ?? null;
   const committed = git?.committed_at ? Date.parse(git.committed_at) : NaN;
   return (
@@ -363,17 +364,17 @@ function GitCard({ status, now }: { status: StatusResponse | null; now: number }
       {git ? (
         <>
           <div className="chips">
-            <Chip icon="git">{git.branch}</Chip>
-            <Chip>{git.describe}</Chip>
+            <Chip icon="git">{privacy.mask(git.branch)}</Chip>
+            <Chip>{privacy.redact(git.describe)}</Chip>
             {git.dirty_files > 0 ? <StatusChip tone="warning" label={`未コミット ${git.dirty_files} 件`} /> : <StatusChip tone="good" label="クリーン" />}
           </div>
-          <p className="title-medium">{git.subject}</p>
+          <p className="title-medium">{privacy.redact(git.subject)}</p>
           <span className="body-small muted mono">
             {git.commit} · {Number.isNaN(committed) ? git.committed_at : formatRelative(committed, now)}
           </span>
         </>
       ) : status?.git_error ? (
-        <InlineError>{status.git_error}</InlineError>
+        <InlineError>{privacy.redact(status.git_error)}</InlineError>
       ) : (
         <LoadingIndicator size={36} />
       )}
@@ -383,10 +384,11 @@ function GitCard({ status, now }: { status: StatusResponse | null; now: number }
 
 function RecentLogs({ logs, onNavigate }: { logs: LogEntry[]; onNavigate: (page: PageId) => void }) {
   const privacy = usePrivacy();
-  // Traceback や会話の塊を正しく判定するため、少し前から判定してから末尾8件を見せる
+  // 会話の秘匿判定は表示範囲を切る前に行う。Tracebackの分類は直前40件を使う。
+  const conversation = conversationLines(logs);
   const tail = logs.slice(-40);
   const tailLevels = classifyEntries(tail);
-  const tailConversation = conversationLines(tail);
+  const tailConversation = conversation.slice(-40);
   const offset = tail.length - Math.min(8, tail.length);
   const recent = tail.slice(-8).map((entry, index) => ({
     entry,

@@ -4,12 +4,14 @@
 // フォーカスは開いたら中へ移し、Tab は中で循環させ、閉じたら開く前の場所へ戻す（useModalFocus）。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useEmergeFrom, useModalFocus } from "../hooks";
+import { usePrivacy, type Privacy } from "../privacy";
 import { Icon, type IconName } from "./Icon";
 import { Button, IconButton, Kbd } from "./ui";
 
 export interface ConfirmRequest {
-  title: string;
-  body: ReactNode;
+  title: string | ((privacy: Privacy) => string);
+  /** 保存時に表示を固定せず、描画のたびに現在の伏せ字設定で組み立てる。 */
+  body: (privacy: Privacy) => ReactNode;
   confirmLabel: string;
   tone: "danger" | "primary";
   icon: IconName;
@@ -19,6 +21,7 @@ export interface ConfirmRequest {
 }
 
 export function ConfirmDialog({ request, open, onClose }: { request: ConfirmRequest | null; open: boolean; onClose: () => void }) {
+  const privacy = usePrivacy();
   const [typed, setTyped] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -56,10 +59,10 @@ export function ConfirmDialog({ request, open, onClose }: { request: ConfirmRequ
           <Icon name={request?.icon ?? "info"} size={24} />
         </span>
         <h2 id="confirm-title" className="headline-small">
-          {request?.title}
+          {privacy.redact(typeof request?.title === "function" ? request.title(privacy) : request?.title)}
         </h2>
         <div id="confirm-body" className="m3-dialog-body body-medium">
-          {request?.body}
+          {request?.body(privacy)}
         </div>
         <form
           onSubmit={(event) => {
@@ -81,7 +84,7 @@ export function ConfirmDialog({ request, open, onClose }: { request: ConfirmRequ
                 placeholder=" "
                 aria-describedby="confirm-require"
               />
-              <span className="m3-text-field-label">確認のため「{request.requireText}」と入力</span>
+              <span className="m3-text-field-label">確認のため「{privacy.redact(request.requireText)}」と入力</span>
               <span id="confirm-require" className="m3-text-field-support body-small">
                 {typed && !allowed ? "サービス名と一致していません" : "一致すると実行できるようになります"}
               </span>
@@ -92,7 +95,7 @@ export function ConfirmDialog({ request, open, onClose }: { request: ConfirmRequ
               キャンセル
             </Button>
             <Button ref={confirmRef} type="submit" variant={request?.tone === "danger" ? "danger" : "filled"} disabled={!allowed}>
-              {request?.confirmLabel ?? "実行"}
+              {privacy.redact(request?.confirmLabel ?? "実行")}
             </Button>
           </div>
         </form>

@@ -128,7 +128,7 @@ export function DeployCard({
           {running && !unknown && (
             <div className="deploy-progress">
               <span className="body-medium">
-                {current ? `「${current.title}」を実行中` : "準備中"}（{done} / {allSteps.length}）
+                {current ? `「${privacy.redact(current.title)}」を実行中` : "準備中"}（{done} / {allSteps.length}）
               </span>
               <WavyProgress value={allSteps.length ? done / allSteps.length : 0} label="デプロイの進み具合" />
             </div>
@@ -197,7 +197,7 @@ function StepItem({ step, index, now }: { step: DeployStep; index: number; now: 
     <li className={`deploy-step is-${step.status}`}>
       <span className={`deploy-step-icon tone-${status.tone}`} aria-hidden="true">
         {step.status === "running" ? (
-          <LoadingIndicator size={32} label={`${step.title}を実行中`} />
+          <LoadingIndicator size={32} label={`${privacy.redact(step.title)}を実行中`} />
         ) : step.status === "pending" ? (
           <span className="step-number label-large">{index}</span>
         ) : (
@@ -206,18 +206,18 @@ function StepItem({ step, index, now }: { step: DeployStep; index: number; now: 
       </span>
       <div className="deploy-step-body">
         <div className="deploy-step-head">
-          <strong className="title-small">{step.title}</strong>
+          <strong className="title-small">{privacy.redact(step.title)}</strong>
           <StatusChip tone={status.tone} label={status.label} />
           {duration && <span className="label-medium muted mono">{duration}</span>}
         </div>
-        <span className="body-small muted">{step.description}</span>
+        <span className="body-small muted">{privacy.redact(step.description)}</span>
         {step.message && <p className={`body-medium deploy-step-message ${step.status === "failed" ? "is-error" : ""}`}>{privacy.redact(step.message)}</p>}
         {step.checks.length > 0 && (
           <ul className="deploy-checks" aria-label="確かめたこと">
             {step.checks.map((check, checkIndex) => (
               <li key={checkIndex} className={check.ok ? "is-ok" : "is-ng"}>
                 <Icon name={check.ok ? "checkCircle" : "error"} size={18} filled />
-                <span className="body-medium">{check.label}</span>
+                <span className="body-medium">{privacy.redact(check.label)}</span>
                 {check.detail && <span className="body-small mono deploy-check-detail">{privacy.redact(check.detail)}</span>}
               </li>
             ))}
@@ -226,7 +226,9 @@ function StepItem({ step, index, now }: { step: DeployStep; index: number; now: 
         {(step.commands.length > 0 || step.output) && (
           <details className="deploy-output">
             <summary className="label-large">実行したコマンドと出力（{step.commands.length} 件）</summary>
-            <pre>{redactText(step.output || step.commands.map((command) => `$ ${command}`).join("\n"), privacy)}</pre>
+            <pre>{step.output_contains_logs === false
+              ? privacy.redact(step.output || step.commands.map((command) => `$ ${command}`).join("\n"))
+              : redactText(step.output || step.commands.map((command) => `$ ${command}`).join("\n"), privacy)}</pre>
           </details>
         )}
       </div>

@@ -98,6 +98,8 @@ export interface LogEntry {
   priority: number | null;
   pid: number | null;
   source: string;
+  /** フロントエンドが受信時に付ける属性。原文と分けて保持する。 */
+  messagePrivacy?: "unknown" | "conversation" | "system";
 }
 
 export interface Operation {
@@ -184,6 +186,8 @@ export interface DeployStep {
   finished_at: number | null;
   commands: string[];
   output: string;
+  /** ログ抜粋を含む場合は、文字列への切り詰め後も本文を保守的に隠す。 */
+  output_contains_logs?: boolean;
   checks: DeployCheck[];
   message: string;
 }

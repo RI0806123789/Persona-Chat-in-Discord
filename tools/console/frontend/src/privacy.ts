@@ -3,7 +3,9 @@
 // ホスト名・ホスト鍵・ボット名・サーバー名・チャンネル名・利用者の表示名も、分かっている文字列を探して隠す（redact）。
 // bot.db のテーブルの中身は、列の種類ごとに隠す（dbTables.ts の isSecretKind）。
 import { createContext, useContext } from "react";
-import type { ConnectionState, GitInfo, Insights, LogEntry, Profile } from "./types";
+import type { ConnectionState, GitInfo, Insights, Profile } from "./types";
+import { conversationLines } from "./logPrivacy";
+export { conversationLines } from "./logPrivacy";
 
 export const MASK = "••••••";
 
@@ -83,40 +85,10 @@ export function usePrivacy(): Privacy {
 
 // ---------------------------------------------------------------- ログの会話の本文
 
-// ボットは会話ごとに次の形でログを出す（src/persona_bot/utils/usage_graph.py の log_snapshot）:
-//   ------（区切り）/ User (場所)：質問 / 添付 / Prompt ... / Total token count：n / AI：応答（複数行のことがある）/ ------
-// 応答の2行目以降は journald では別の行になるため、「AI：」から区切り線までを1つの塊として扱う。
+// 任意本文は運用ログと区別できないため、受信時の属性で隠す（logPrivacy.ts）。
 const USER_LINE = /^User \((.*?)\)：/;
 const AI_LINE = /^AI：/;
-const SEPARATOR = /^-{20,}$/;
-const PROMPT_LINE = /^Prompt text count：/;
-// 「#雑談」のようなチャンネル名（ログの中ではチャンネル名を一覧から知る方法が無いため、形で探す）
 const CHANNEL_MENTION = /#[^\s#、。，．,.:：)）」』\]]+/g;
-
-/** 各行が「会話の本文」に当たるかどうか（true なら伏せ字モードで本文を隠す）。 */
-export function conversationLines(entries: LogEntry[]): boolean[] {
-  const result: boolean[] = [];
-  let state: "none" | "user" | "ai" = "none";
-  for (const entry of entries) {
-    const message = entry.message;
-    if (USER_LINE.test(message)) {
-      state = "user";
-      result.push(true);
-    } else if (AI_LINE.test(message)) {
-      state = "ai";
-      result.push(true);
-    } else if (SEPARATOR.test(message.trim())) {
-      state = "none";
-      result.push(false);
-    } else if (state === "user" && PROMPT_LINE.test(message)) {
-      state = "none";
-      result.push(false);
-    } else {
-      result.push(state !== "none");
-    }
-  }
-  return result;
-}
 
 /** 伏せ字モードで、ログ1行を見せる形にする。 */
 export function redactLogLine(text: string, isConversation: boolean, privacy: Privacy): string {
@@ -131,7 +103,7 @@ export function redactLogLine(text: string, isConversation: boolean, privacy: Pr
 }
 
 /**
- * 複数行の文章（デプロイの出力など）を伏せ字にする。ログと同じく、会話の本文は行の塊ごと隠す。
+ * 複数行の文章（デプロイの出力など）を伏せ字にする。ログと同じく、境界が不明な本文も隠す。
  * 再起動直後のログを出力に含めるため、そこに利用者の発言が混ざりうる。
  */
 export function redactText(text: string, privacy: Privacy): string {

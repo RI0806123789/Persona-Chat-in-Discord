@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { logStreamUrl } from "./api";
 import { appendLogEntries } from "./logs";
+import { createLogPrivacyTracker } from "./logPrivacy";
 import type { LogEntry } from "./types";
 
 /** enabled の間、callback を intervalMs ごとに呼ぶ（前の呼び出しが終わってから次を予約する）。 */
@@ -266,6 +267,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
     }
     let disposed = false;
     let terminalMessage = false;
+    const classifyPrivacy = createLogPrivacyTracker();
     bufferRef.current = [];
     heldRef.current = [];
     heldCountRef.current = 0;
@@ -309,11 +311,13 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
         return;
       }
       if (data.type === "entry") {
+        // サーバーからの同名属性は使わず、保持上限・pause・clearより前に判定する。
+        const entry = classifyPrivacy(data.entry);
         if (pausedRef.current) {
-          heldRef.current = appendLogEntries(heldRef.current, [data.entry]);
+          heldRef.current = appendLogEntries(heldRef.current, [entry]);
           heldCountRef.current += 1;
         } else {
-          bufferRef.current = appendLogEntries(bufferRef.current, [data.entry]);
+          bufferRef.current = appendLogEntries(bufferRef.current, [entry]);
         }
       } else {
         terminalMessage = true;
