@@ -19,6 +19,7 @@ from persona_bot.views.functions_view import FunctionsView, GraphButton, Groundi
 from persona_bot.views.help_view import HelpView
 from persona_bot.views.reminder_view import ReminderView
 from persona_bot.views.stats_privacy_view import StatsPrivacyView, StatsPrivacyConfirmButton, StatsDataDeleteButton, StatsCollectToggleButton
+from persona_bot.views.stats_view import StatsView
 from persona_bot.views.view_parts import BackButton, PanelView, swap_panel
 
 
@@ -157,13 +158,31 @@ class PanelConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         pending = self.start(self.dispatch(self.hub, GroundingToggleButton))
         await asyncio.wait_for(entered.wait(), 2)
         await self.dispatch(self.hub, GraphButton)
-        self.hub.stats.has_data.return_value = False
-        await self.dispatch(self.hub, StatsButton)
         release.set()
         await asyncio.wait_for(pending, 2)
         self.assertIs(self.current, self.hub)
         self.assertEqual(len(self.edits), 1)
         self.assertIn("Google検索: ✅ 有効", self.edits[0]["content"])
+
+    async def test_stats_entry_with_no_public_data_invalidates_pending_hub_refresh(self):
+        hub = self.make_hub()
+        entered, release, self.settings.persist = self.waiting(True)
+        hub.stats.has_data.return_value = False
+        pending = self.start(self.dispatch(hub, GroundingToggleButton))
+        await asyncio.wait_for(entered.wait(), 2)
+        await self.dispatch(hub, StatsButton)
+        panel = self.track(self.current)
+        self.assertIsInstance(panel, StatsView)
+        release.set()
+        await asyncio.wait_for(pending, 2)
+        self.assertIs(self.current, panel)
+        self.assertEqual(len(self.edits), 1)
+        self.assertTrue(hub.is_finished())
+        self.assertFalse(panel.is_finished())
+        self.assertTrue(self.settings.grounding_enabled)
+        self.settings.persist.assert_awaited_once()
+        await hub.on_timeout()
+        self.assertEqual(len(self.edits), 1)
 
     async def test_latest_query_wins_when_database_results_finish_in_reverse_order(self):
         first_entered, first_release, first = self.waiting([])

@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import io
 from pathlib import Path
 import sys
 import tempfile
@@ -155,6 +156,60 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.service.ensure_analysis("user-1", force=True))
         self.gemini.generate.assert_not_awaited()
         self.assertEqual(self.db.stats_load_all()["user-1"], before)
+
+    async def test_only_opted_out_owner_can_read_saved_dashboard_without_changing_data(self) -> None:
+        self.seed(1)
+        self.assertTrue(await self.service.set_opt_out("user-0", "架空の本人", True))
+        before = deepcopy(self.db.stats_load_all())
+        self.assertFalse(self.service.has_data())
+        self.assertEqual(self.service.get_user_options("user-0"), [])
+        buffer = io.BytesIO(b"fictional-png")
+        self.addCleanup(buffer.close)
+        with patch.object(self.service, "build_hourly_graph", return_value=buffer):
+            caption, images = await self.service.build_dashboard("user-0", "all", viewer_id="user-0")
+        self.assertIn("停止前の記録", caption)
+        self.assertIn("累計発言回数: 1 回", caption)
+        self.assertEqual([name for name, _ in images], ["stats_hourly.png"])
+        self.assertEqual(self.db.stats_load_all(), before)
+        self.assertTrue(StatsService(self.db, self.gemini).is_opted_out("user-0"))
+        self.gemini.generate.assert_not_awaited()
+
+    async def test_other_viewer_cannot_distinguish_opt_out_from_empty_statistics(self) -> None:
+        observed = []
+        for opted_out in (True, False):
+            entries = deepcopy(self.db.stats_load_all())
+            hidden = StatsService._new_entry("架空の対象")
+            hidden.update(total_count=8 if opted_out else 0, opt_out=opted_out)
+            entries["user-1"] = hidden
+            self.db.stats_save_all(entries)
+            self.service = StatsService(self.db, self.gemini)
+            buffer = io.BytesIO(b"fictional-ranking")
+            self.addCleanup(buffer.close)
+            with patch.object(self.service, "_render_ranking_graph", return_value=buffer) as rendering:
+                graph = await self.service.build_ranking_graph()
+            self.assertIs(graph, buffer)
+            graph.close()
+            caption, images = await self.service.build_dashboard("user-1", "all", viewer_id="user-0")
+            self.assertEqual(images, [])
+            self.assertNotIn("停止", caption)
+            self.assertEqual([uid for uid, _, _ in self.service.get_user_options("user-1")], ["user-0"])
+            self.assertEqual(rendering.call_args.args[0], [("架空の利用者0", 1)])
+            observed.append((self.service.has_data(), self.service.get_user_options("user-1"),
+                             caption, rendering.call_args.args))
+        self.assertEqual(observed[0], observed[1])
+        self.gemini.generate.assert_not_awaited()
+
+    async def test_all_opted_out_users_are_absent_from_candidates_and_ranking(self) -> None:
+        self.assertTrue(await self.service.set_opt_out("user-0", "架空の本人", True))
+        self.assertFalse(self.service.has_data())
+        self.assertEqual(self.service.get_user_options("user-0"), [])
+        with patch.object(self.service, "_render_ranking_graph") as rendering:
+            self.assertIsNone(await self.service.build_ranking_graph())
+        rendering.assert_not_called()
+        caption, images = await self.service.build_dashboard("user-1", "all", viewer_id="user-0")
+        self.assertEqual(caption, "架空の利用者1 さんの会話データはまだありません。")
+        self.assertEqual(images, [])
+        self.gemini.generate.assert_not_awaited()
 
     async def test_concurrent_records_keep_counts_and_recent_samples(self) -> None:
         count = STATS_RECENT_SAMPLES_MAX + 10

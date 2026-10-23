@@ -1,12 +1,13 @@
 """会話の中でサブエージェントの使用を明記した依頼の振り分けと、人格役の返信を検証する（#170）。"""
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -17,7 +18,9 @@ from persona_bot.config.constants import AGENT_ROUTER_HISTORY_LIMIT
 from persona_bot.core.app_state import BotState
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentService
+from persona_bot.services import agent_service
 from persona_bot.services.gemini_service import GenerationResult
+from persona_bot.views import agent_view
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.persona_helpers import install_empty_persona_catalog
 
@@ -189,6 +192,105 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.on_message(self.message)
         self.moderator.check_and_route.assert_awaited_once()
         self.moderator.check_route_and_plan.assert_not_awaited()
+
+
+    async def delegate_with_blocked_cleanup(self, trigger, *, repeat=False, broken=False):
+        started, cleaning, release, cleaned = (asyncio.Event() for _ in range(4))
+        workers = []
+
+        async def generate(*args, **kwargs):
+            workers.append(asyncio.current_task())
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+                cleaned.set()
+                if broken:
+                    raise RuntimeError("架空の生成処理の回収失敗")
+
+        self.gemini.generate_with_metadata.side_effect = generate
+        with patch.object(agent_view, "AGENT_TOTAL_TIMEOUT_SECONDS", 0.01 if trigger == "timeout" else 30), \
+                patch.object(agent_service, "AGENT_MAX_CONCURRENT_TASKS", 1), \
+                patch.object(self.agent, "release", wraps=self.agent.release) as release_slot:
+            run = asyncio.create_task(self.handler.on_message(self.message))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                view = self.message.reply.await_args.kwargs["view"]
+                self.addCleanup(view.stop)
+                if trigger == "button":
+                    await view.children[0].callback(SimpleNamespace(
+                        user=self.message.author, response=SimpleNamespace(defer=AsyncMock()),
+                    ))
+                elif trigger == "parent":
+                    run.cancel()
+                await asyncio.wait_for(cleaning.wait(), 2)
+                release_slot.assert_not_called()
+                # 同じ依頼者にも別の依頼者にも、回収前の実行枠は貸し出さない。
+                self.assertFalse(self.agent.try_acquire("11"))
+                self.assertFalse(self.agent.try_acquire("12"))
+                self.assertFalse(run.done())
+                self.progress_message.edit.assert_not_awaited()
+                if repeat:
+                    for _ in range(3):
+                        run.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(run.done())
+                        self.assertFalse(cleaned.is_set())
+                        release_slot.assert_not_called()
+                release.set()
+                if trigger == "parent" or repeat:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(run, 2)
+                    self.progress_message.edit.assert_not_awaited()
+                else:
+                    await asyncio.wait_for(run, 2)
+                    expected = "中止" if trigger == "button" else "うまくいきませんでした"
+                    self.assertIn(expected, self.progress_message.edit.await_args.kwargs["content"])
+                    self.assertIsNone(self.progress_message.edit.await_args.kwargs["view"])
+                self.assertTrue(cleaned.is_set())
+                release_slot.assert_called_once_with("11")
+                self.assertTrue(self.agent.try_acquire("12"))
+                self.agent.release("12")
+                self.send.assert_not_awaited()
+                self.tts.assert_not_awaited()
+                self.gemini.generate_with_metadata.assert_awaited_once()
+            finally:
+                release.set()
+                await asyncio.gather(run, *workers, return_exceptions=True)
+
+    async def test_delegated_cancel_holds_execution_slot_until_child_cleanup(self) -> None:
+        await self.delegate_with_blocked_cleanup("button")
+
+    async def test_delegated_timeout_holds_execution_slot_until_child_cleanup(self) -> None:
+        await self.delegate_with_blocked_cleanup("timeout")
+
+    async def test_delegated_parent_cancel_holds_execution_slot_until_child_cleanup(self) -> None:
+        await self.delegate_with_blocked_cleanup("parent")
+
+    async def test_repeated_cancel_keeps_slot_until_child_cleanup(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress_message.edit.reset_mock()
+                self.gemini.generate_with_metadata.reset_mock()
+                await self.delegate_with_blocked_cleanup(trigger, repeat=True)
+
+    async def test_child_cleanup_failure_releases_slot_only_after_collection(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress_message.edit.reset_mock()
+                self.gemini.generate_with_metadata.reset_mock()
+                await self.delegate_with_blocked_cleanup(trigger, broken=True)
+
+    async def test_child_exception_reports_failure_and_releases_slot(self) -> None:
+        self.gemini.generate_with_metadata.side_effect = RuntimeError("架空の子の作業失敗")
+        await self.handler.on_message(self.message)
+        self.assertIn("うまくいきませんでした", self.progress_message.edit.await_args.kwargs["content"])
+        self.assertTrue(self.agent.try_acquire("11"))
+        self.agent.release("11")
+        self.send.assert_not_awaited()
+        self.tts.assert_not_awaited()
 
 
 if __name__ == "__main__":

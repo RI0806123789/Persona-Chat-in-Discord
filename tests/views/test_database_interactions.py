@@ -13,7 +13,7 @@ import discord
 from persona_bot.core.app_state import GuildSettings
 from persona_bot.services.stats_service import StatsService
 from persona_bot.views.auto_topic_view import AutoTopicView, AutoTopicConfirmButton
-from persona_bot.views.functions_view import GroundingToggleButton, ReminderButton, StatsButton
+from persona_bot.views.functions_view import GroundingToggleButton, ReminderButton
 from persona_bot.views.unblock_view import UnblockSelect
 from persona_bot.views.reminder_view import ReminderCancelSelect, ReminderView
 from persona_bot.views.stats_privacy_view import StatsPrivacyView, StatsPrivacyConfirmButton, StatsDataDeleteButton
@@ -125,14 +125,6 @@ class DatabaseInteractionTests(unittest.IsolatedAsyncioTestCase):
         service.cache = {"11": {"total_count": 3, "opt_out": True}, "22": {"total_count": 0, "opt_out": False}}
         self.assertFalse(service.has_data())
         self.assertEqual(service.get_user_options("11"), [])
-        hub = discord.ui.View()
-        hub.stats = service
-        button = StatsButton()
-        hub.add_item(button)
-        self.addCleanup(hub.stop)
-        interaction = self.interaction()
-        await button.callback(interaction)
-        interaction.response.send_message.assert_awaited_once_with("まだ会話統計データがありません。", ephemeral=True)
         service.cache["22"]["total_count"] = 1
         self.assertTrue(service.has_data())
         self.assertEqual([row[0] for row in service.get_user_options("11")], ["22"])

@@ -37,6 +37,15 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #213・#214の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #213 | `views/test_agent_view.py`・`core/test_agent_delegation.py` | 中止ボタン・全体の期限・親のキャンセルで、子の`finally`を止めている間は`run`と実行枠が返らず、回収後に枠を返す。追加のキャンセル、正常報告・`None`・子の例外、中止待機タスクの回収と回収中のキャンセル・例外、中止後に報告を返した子の扱い、期限切れ回収中の中止を確認。中止・失敗時は人格役の生成と読み上げへ進まない |
+| #214 | `views/test_stats_entry.py`・`services/test_stats_service.py`・`views/test_panel_concurrency.py`・`views/test_database_interactions.py` | 実`StatsService`・実`StatsButton`・実`StatsView`で、唯一のデータ所有者や全員が収集停止中でも、本人は再開せず保存統計と停止注記を見られ、データが空なら既存案内を出す。管理者の候補・ランキング・他人向け表示は停止者と停止状態を隠す。遷移時のblocked interaction・管理者判定・エフェメラル・パネル世代も維持（旧「入口で拒否する」期待は除去） |
+
+実Gemini・実Discordでの表示は未確認。
+
 ## Issue #170の確認
 
 | テスト | 確認内容 |
@@ -262,6 +271,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | views | [test_reminder_view.py](views/test_reminder_view.py) |
 | views | [test_settings_view.py](views/test_settings_view.py) |
 | views | [test_stats_delivery.py](views/test_stats_delivery.py) |
+| views | [test_stats_entry.py](views/test_stats_entry.py) |
 | views | [test_stats_pagination.py](views/test_stats_pagination.py) |
 | views | [test_summary_view.py](views/test_summary_view.py) |
 | views | [test_view_parts.py](views/test_view_parts.py) |
