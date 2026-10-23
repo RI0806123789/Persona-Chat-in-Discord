@@ -20,6 +20,7 @@ from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.core.background import spawn
 from persona_bot.core import bot_client
 from persona_bot.core.bot_client import PersonaClient
+from persona_bot.core.commands import register_commands
 
 
 class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
@@ -82,6 +83,233 @@ class AutonomousSessionCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.settings.autonomous_session)
         self.assertGreater(self.settings.autonomous_last_activity, self.now)
         self.assertEqual(self.settings.autonomous_recent_activity, [])
+
+    def register_voice_commands(self):
+        """実サービスを登録したコマンドを、架空のDiscord境界で呼び出す。"""
+        commands = {}
+
+        def command(**kwargs):
+            def register(callback):
+                commands[kwargs["name"]] = callback
+                return callback
+            return register
+
+        register_commands(
+            SimpleNamespace(command=command), self.state, None, None,
+            SimpleNamespace(is_blocked=Mock(return_value=False)),
+            None, None, None, None, self.service, voice_guard=Mock(),
+        )
+        self.channel.permissions_for.return_value = SimpleNamespace(
+            view_channel=True, connect=True, speak=True, mute_members=True,
+        )
+        self.guild.me = SimpleNamespace(
+            voice=SimpleNamespace(channel=self.channel), edit=AsyncMock(),
+        )
+        return commands
+
+    async def overlapping_cleanup(self, phase, action, *, cancel=False, replace=False):
+        """枠削除・切断の各境界で、後続操作が共通の回収完了を待つか確認する。"""
+        self.settings.autonomous_session = self.make_session()
+        self.guild.voice_client = self.voice
+        self.voice.is_connected.return_value = True
+        entered, release, following = (asyncio.Event() for _ in range(3))
+        self.instance.delete.reset_mock(side_effect=True)
+        self.voice.disconnect.reset_mock(side_effect=True)
+        replacement = self.make_voice(self.channel)
+        replacement.is_connected.return_value = True
+
+        async def delete(**kwargs):
+            if phase == "stage":
+                entered.set()
+                await release.wait()
+
+        async def disconnect(**kwargs):
+            if phase == "disconnect":
+                entered.set()
+                await release.wait()
+            self.voice.is_connected.return_value = False
+            if self.guild.voice_client is self.voice:
+                self.guild.voice_client = None
+
+        async def connect(**kwargs):
+            self.guild.voice_client = replacement
+            return replacement
+
+        self.instance.delete.side_effect = delete
+        self.voice.disconnect.side_effect = disconnect
+        self.channel.connect = AsyncMock(side_effect=connect)
+        commands = self.register_voice_commands()
+        interaction = SimpleNamespace(
+            guild=self.guild, command=SimpleNamespace(name=action),
+            user=Mock(spec=discord.Member, voice=SimpleNamespace(channel=self.channel)),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), is_done=Mock(return_value=False)),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        stop = self.service.stop_session
+
+        async def following_stop(*args, **kwargs):
+            following.set()
+            return await stop(*args, **kwargs)
+
+        leader = asyncio.create_task(stop(1, reason="架空の先行停止"))
+        follower = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            self.assert_cleared()
+            if replace:
+                self.guild.voice_client = replacement
+            with patch.object(self.service, "stop_session", side_effect=following_stop):
+                follower = asyncio.create_task(
+                    self.service.stop_session(1, reason="架空の後続停止")
+                    if action == "stop" else commands[action](interaction)
+                )
+                await asyncio.wait_for(following.wait(), 2)
+                self.assertFalse(leader.done())
+                self.assertFalse(follower.done())
+                interaction.followup.send.assert_not_awaited()
+                self.channel.connect.assert_not_awaited()
+                if cancel:
+                    for task in (leader, follower):
+                        for _ in range(3):
+                            task.cancel()
+                            await asyncio.sleep(0)
+                            self.assertFalse(task.done())
+                            self.assertIn(1, self.service._stopping)
+                release.set()
+                results = await asyncio.wait_for(asyncio.gather(leader, follower, return_exceptions=True), 2)
+            if cancel:
+                self.assertTrue(all(isinstance(result, asyncio.CancelledError) for result in results))
+            else:
+                self.assertIs(results[0], True)
+                if action == "stop":
+                    self.assertIs(results[1], True)
+                else:
+                    self.assertIsNone(results[1])
+                    interaction.followup.send.assert_awaited_once()
+                    reply = interaction.followup.send.call_args.args[0]
+                    if action == "join":
+                        self.assertIs(self.guild.voice_client, replacement)
+                        self.assertTrue(replacement.is_connected())
+                        if replace:
+                            self.channel.connect.assert_not_awaited()
+                            self.assertIn("既に接続しています", reply)
+                        else:
+                            self.channel.connect.assert_awaited_once()
+                            self.assertIn("に接続しました", reply)
+                    else:
+                        self.assertIn("退出しました", reply)
+            self.instance.delete.assert_awaited_once()
+            if replace and phase == "stage":
+                self.voice.disconnect.assert_not_awaited()
+            else:
+                self.voice.disconnect.assert_awaited_once_with(force=True)
+            replacement.disconnect.assert_not_awaited()
+            self.assertEqual(self.service._stopping, {})
+            self.assertFalse(await self.service.stop_session(1, reason="架空の回収後確認"))
+        finally:
+            release.set()
+            await asyncio.gather(*[task for task in (leader, follower) if task is not None], return_exceptions=True)
+
+    async def test_overlapping_stops_wait_for_stage_delete_and_disconnect(self):
+        for phase in ("stage", "disconnect"):
+            with self.subTest(phase=phase):
+                await self.overlapping_cleanup(phase, "stop")
+
+    async def test_same_channel_join_waits_for_stage_delete_and_disconnect(self):
+        for phase in ("stage", "disconnect"):
+            with self.subTest(phase=phase):
+                await self.overlapping_cleanup(phase, "join")
+
+    async def test_leave_waits_for_stage_delete_and_disconnect(self):
+        for phase in ("stage", "disconnect"):
+            with self.subTest(phase=phase):
+                await self.overlapping_cleanup(phase, "leave")
+
+    async def test_both_stop_waiters_resist_repeated_cancellation_until_cleanup(self):
+        for phase in ("stage", "disconnect"):
+            with self.subTest(phase=phase):
+                await self.overlapping_cleanup(phase, "stop", cancel=True)
+
+    async def test_join_and_leave_cancellation_waits_for_shared_cleanup(self):
+        for phase in ("stage", "disconnect"):
+            for action in ("join", "leave"):
+                with self.subTest(phase=phase, action=action):
+                    await self.overlapping_cleanup(phase, action, cancel=True)
+
+    async def test_overlapping_join_keeps_replacement_connection_during_cleanup(self):
+        for phase in ("stage", "disconnect"):
+            with self.subTest(phase=phase):
+                await self.overlapping_cleanup(phase, "join", replace=True)
+
+    async def test_stop_reentry_from_notice_and_cleanup_does_not_wait_for_itself(self):
+        async def nested_stop(*args, **kwargs):
+            self.assertTrue(await self.service.stop_session(1, reason="架空の同一処理からの停止"))
+
+        self.notice.side_effect = nested_stop
+        self.instance.delete.side_effect = nested_stop
+        self.assertTrue(await asyncio.wait_for(
+            self.service.stop_session(1, reason="架空の停止", notice="架空の終了案内"), 2,
+        ))
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        self.assertEqual(self.service._stopping, {})
+
+    async def test_following_stop_waits_even_before_notice_has_finished(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def notice(*args, **kwargs):
+            entered.set()
+            await release.wait()
+
+        self.notice.side_effect = notice
+        leader = asyncio.create_task(self.service.stop_session(
+            1, reason="架空の先行停止", notice="架空の終了案内",
+        ))
+        follower = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            self.assert_cleared()
+            follower = asyncio.create_task(self.service.stop_session(1, reason="架空の後続停止"))
+            await asyncio.sleep(0)
+            self.assertFalse(follower.done())
+            self.instance.delete.assert_not_awaited()
+            self.voice.disconnect.assert_not_awaited()
+            release.set()
+            self.assertEqual(await asyncio.wait_for(asyncio.gather(leader, follower), 2), [True, True])
+        finally:
+            release.set()
+            await asyncio.gather(*[task for task in (leader, follower) if task is not None], return_exceptions=True)
+        self.instance.delete.assert_awaited_once()
+        self.voice.disconnect.assert_awaited_once_with(force=True)
+        self.assertEqual(self.service._stopping, {})
+
+    async def test_shared_cleanup_failure_and_interruption_release_stop_record(self):
+        for error in (RuntimeError("架空の回収失敗"), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                self.settings.autonomous_session = self.make_session()
+                entered, release = asyncio.Event(), asyncio.Event()
+
+                async def fail(*args):
+                    entered.set()
+                    await release.wait()
+                    raise error
+
+                with patch.object(autonomous_stage, "finish_session_cleanup", side_effect=fail):
+                    leader = asyncio.create_task(self.service.stop_session(1, reason="架空の先行停止"))
+                    follower = None
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        follower = asyncio.create_task(self.service.stop_session(1, reason="架空の後続停止"))
+                        await asyncio.sleep(0)
+                        self.assertFalse(follower.done())
+                        release.set()
+                        results = await asyncio.wait_for(asyncio.gather(leader, follower, return_exceptions=True), 2)
+                        self.assertTrue(all(isinstance(result, type(error)) for result in results))
+                    finally:
+                        release.set()
+                        await asyncio.gather(*[task for task in (leader, follower) if task is not None], return_exceptions=True)
+                self.assertEqual(self.service._stopping, {})
+                self.assertFalse(await self.service.stop_session(1, reason="架空の失敗後確認"))
 
     async def test_stop_all_cleans_remaining_guilds_before_propagating_cancellation(self):
         self.state.get_guild(2).autonomous_session = self.make_session()

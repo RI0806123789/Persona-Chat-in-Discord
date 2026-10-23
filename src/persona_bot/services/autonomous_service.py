@@ -55,7 +55,7 @@ from persona_bot.services.autonomous_metrics import (
     updated_activity_samples,
 )
 from persona_bot.services import autonomous_stage
-from persona_bot.core.background import spawn, wait_for_cleanup
+from persona_bot.core.background import spawn, wait_for_cleanup, wait_for_task
 from persona_bot.config.constants import (
     AUTONOMOUS_CLOSING_NOTICE,
     AUTONOMOUS_CLOSING_NOTICE_DISABLED,
@@ -110,6 +110,16 @@ class _StartAttempt:
     finished: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+@dataclass
+class _StopAttempt:
+    """終了案内の送信者と、所有枠・接続の共通回収タスクを保持する。"""
+
+    owner: asyncio.Task | None
+    task: asyncio.Task | None = None
+    notice_finished: asyncio.Event = field(default_factory=asyncio.Event)
+    channel: Any = None
+
+
 class AutonomousService:
     """自律行動（ボイス/ステージでの配信）を管理するサービス。
 
@@ -138,6 +148,7 @@ class AutonomousService:
         self._ng_filter = ng_filter
         self._usage = usage
         self._starting: dict[int, _StartAttempt] = {}
+        self._stopping: dict[int, _StopAttempt] = {}
 
     # ==========================================================================
     # on_message から呼ばれる入口
@@ -710,6 +721,13 @@ class AutonomousService:
             reason: ログに残す終了理由。
             notice: 配信チャンネルへ残す締めの一言（None なら何も投稿しない）。
         """
+        stopping = self._stopping.get(guild_id)
+        if stopping is not None:
+            # 終了案内や後片付け自身から再入した場合だけ、自己待機を避ける。
+            if asyncio.current_task() not in (stopping.owner, stopping.task):
+                await wait_for_task(stopping.task)
+            return True
+
         guild_settings = self._state.get_guild(guild_id)
         starting = self._starting.get(guild_id)
         if starting is not None:
@@ -735,10 +753,16 @@ class AutonomousService:
         # 走らせない（同じステージ枠を2回消そうとするのを防ぐ）。
         self._clear_session(guild_settings)
 
+        stopping = _StopAttempt(owner=asyncio.current_task())
+        self._stopping[guild_id] = stopping
+        stopping.task = spawn(
+            self._finish_session_stop(guild_id, guild_settings, session, guild, voice_client, stopping),
+            label="自律行動の終了後片付け", _protected=True,
+        )
         canceled = False
-        channel = None
         try:
             channel = self._client.get_channel(session.channel_id)
+            stopping.channel = channel
             # 終了案内の送信だけは呼出元と一緒にキャンセルし、後片付けへ進む。
             if notice and channel is not None:
                 try:
@@ -750,11 +774,9 @@ class AutonomousService:
         except asyncio.CancelledError:
             canceled = True
         finally:
+            stopping.notice_finished.set()
             try:
-                await wait_for_cleanup(
-                    autonomous_stage.finish_session_cleanup(guild_id, guild_settings, session, channel, guild, voice_client),
-                    label="自律行動の終了後片付け",
-                )
+                await wait_for_task(stopping.task)
             except asyncio.CancelledError:
                 canceled = True
 
@@ -762,6 +784,20 @@ class AutonomousService:
         if canceled:
             raise asyncio.CancelledError
         return True
+
+    async def _finish_session_stop(
+        self, guild_id: int, guild_settings: GuildSettings, session: AutonomousSession,
+        guild: discord.Guild | None, voice_client: discord.VoiceProtocol | None, stopping: _StopAttempt,
+    ) -> None:
+        """後続の停止・参加・退出へ、枠と接続の回収完了を共有する。"""
+        try:
+            await stopping.notice_finished.wait()
+            await autonomous_stage.finish_session_cleanup(
+                guild_id, guild_settings, session, stopping.channel, guild, voice_client,
+            )
+        finally:
+            if self._stopping.get(guild_id) is stopping:
+                self._stopping.pop(guild_id)
 
     def _clear_session(self, guild_settings: GuildSettings) -> None:
         """セッション記録を破棄し、「話したいゲージ」を空にする。

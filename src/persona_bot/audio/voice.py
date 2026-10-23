@@ -207,10 +207,14 @@ def _get_audio_player(voice_client: discord.VoiceClient) -> threading.Thread | N
     return player if isinstance(player, threading.Thread) else None
 
 
-async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
+async def _play_pcm(
+    voice_client: discord.VoiceClient, pcm: bytes, *, is_valid: Callable[[], bool] | None = None,
+) -> None:
     """同じ接続の停止・再生・解放を直列化する。"""
     lock = _playback_locks.setdefault(voice_client, asyncio.Lock())
     async with lock:
+        if is_valid is not None and not is_valid():
+            return
         previous_player = _get_audio_player(voice_client)
         try:
             # pause 中も AudioPlayer が入力を所有しているため停止対象に含める。
@@ -220,6 +224,10 @@ async def _play_pcm(voice_client: discord.VoiceClient, pcm: bytes) -> None:
             if previous_player is not None:
                 # is_playing() が False でも終了処理中のスレッドは残りうる。
                 await run_in_thread(previous_player.join)
+        # 終了済みスレッドでも executor の順番待ちで接続や配信が変わりうる。
+        # ここから play() までは await による処理の切り替えを挟まない。
+        if is_valid is not None and not is_valid():
+            return
         await _play_pcm_locked(voice_client, pcm)
 
 
@@ -353,7 +361,12 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
                 if (not request.matches_connection(guild)
                         or (is_valid is not None and not is_valid())):
                     continue
-                await _play_pcm(voice_client, pcm)
+                await _play_pcm(
+                    voice_client, pcm,
+                    is_valid=lambda: request.matches_connection(guild) and (
+                        request.is_valid is None or request.is_valid()
+                    ),
+                )
             except asyncio.TimeoutError:
                 print(f"TTS: 音声合成が {TTS_TIMEOUT_SECONDS} 秒で完了しなかったため、この返信の読み上げを見送ります。")
             except Exception as error:

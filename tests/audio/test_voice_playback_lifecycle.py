@@ -1,12 +1,14 @@
 """discord.pyの実AudioPlayerで、停止・完了通知・ストリーム解放の順序を検証する。"""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import io
 from pathlib import Path
 import sys
 import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -177,6 +179,105 @@ class PlaybackLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.play.call_count, 2)
         self.assertTrue(all(source.stream.closed for source in self.sources))
         self.assertTrue(all(player._current_error is None for player in self.players))
+
+    async def test_invalid_request_after_playback_lock_does_not_stop_current_audio(self) -> None:
+        valid = True
+        lock = asyncio.Lock()
+        await lock.acquire()
+        with patch.object(voice, "_playback_locks", {self.client: lock}):
+            task = asyncio.create_task(voice._play_pcm(self.client, b"pcm", is_valid=lambda: valid))
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+                valid = False
+                lock.release()
+                await asyncio.wait_for(task, 2)
+            finally:
+                if lock.locked():
+                    lock.release()
+                await asyncio.gather(task, return_exceptions=True)
+        self.client.stop.assert_not_called()
+        self.client.play.assert_not_called()
+
+    async def test_worker_rechecks_finished_player_join_after_executor_wait(self) -> None:
+        # 終了済みAudioPlayerでも、実executorが埋まればjoinの完了待ちは発生する。
+        # 合成だけをモックにし、依頼の投入・ワーカー・join・正常な再生は実装を通す。
+        executor = ThreadPoolExecutor(max_workers=1)
+        self.loop.set_default_executor(executor)
+        for change in ("move", "replace", "end", "disconnect", "unchanged", "cancel"):
+            with self.subTest(change=change):
+                self.client.play.reset_mock()
+                self.client.stop.reset_mock()
+                self.client.is_connected.return_value = True
+                self.client.channel = SimpleNamespace(id=10)
+                guild = SimpleNamespace(id=1, voice_client=self.client)
+                valid = True
+                occupied, joining = asyncio.Event(), asyncio.Event()
+                release_executor = threading.Event()
+                old_source = discord.PCMAudio(io.BytesIO(b"\0" * 16))
+                previous = AudioPlayer(old_source, self.client)
+                self.players.append(previous)
+                self.client._player = previous
+                with patch.object(AudioPlayer, "_do_run", lambda player: None):
+                    previous.start()
+                    await asyncio.to_thread(previous.join)
+                self.assertFalse(previous.is_alive())
+                old_source.stream.close()
+
+                def occupy():
+                    self.loop.call_soon_threadsafe(occupied.set)
+                    if not release_executor.wait(5):
+                        raise TimeoutError("音声テストのexecutor待機が終了しませんでした")
+
+                blocker = self.loop.run_in_executor(None, occupy)
+                await asyncio.wait_for(occupied.wait(), 2)
+                run_in_thread = voice.run_in_thread
+
+                async def join_in_thread(func, *args):
+                    if func == previous.join:
+                        joining.set()
+                    return await run_in_thread(func, *args)
+
+                queue = asyncio.Queue()
+                queue.put_nowait(voice._SpeechRequest("架空の音声", {}, self.client, 10, lambda: valid))
+                with patch.object(voice, "_speech_queues", {1: queue}), patch.object(
+                    voice, "_synthesize_pcm", AsyncMock(return_value=b"\0" * 16),
+                ), patch.object(voice, "run_in_thread", join_in_thread), patch.object(
+                    AudioPlayer, "_do_run", lambda player: None,
+                ):
+                    task = asyncio.create_task(voice._run_speech_worker(guild))
+                    try:
+                        await asyncio.wait_for(joining.wait(), 2)
+                        self.client.play.assert_not_called()
+                        if change == "move":
+                            self.client.channel = SimpleNamespace(id=20)
+                        elif change == "replace":
+                            guild.voice_client = Mock(spec=discord.VoiceClient)
+                        elif change == "end":
+                            valid = False
+                        elif change == "disconnect":
+                            self.client.is_connected.return_value = False
+                        elif change == "cancel":
+                            for _ in range(3):
+                                task.cancel()
+                                await asyncio.sleep(0)
+                                self.assertFalse(task.done())
+                        release_executor.set()
+                        if change == "cancel":
+                            with self.assertRaises(asyncio.CancelledError):
+                                await asyncio.wait_for(task, 2)
+                        else:
+                            await asyncio.wait_for(task, 2)
+                        self.assertEqual(voice._speech_queues, {})
+                    finally:
+                        release_executor.set()
+                        await asyncio.gather(blocker, task, return_exceptions=True)
+                if change == "unchanged":
+                    self.client.play.assert_called_once()
+                    self.assertTrue(self.sources[-1].stream.closed)
+                else:
+                    self.client.play.assert_not_called()
+                self.assertTrue(all(not player.is_alive() for player in self.players))
 
 
 if __name__ == "__main__":

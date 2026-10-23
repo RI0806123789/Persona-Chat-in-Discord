@@ -13,6 +13,7 @@ import discord
 
 from persona_bot.config import constants
 from persona_bot.core.app_state import AutonomousSession, BotState
+from persona_bot.core.background import spawn
 from persona_bot.services import autonomous_service, autonomous_stage
 from persona_bot.services.autonomous_service import AutonomousService
 
@@ -34,9 +35,16 @@ class AutonomousSessionPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.service = AutonomousService(self.client, self.state, self.gemini, None, None, None)
         self.notice = AsyncMock()
         self.spawn = Mock(side_effect=lambda coro, **kwargs: coro.close())
+
+        def start(coro, **kwargs):
+            # 発話の未生成を検証しつつ、共有する後片付けタスクは実際に完了させる。
+            if kwargs.get("_protected"):
+                return spawn(coro, **kwargs)
+            return self.spawn(coro, **kwargs)
+
         for name, replacement in (
             ("is_quiet_hours", Mock(return_value=False)),
-            ("send_long_message", self.notice), ("spawn", self.spawn),
+            ("send_long_message", self.notice), ("spawn", start),
         ):
             patcher = patch.object(autonomous_service, name, replacement)
             patcher.start()

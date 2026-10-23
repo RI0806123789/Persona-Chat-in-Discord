@@ -46,6 +46,16 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 実Gemini・実Discordでの表示は未確認。
 
+## Issue #210〜#212の確認
+
+| Issue | テスト | 確認内容 |
+| --- | --- | --- |
+| #210 | `audio/test_voice.py`・`audio/test_voice_session.py`・`audio/test_voice_playback_lifecycle.py` | 終了済みの実`AudioPlayer`と混雑した実executor、実ワーカーで、前スレッドの終了待ち中の移動・接続の差し替え・配信終了・切断では再生せず、変化がなければ再生する。無効な依頼は現在の音声を止めず、繰り返しのキャンセルでもスレッドとPCMを回収する |
+| #211 | `services/test_autonomous_session_cleanup.py`・`services/test_autonomous_permissions.py` | 実サービスと登録済みコマンドで、配信枠の削除・切断それぞれの待機中の二重停止・同じチャンネルへの`/join`・`/leave`・繰り返しのキャンセル・別の接続への差し替えを確認。終了案内中の共有待機、自己待機の回避、回収の例外・中断後の停止記録の解放も確認（権限テストは回収タスクだけを実行するようモックを調整） |
+| #212 | `services/test_voice_guard.py` | 旧移動の失敗中に同じ接続への`adopt`・別の接続への差し替え・同じチャンネルIDでの保護情報の再登録が起きても、新しい接続と保護情報を残す。例外なしの時間切れも同様。変化がなければ従来どおり退出する |
+
+実Discordでの移動・ステージ操作と実音声での確認は未実施。
+
 ## Issue #170の確認
 
 | テスト | 確認内容 |

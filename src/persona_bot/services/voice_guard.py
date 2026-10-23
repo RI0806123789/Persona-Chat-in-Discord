@@ -182,7 +182,7 @@ class VoiceGuard:
 
             home_channel, blocker = self._return_target(guild, home)
             if blocker is not None:
-                await self._leave(guild, voice_client, blocker)
+                await self._leave(guild, voice_client, blocker, expected_home=home)
                 return
 
             home.returned_at.append(monotonic())
@@ -196,6 +196,7 @@ class VoiceGuard:
             except Exception as error:
                 await self._leave(
                     guild, voice_client, f"元のチャンネルへ戻れなかった（{type(error).__name__}）",
+                    expected_home=home,
                 )
                 return
 
@@ -205,7 +206,9 @@ class VoiceGuard:
                     or self._homes.get(guild_id) is not home):
                 return
             if getattr(voice_client.channel, "id", None) != home.channel_id:
-                await self._leave(guild, voice_client, "元のチャンネルへ戻れなかった")
+                await self._leave(
+                    guild, voice_client, "元のチャンネルへ戻れなかった", expected_home=home,
+                )
                 return
             print(f"ボイス接続の保護: 元のチャンネル「{home_channel.name}」へ戻りました（guild={guild_id}）。")
             if isinstance(home_channel, discord.StageChannel):
@@ -227,18 +230,22 @@ class VoiceGuard:
         処理がぶつかる。待っても接続が戻らなければ、移動先に居座らないよう切断する。
         """
         voice_client = None
+        home = None
         for _ in range(VOICE_MOVE_GUARD_SETTLE_RETRIES):
             await asyncio.sleep(VOICE_MOVE_GUARD_SETTLE_SECONDS)
             guild = self._client.get_guild(guild_id)
             voice_client = getattr(guild, "voice_client", None)
-            if not isinstance(voice_client, discord.VoiceClient) or self._homes.get(guild_id) is None:
+            home = self._homes.get(guild_id)
+            if not isinstance(voice_client, discord.VoiceClient) or home is None:
                 # 待つ間に切断された（/leave・外部からの切断・配信の終了）。
                 return None
             if voice_client.is_connected():
                 return voice_client
         guild = self._client.get_guild(guild_id)
-        if guild is not None and voice_client is not None:
-            await self._leave(guild, voice_client, "移動後の接続が安定しなかった")
+        if guild is not None and voice_client is not None and home is not None:
+            await self._leave(
+                guild, voice_client, "移動後の接続が安定しなかった", expected_home=home,
+            )
         return None
 
     def _return_target(
@@ -271,12 +278,16 @@ class VoiceGuard:
                 return None, f"元のチャンネルで{names}の権限が無い"
         return channel, None
 
-    async def _leave(self, guild: discord.Guild, voice_client: Any, reason: str) -> None:
-        """保護を解いてから、移動先のチャンネルを退出する（自動で戻らない）。"""
-        self.release(guild.id)
-        if guild.voice_client is not voice_client:
-            # 待つ間に /join などで接続が差し替わった。新しい接続には触らない。
+    async def _leave(
+        self, guild: discord.Guild, voice_client: Any, reason: str, *, expected_home: _HomeChannel,
+    ) -> None:
+        """対象の接続と保護情報が現在も一致する場合だけ、保護を解いて退出する。"""
+        if (guild.voice_client is not voice_client
+                or self._homes.get(guild.id) is not expected_home):
+            # 待つ間に /join・/leave で更新された接続と保護情報には触らない。
             return
+        # 照合から解除・切断開始までは待機を挟まない。
+        self.release(guild.id)
         print(f"ボイス接続の保護: {reason}ため、移動先のチャンネルから退出します（guild={guild.id}）。")
         try:
             await voice_client.disconnect(force=True)
