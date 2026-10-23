@@ -3,6 +3,7 @@
 //   600〜1199px … 折りたたんだレール。[ やメニューボタンで、広げたレールを画面の上に重ねて開く（モーダル）
 //   600px 未満 … 下部のナビゲーションバー（[ やメニューボタンで、同じモーダルのレールを開ける）
 import { useRef } from "react";
+import { usePrivacy } from "../privacy";
 import { useModalFocus } from "../hooks";
 import { PAGES, type PageId } from "../navigation";
 import type { Profile } from "../types";
@@ -45,6 +46,7 @@ function RailBody({
   onHelp,
   menuButton,
 }: RailProps & { menuButton: { label: string; icon: "menu" | "menuOpen"; onClick: () => void } }) {
+  const privacy = usePrivacy();
   return (
     <>
       <div className="m3-rail-top">
@@ -85,7 +87,7 @@ function RailBody({
           <Icon name={connected ? (profile?.environment === "production" ? "shield" : "dns") : "linkOff"} size={20} />
           <div>
             <span className="label-small">接続先</span>
-            <strong className="label-large">{connected && profile ? profile.label : "未接続"}</strong>
+            <strong className="label-large">{connected && profile ? privacy.mask(profile.label) : "未接続"}</strong>
             {connected && profile && (
               <span className="label-small m3-env-tag">{profile.environment === "production" ? "本番環境" : "開発環境"}</span>
             )}

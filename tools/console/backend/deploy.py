@@ -75,6 +75,8 @@ class Step:
     finished_at: float | None = None
     commands: list[str] = field(default_factory=list)
     output: str = ""
+    # 再起動ログは本文の境界が不明。切り詰めや追記後も画面で隠すために保持する。
+    output_contains_logs: bool = False
     checks: list[Check] = field(default_factory=list)
     message: str = ""
 
@@ -531,6 +533,7 @@ class DeployRunner:
     def _append_log_tail(self, step: Step, entries: list[dict]) -> None:
         tail = entries[-HEALTH_LOG_TAIL:]
         if tail:
+            step.output_contains_logs = True
             self._append_output(step, "再起動後のログ（古い順）:\n" + "\n".join(entry["message"] for entry in tail))
         else:
             self._append_output(step, "再起動後のログはまだありません。")

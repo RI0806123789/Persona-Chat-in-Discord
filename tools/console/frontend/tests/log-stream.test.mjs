@@ -3,10 +3,21 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
-const source = await readFile(new URL("../src/hooks.ts", import.meta.url), "utf8");
-const output = ts.transpileModule(source, { compilerOptions: {
-  module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
-} }).outputText;
+const source = async (name) => readFile(new URL(`../src/${name}`, import.meta.url), "utf8");
+function compile(text, modules = {}) {
+  const exports = {};
+  const output = ts.transpileModule(text, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+  } }).outputText;
+  new Function("require", "exports", output)((name) => modules[name] ?? {}, exports);
+  return exports;
+}
+const logs = compile(await source("logs.ts"));
+const logPrivacy = compile(await source("logPrivacy.ts"));
+const privacy = compile(await source("privacy.ts"), {
+  react: { createContext: (value) => value }, "./logPrivacy": logPrivacy,
+});
+const hooksSource = await source("hooks.ts");
 
 // Reactの状態とEffect、WebSocket、時計だけを置き換え、実際のフックのイベント処理を実行する。
 function harness(t, { throws = false } = {}) {
@@ -55,12 +66,11 @@ function harness(t, { throws = false } = {}) {
       }
     },
   };
-  const exports = {};
-  new Function("require", "exports", output)((name) => ({
+  const exports = compile(hooksSource, {
     react,
     "./api": { logStreamUrl: () => "ws://console.invalid/logs" },
-    "./logs": { appendLogEntries: (before, added) => before.concat(added).slice(-3000) },
-  })[name], exports);
+    "./logs": logs, "./logPrivacy": logPrivacy,
+  });
   const render = () => { cursor = 0; return exports.useLogStream(enabled, 300, key); };
   const read = () => { render(); effects.splice(0).forEach((effect) => effect()); return render(); };
   t.after(() => {
@@ -90,7 +100,7 @@ test("壊れたログの項目と終了理由はエラーにして既読ログ�
       socket.message({type: "entry", entry: broken});
       const stream = h.flush();
       assert.equal(stream.status, "error");
-      assert.deepEqual(stream.entries, [entry]);
+      assert.deepEqual(stream.entries.map(({messagePrivacy, ...raw}) => raw), [entry]);
       assert.equal(socket.closed, true);
       assert.equal(h.timeouts.size, 0);
     });
@@ -111,7 +121,7 @@ test("バックエンドのエラー理由と受信済みログを残し、自�
   const stream = h.flush();
   assert.equal(stream.status, "error");
   assert.equal(stream.message, "架空のログ取得権限エラー");
-  assert.deepEqual(stream.entries, [entry]);
+  assert.deepEqual(stream.entries.map(({messagePrivacy, ...raw}) => raw), [entry]);
   assert.equal(h.timeouts.size, 0);
   assert.equal(h.sockets.length, 1);
 });
@@ -199,6 +209,77 @@ test("一時停止中の新着は再開時に反映できる", (t) => {
   assert.equal(h.flush().pendingCount, 1);
   assert.equal(h.read().entries.length, 0);
   h.read().setPaused(false);
-  assert.deepEqual(h.flush().entries, [entry]);
+  assert.deepEqual(h.flush().entries.map(({messagePrivacy, ...raw}) => raw), [entry]);
   assert.equal(h.read().pendingCount, 0);
+});
+
+// #215は実際のフックで受信・保持・クリア・停止を通し、実際の伏せ字関数で確かめる。
+const privateEntry = (message, overrides = {}) => ({ ...entry, pid: 42, message, ...overrides });
+function assertPrivate(stream) {
+  const flags = privacy.conversationLines(stream.entries);
+  for (const [index, row] of stream.entries.entries()) {
+    assert.ok(row.messagePrivacy === "unknown" || row.messagePrivacy === "conversation");
+    assert.equal(privacy.redactLogLine(row.message, flags[index], privacy.createPrivacy(true, [])), privacy.MASK);
+    assert.equal(privacy.redactLogLine(row.message, flags[index], privacy.createPrivacy(false, [])), row.message);
+  }
+}
+
+test("#215 初回途中からの受信はサーバーの偽属性を採用せず隠す", (t) => {
+  const h = harness(t);
+  h.sockets[0].message({ type: "entry", entry: privateEntry("架空の応答途中", {messagePrivacy: "system"}) });
+  assertPrivate(h.flush());
+});
+
+test("#215 保持上限と表示クリア後も受信時の会話属性を維持する", (t) => {
+  const h = harness(t), socket = h.sockets[0];
+  socket.message({ type: "entry", entry: privateEntry("AI：架空の開始") });
+  for (let i = 0; i < logs.MAX_LOG_ENTRIES + 10; i++) {
+    socket.message({ type: "entry", entry: privateEntry(`架空の本文${i}`) });
+  }
+  let stream = h.flush();
+  assert.equal(stream.entries.length, logs.MAX_LOG_ENTRIES);
+  assert.ok(stream.entries.every((row) => row.messagePrivacy === "conversation"));
+  assertPrivate(stream);
+  stream.clear();
+  socket.message({ type: "entry", entry: privateEntry("区切り後も架空の本文") });
+  stream = h.flush();
+  assert.equal(stream.entries[0].messagePrivacy, "conversation");
+  assertPrivate(stream);
+});
+
+test("#215 一時停止中の保持上限とクリア後の続きも再開後に隠す", (t) => {
+  const h = harness(t), socket = h.sockets[0];
+  socket.message({ type: "entry", entry: privateEntry("User (架空)：質問") });
+  h.read().setPaused(true);
+  for (let i = 0; i < logs.MAX_LOG_ENTRIES + 10; i++) {
+    socket.message({ type: "entry", entry: privateEntry(`停止中の本文${i}`) });
+  }
+  assert.equal(h.flush().entries.length, 0);
+  assert.equal(h.read().pendingCount, logs.MAX_LOG_ENTRIES + 11);
+  h.read().setPaused(false);
+  assertPrivate(h.flush());
+  h.read().setPaused(true);
+  h.read().clear();
+  socket.message({ type: "entry", entry: privateEntry("クリア後の停止中の本文") });
+  h.read().setPaused(false);
+  const stream = h.flush();
+  assert.equal(stream.entries.length, 1);
+  assert.equal(stream.entries[0].messagePrivacy, "conversation");
+  assertPrivate(stream);
+});
+
+test("#215 手動再接続と接続先切替では新しい取得境界を不明に戻す", (t) => {
+  const h = harness(t);
+  h.sockets[0].message({ type: "entry", entry: privateEntry("AI：前の接続") });
+  h.flush();
+  for (const change of [() => h.read().retry(), () => h.switchConnection()]) {
+    const old = h.sockets.at(-1);
+    change(); h.read();
+    old.message({ type: "entry", entry: privateEntry("古い応答") });
+    h.sockets.at(-1).message({ type: "entry", entry: privateEntry("新しい取得途中") });
+    const stream = h.flush();
+    assert.equal(stream.entries.length, 1);
+    assert.equal(stream.entries[0].messagePrivacy, "unknown");
+    assertPrivate(stream);
+  }
 });

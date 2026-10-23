@@ -49,7 +49,7 @@ export function ConnectionPage({
   return (
     <div className="grid">
       <Card title="接続先" icon="plug" className="span-7">
-        {profilesError && <InlineError>{profilesError}</InlineError>}
+        {profilesError && <InlineError>{privacy.redact(profilesError)}</InlineError>}
         <div className="m3-list" role="radiogroup" aria-label="接続先">
           {profiles.map((profile) => {
             const selected = profile.id === selectedProfileId;
@@ -67,7 +67,7 @@ export function ConnectionPage({
                 <Icon name={selected ? "radioChecked" : "radio"} size={24} filled={selected} className="m3-list-leading" />
                 <span className="m3-list-text">
                   <span className="m3-list-headline">
-                    <strong className="title-medium">{profile.label}</strong>
+                    <strong className="title-medium">{privacy.mask(profile.label)}</strong>
                     <span className={`m3-tag ${profile.environment === "production" ? "is-prod" : "is-dev"}`}>
                       {profile.environment === "production" ? "本番" : "開発"}
                     </span>
@@ -81,7 +81,7 @@ export function ConnectionPage({
                     {!profile.username && !profile.port ? "（~/.ssh/config を参照）" : ""}
                   </span>
                   <span className="body-small muted">
-                    サービス <code>{profile.service}</code> · <code>{privacy.redact(profile.bot_dir)}</code>
+                    サービス <code>{privacy.redact(profile.service)}</code> · <code>{privacy.redact(profile.bot_dir)}</code>
                   </span>
                   {profile.note && <span className="body-small muted">{privacy.redact(profile.note)}</span>}
                 </span>
@@ -114,7 +114,7 @@ export function ConnectionPage({
           />
           {connected && connection?.connected_at && <span className="body-small muted">{formatRelative(connection.connected_at * 1000, now)}から</span>}
         </div>
-        {connection?.last_error && !connected && <InlineError>{connection.last_error}</InlineError>}
+        {connection?.last_error && !connected && <InlineError>{privacy.redact(connection.last_error)}</InlineError>}
         <dl className="kv">
           <dt>ホスト鍵</dt>
           <dd className="mono break">{privacy.mask(connection?.fingerprint)}</dd>
@@ -148,7 +148,7 @@ export function ConnectionPage({
                   <tr key={`${record.at}-${index}`} className={record.ok ? "" : "is-error"}>
                     <td className="mono nowrap">{formatDateTime(record.at * 1000)}</td>
                     <td className="nowrap">
-                      <Icon name={record.ok ? "checkCircle" : "error"} size={18} filled className={record.ok ? "ok-icon" : "err-icon"} /> {record.label}
+                      <Icon name={record.ok ? "checkCircle" : "error"} size={18} filled className={record.ok ? "ok-icon" : "err-icon"} /> {privacy.redact(record.label)}
                     </td>
                     <td className="mono command-cell" title={privacy.redact(record.error ?? record.command)}>
                       {privacy.redact(record.error ?? record.command)}

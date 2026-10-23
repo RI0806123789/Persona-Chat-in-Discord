@@ -166,6 +166,7 @@ function ProfileMenu({
   disabled: boolean;
 }) {
   const menu = useMenu();
+  const privacy = usePrivacy();
   const selected = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   return (
     <div className="m3-menu-anchor" ref={menu.anchorRef}>
@@ -175,12 +176,12 @@ function ProfileMenu({
         className={`m3-select-button ${menu.open ? "is-open" : ""}`}
         onClick={menu.toggle}
         disabled={disabled || profiles.length === 0}
-        aria-label={`接続先: ${selected?.label ?? "未選択"}`}
+        aria-label={`接続先: ${selected ? privacy.mask(selected.label) : "未選択"}`}
         title={disabled ? "切断すると変更できます" : "接続先を選ぶ"}
         {...menu.triggerProps}
       >
         {selected && <EnvTag environment={selected.environment} />}
-        <span className="label-large m3-select-text">{selected?.label ?? "接続先を選ぶ"}</span>
+        <span className="label-large m3-select-text">{selected ? privacy.mask(selected.label) : "接続先を選ぶ"}</span>
         <Icon name="expand" size={22} className="m3-select-arrow" />
       </button>
       <MenuSurface controller={menu} label="接続先" className="m3-profile-menu">
@@ -199,7 +200,7 @@ function ProfileMenu({
             }}
           >
             <EnvTag environment={profile.environment} />
-            <span className="m3-menu-item-text">{profile.label}</span>
+            <span className="m3-menu-item-text">{privacy.mask(profile.label)}</span>
             <UnsetTag profile={profile} />
             {profile.id === selectedProfileId && <Icon name="check" size={20} className="m3-menu-check" />}
           </button>
