@@ -57,7 +57,7 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 
 ## ボットの起動
 
-ビルド工程・リンター設定は未整備。標準の unittest / IsolatedAsyncioTestCase による回帰テストと、Windows／Linux・Python 3.10／3.13で実行する `.github/workflows/tests.yml` がある。
+ビルド工程・リンター設定は未整備。標準の unittest / IsolatedAsyncioTestCase による回帰テストと、Windows／Linux・Python 3.11／3.13で実行する `.github/workflows/tests.yml` がある。
 
 **ローカル確認**（リポジトリルートで実行。`.env`・実際の DB・Discord・Gemini を使わない。`CONTRIBUTING.md` と同じもの）:
 
@@ -79,7 +79,7 @@ python -B -c "import sys; sys.path.insert(0, 'src'); from persona_bot.utils.disc
 確認用のスクリプトから **`bot.py` を import しないこと**（トップレベルで設定の読み込みと DB の初期化が走る）。`persona_bot.core.message_handler.MessageHandler` は設定読込やDB初期化を実行せずimportできる。メッセージ処理のテストはサービスと外部境界をモックに差し替えてこのクラスを直接呼ぶ（AST抽出は不要。`tests/helpers/message_handler_helpers.make_message_handler` が、渡さなかった依存を `Mock` で埋めて組み立てる）。それ以外のモジュールも `sys.path.insert(0, 'src')` で import できる。外部サービスはモックに置き換え、DB を使う確認は一時ディレクトリと架空のデータで行う。
 
 ```bash
-# 1. 依存関係のインストール (Python 3.10+)
+# 1. 依存関係のインストール (Python 3.11+)
 pip install -r requirements.txt
 
 # 2. シークレットの用意: プロジェクトルート直下（src/ の中ではない）に .env を作る。
@@ -136,7 +136,7 @@ tools/console/
 └── dev_launcher.py      # 手元の開発用起動
 ```
 
-`.github/workflows/tests.yml` はボットに加え、管理コンソールのバックエンド（Windows/Linux・Python 3.10/3.13）とフロントエンド（Windows/Linux・Node.js 24）を別ジョブで検証する。手元の再現コマンドは `CONTRIBUTING.md` の管理コンソール節を参照。依存は既存の固定版を各環境へ入れ、本番の接続先・秘密情報・実DBは使わない。
+`.github/workflows/tests.yml` はボットに加え、管理コンソールのバックエンド（Windows/Linux・Python 3.11/3.13）とフロントエンド（Windows/Linux・Node.js 24）を別ジョブで検証する。手元の再現コマンドは `CONTRIBUTING.md` の管理コンソール節を参照。依存は既存の固定版を各環境へ入れ、本番の接続先・秘密情報・実DBは使わない。
 
 デプロイ開始でも確認時の`profile_id`・`connected_at`を照合し、不一致は409。成功したサービス操作とデプロイ終了でインサイトキャッシュを失効させ、取得中の古い結果も再キャッシュしない。`db_summary.py` は件数のみを読み取り専用で取得し、日別評価は既存複合索引の期間検索と日本時間の日付条件を併用して旧日時形式も扱う。ログ転送の終了処理は再キャンセル時もSSHプロセス・転送タスクを回収する。不正なJSON・項目型もログの取得エラーとして停止し、受信済みの行を保持する。画面のサービス操作確認は接続変更で閉じ、古いコールバックも実行しない。伏せ字は接続先ID・デプロイ先と現在のGitブランチにも適用する。
 

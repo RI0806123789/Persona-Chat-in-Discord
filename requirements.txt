@@ -12,7 +12,7 @@
 # davey が無いと接続時に "davey library needed in order to use voice" で失敗する。
 # PyNaCl はここでバージョン制約付き（<1.6）で入るため、個別に書かないこと
 # （個別に無指定で書くと制約を超えた版が入ってしまう）。
-# Windows／Linux・Python 3.10／3.13で共通に使う直接依存の確認対象版。
+# Windows／Linux・Python 3.11／3.13で共通に使う直接依存の確認対象版。
 # 更新時はCIの全組み合わせで再検証する（推移依存まで固定するロックではない）。
 discord.py[voice]==2.7.1
 google-genai==2.31.0
@@ -32,8 +32,8 @@ miniaudio==1.71
 httpx==0.28.1
 matplotlib==3.10.8
 numpy==2.2.6
-Pillow==12.3.0
-pypdf==6.20.1
+Pillow==13.0.0
+pypdf==6.21.2
 # APIキー（Gemini / Discord）をプロジェクトルート直下の .env から読み込むために使う
 # （src/persona_bot/config/settings_loader.py）。以前は実キーを config_private.py という .py ファイルに
 # 直接書いていたが、.env 方式なら systemd の EnvironmentFile= や Docker の --env-file で
