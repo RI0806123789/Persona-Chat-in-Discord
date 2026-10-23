@@ -74,6 +74,7 @@ class CommandShutdownTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             data={"name": name, "type": 1}, type=discord.InteractionType.application_command,
             _state=self.client._connection, command_failed=False, guild=self.guild, guild_id=1,
+            command=self.tree.get_command(name),
             user=Mock(spec=discord.Member, id=11, voice=SimpleNamespace(channel=self.channel),
                       guild_permissions=SimpleNamespace(administrator=False)),
             response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), is_done=Mock(return_value=False)),
@@ -202,6 +203,127 @@ class CommandShutdownTests(unittest.IsolatedAsyncioTestCase):
         failing.response.send_message.assert_awaited_once()
         self.assertIs(self.tree.on_error, commands.handle_command_error)
         self.channel.connect.assert_not_awaited()
+
+    async def test_shutdown_waits_for_error_notice_and_repeated_cancellation(self):
+        """本体失敗後の通知まで所有し、通知完了後にキャンセルを伝えて共有接続を閉じる。"""
+        entered, release = asyncio.Event(), asyncio.Event()
+        interaction = self.interaction("join")
+        interaction.response.is_done.return_value = True
+        error = RuntimeError("架空の非公開情報")
+        self.autonomous.stop_session.side_effect = error
+
+        async def notify(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            self.order.append("notice")
+
+        interaction.followup.send.side_effect = notify
+        self.tree.on_error = AsyncMock(wraps=self.tree.on_error)
+        closing = None
+        with patch.object(commands, "handle_command_error", wraps=commands.handle_command_error) as handle:
+            body = self.dispatch(interaction)
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                self.assertIn(body, self.client.background_tasks._tasks)
+                closing = asyncio.create_task(self.client.close())
+                for _ in range(2):
+                    await asyncio.sleep(0)
+                    body.cancel()
+                    closing.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(body.done())
+                    self.assertFalse(closing.done())
+                    self.assertIn(body, self.client.background_tasks._tasks)
+                    self.assertEqual(self.order, [])
+                release.set()
+                await asyncio.wait_for(asyncio.gather(body, closing, return_exceptions=True), 2)
+                await self.client.close()
+            finally:
+                release.set()
+                await asyncio.gather(*[task for task in (body, closing) if task is not None], return_exceptions=True)
+                await self.client.close()
+            handle.assert_awaited_once()
+        self.assertTrue(body.cancelled())
+        self.assertEqual(self.order, ["notice", "discord", "gemini", "db"])
+        self.assertEqual(self.client.background_tasks._tasks, {})
+        interaction.followup.send.assert_awaited_once()
+        self.assertTrue(interaction.followup.send.call_args.kwargs["ephemeral"])
+        self.tree.on_error.assert_not_awaited()
+
+    async def test_body_error_wrapping_and_single_notice_through_real_tree(self):
+        """通常例外だけを包み、既存のコマンド例外を保持して一度だけ通知する。"""
+        self.tree.on_error = AsyncMock(wraps=self.tree.on_error)
+        errors = [RuntimeError("架空の非公開情報"), TypeError("架空の型エラー"),
+                  app_commands.MissingPermissions(["manage_guild"]),
+                  app_commands.CommandOnCooldown(app_commands.Cooldown(1, 5), 3)]
+        for name in ("functions", "join", "leave"):
+            for error in errors:
+                with self.subTest(command=name, error=type(error).__name__):
+                    interaction = self.interaction(name)
+                    self.blacklist.is_blocked.side_effect = error
+                    with patch.object(commands, "handle_command_error", wraps=commands.handle_command_error) as handle, patch.object(
+                        self.client, "dispatch",
+                    ) as completion:
+                        body = self.dispatch(interaction)
+                        await asyncio.wait_for(body, 2)
+                    handle.assert_awaited_once()
+                    reported = handle.call_args.args[1]
+                    if isinstance(error, app_commands.AppCommandError):
+                        self.assertIs(reported, error)
+                    else:
+                        self.assertIsInstance(reported, app_commands.CommandInvokeError)
+                        self.assertIs(reported.original, error)
+                        self.assertIs(reported.command, interaction.command)
+                    interaction.response.send_message.assert_awaited_once()
+                    self.assertTrue(interaction.response.send_message.call_args.kwargs["ephemeral"])
+                    interaction.followup.send.assert_not_awaited()
+                    self.assertTrue(interaction.command_failed)
+                    self.assertNotIn(body, self.client.background_tasks._tasks)
+                    completion.assert_not_called()
+        self.tree.on_error.assert_not_awaited()
+
+    async def test_notification_failure_releases_owner_and_allows_shutdown(self):
+        """通知先の切断や予期しない通知エラーでも再通知せず、終了を妨げない。"""
+        self.autonomous.stop_session.side_effect = RuntimeError("架空の本体エラー")
+        self.tree.on_error = AsyncMock(wraps=self.tree.on_error)
+        errors = [discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "架空の期限切れ"),
+                  OSError("架空の非公開情報")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                interaction = self.interaction("leave")
+                interaction.response.is_done.return_value = True
+                interaction.followup.send.side_effect = error
+                with patch("builtins.print") as log:
+                    body = self.dispatch(interaction)
+                    await asyncio.wait_for(body, 2)
+                self.assertNotIn("架空の非公開情報", str(log.call_args_list))
+                interaction.followup.send.assert_awaited_once()
+                interaction.response.send_message.assert_not_awaited()
+                self.assertTrue(interaction.command_failed)
+                self.assertNotIn(body, self.client.background_tasks._tasks)
+        self.tree.on_error.assert_not_awaited()
+        await asyncio.wait_for(self.client.close(), 2)
+        self.assertEqual(self.order, ["discord", "gemini", "db"])
+
+    async def test_body_and_notification_cancellation_propagate_without_retry(self):
+        """本体・失敗通知のどちらのキャンセルも、二重通知せず呼出元へ伝播する。"""
+        self.tree.on_error = AsyncMock(wraps=self.tree.on_error)
+        for during_notice in (False, True):
+            with self.subTest(during_notice=during_notice):
+                interaction = self.interaction("leave")
+                interaction.response.is_done.return_value = True
+                self.autonomous.stop_session.side_effect = (
+                    RuntimeError("架空の本体エラー") if during_notice else asyncio.CancelledError
+                )
+                interaction.followup.send.side_effect = asyncio.CancelledError
+                with patch.object(commands, "handle_command_error", wraps=commands.handle_command_error) as handle:
+                    body = self.dispatch(interaction)
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(body, 2)
+                    self.assertEqual(handle.await_count, int(during_notice))
+                self.assertEqual(interaction.followup.send.await_count, int(during_notice))
+                self.assertNotIn(body, self.client.background_tasks._tasks)
+        self.tree.on_error.assert_not_awaited()
 
 
 if __name__ == "__main__":
