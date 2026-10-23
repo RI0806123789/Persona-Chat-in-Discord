@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -177,6 +178,115 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.db.queue_recover_stuck("2026-01-01")
         self.assertIsNone(self.db.queue_claim_next_pending("2026-01-01"))
         self.assertEqual(len(self.db.pending_fetch_entries("11")), 1)
+
+    async def test_cancellation_before_delivery_protection_keeps_task_recoverable(self):
+        """送信開始の保護前なら未送信のまま残し、起動時に再開できる。"""
+        started = asyncio.Event()
+
+        async def screen(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        self.db.queue_update_task(self.task["task_id"], {"status": "processing"}, "2026-01-01")
+        with patch.object(document_service, "screen_bot_response_with_status", side_effect=screen):
+            worker = asyncio.create_task(self.service._process_task(self.task))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                worker.cancel()
+                worker.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(worker, 2)
+            finally:
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+        self.sent.assert_not_awaited()
+        self.message.reply.assert_not_awaited()
+        self.assertEqual(self.db.queue_recover_stuck("2026-01-02"), 1)
+        self.assertEqual(self.db.queue_claim_next_pending("2026-01-02")["task_id"], self.task["task_id"])
+
+    async def test_cancellation_during_delivery_checkpoint_finishes_send_and_save(self):
+        """送信開始記録の確定前後で中断されても、一度だけ返信して完了を保存する。"""
+        original = self.db.queue_update_task
+        loop = asyncio.get_running_loop()
+        for committed in (False, True):
+            for cancellations in (1, 2):
+                with self.subTest(committed=committed, cancellations=cancellations):
+                    started, release = asyncio.Event(), threading.Event()
+                    self.db.queue_upsert_task({**self.task, "status": "processing"})
+                    self.sent.reset_mock()
+
+                    def update(task_id, updates, now):
+                        if updates.get("status") == "sending":
+                            if committed:
+                                original(task_id, updates, now)
+                            loop.call_soon_threadsafe(started.set)
+                            if not release.wait(3):
+                                raise AssertionError("送信開始記録の待機が解除されませんでした。")
+                            if committed:
+                                return
+                        original(task_id, updates, now)
+
+                    with patch.object(self.db, "queue_update_task", side_effect=update), patch.object(
+                        self.memory, "append_pending_log", new=AsyncMock(),
+                    ) as append:
+                        worker = asyncio.create_task(self.service._process_task(self.task))
+                        try:
+                            await asyncio.wait_for(started.wait(), 2)
+                            for _ in range(cancellations):
+                                worker.cancel()
+                                await asyncio.sleep(0)
+                                self.assertFalse(worker.done())
+                            release.set()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await asyncio.wait_for(worker, 2)
+                        finally:
+                            release.set()
+                            await asyncio.gather(worker, return_exceptions=True)
+                    self.sent.assert_awaited_once()
+                    append.assert_awaited_once()
+                    self.message.reply.assert_not_awaited()
+                    with self.db._lock:
+                        status = self.db._conn.execute(
+                            "SELECT status FROM queue_tasks WHERE task_id = ?", (self.task["task_id"],),
+                        ).fetchone()["status"]
+                    self.assertEqual(status, "completed")
+                    self.assertEqual(self.db.queue_recover_stuck("2026-01-02"), 0)
+                    self.assertIsNone(self.db.queue_claim_next_pending("2026-01-02"))
+
+    async def test_cancellation_before_checkpoint_write_finishes_protected_delivery(self):
+        """保護開始後、DB書込を始める前のキャンセルでも記録から完了まで進む。"""
+        original = self.service._update_task
+        for cancellations in (1, 2):
+            with self.subTest(cancellations=cancellations):
+                entered, release = asyncio.Event(), asyncio.Event()
+                self.db.queue_upsert_task({**self.task, "status": "processing"})
+                self.sent.reset_mock()
+
+                async def update(task_id, **updates):
+                    if updates.get("status") == "sending":
+                        entered.set()
+                        await release.wait()
+                    await original(task_id, **updates)
+
+                with patch.object(self.service, "_update_task", side_effect=update):
+                    worker = asyncio.create_task(self.service._process_task(self.task))
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        for _ in range(cancellations):
+                            worker.cancel()
+                            await asyncio.sleep(0)
+                            self.assertFalse(worker.done())
+                        release.set()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await asyncio.wait_for(worker, 2)
+                    finally:
+                        release.set()
+                        await asyncio.gather(worker, return_exceptions=True)
+                self.sent.assert_awaited_once()
+                self.message.reply.assert_not_awaited()
+                with self.db._lock:
+                    status = self.db._conn.execute("SELECT status FROM queue_tasks").fetchone()[0]
+                self.assertEqual(status, "completed")
 
     async def test_delivery_checkpoint_is_durable_and_never_replayed_after_restart(self):
         self.db.queue_update_task(self.task["task_id"], {"status": "sending"}, "2026-01-01")

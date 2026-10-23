@@ -271,8 +271,8 @@ class DocumentService:
                 reply_text += format_grounding_sources(grounding_sources)
 
             # DiscordとDBは同じトランザクションにできない。送信開始を先に記録し、
-            # 強制終了で配送結果が不明なら自動再送を止める。通常のキャンセルは送信・保存後に伝える。
-            await self._update_task(task_id, status="sending")
+            # 強制終了で配送結果が不明なら自動再送を止める。通常のキャンセルは記録開始から
+            # 送信・完了保存までを一括で保護し、すべて終えてから伝える。
             await wait_for_cleanup(
                 self._send_and_complete(task_id, message, reply_text, grounding_sources, author_id,
                                         question, response_text, accepted),
@@ -303,6 +303,7 @@ class DocumentService:
         self, task_id: str, message: discord.Message, reply_text: str, grounding_sources: list,
         author_id: str, question: str, response_text: str, accepted: bool,
     ) -> None:
+        await self._update_task(task_id, status="sending")
         await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
         # 回答は送信済み。完了記録を先に試み、保存の失敗を再送や二重のエラー返信へ変えない。
         try:

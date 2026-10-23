@@ -115,6 +115,7 @@ message_handler = MessageHandler(
 register_commands(
     tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, autonomous,
     voice_guard=voice_guard,
+    task_owner=client.background_tasks,
 )
 
 
