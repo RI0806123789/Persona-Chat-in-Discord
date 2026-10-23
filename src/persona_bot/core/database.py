@@ -59,7 +59,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -198,6 +198,11 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   両列が同じ票は末尾の暗黙のrowidが昇順となり、従来の同順位の順序も保つ。
     12: [
         "CREATE INDEX IF NOT EXISTS idx_feedback_created_message ON feedback (created_at DESC, message_id DESC)",
+    ],
+    # バージョン13: 記憶圧縮の巡回が利用者ごとに行う pending_log の取得・削除で、全件走査を避ける索引。
+    #   WHERE user_id = ? ORDER BY id / WHERE user_id = ? AND id <= ? を、並べ替えなしの索引検索にする。
+    13: [
+        "CREATE INDEX IF NOT EXISTS idx_pending_log_user_id ON pending_log (user_id, id)",
     ],
 }
 

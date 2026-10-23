@@ -475,6 +475,28 @@ def is_administrator(user: Any) -> bool:
     return isinstance(user, discord.Member) and user.guild_permissions.administrator
 
 
+async def is_current_administrator(interaction: discord.Interaction) -> bool:
+    """長い処理の後に、その利用者が今も管理者かを最新の Member で判定する。
+
+    `interaction.user` はボタンを押した時点の写しで、描画や集計を待つ間にロールが
+    外されても更新されない。他人の統計やフィードバック集計のような管理者専用の結果を
+    送る直前は、この関数で Member を取り直す（#208）。members インテントに頼らないよう、
+    キャッシュではなく `guild.fetch_member` で取得する。
+
+    DM・Member でない・脱退済み・取得失敗は、すべて管理者でないものとして扱う
+    （確認できないときは拒否する）。キャンセルは握りつぶさず伝える。
+    """
+    user = interaction.user
+    if not isinstance(user, discord.Member):
+        return False
+    try:
+        member = await user.guild.fetch_member(user.id)
+    except Exception as error:
+        print(f"管理者権限の再確認に失敗したため拒否します: {type(error).__name__}")
+        return False
+    return is_administrator(member)
+
+
 async def reject_blocked_interaction(
     interaction: discord.Interaction, is_blocked: Callable[[int], bool],
 ) -> bool:

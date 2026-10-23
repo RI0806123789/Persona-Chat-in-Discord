@@ -21,6 +21,7 @@ import argparse
 import ast
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # このスクリプトは deploy/ に置かれているため、親がプロジェクトルートになる。
@@ -154,25 +155,42 @@ def _build_env_text(values: dict[str, str]) -> str:
 
 
 def _write_secret_file(path: Path, text: str) -> None:
-    """秘密情報を含むファイルを、**最初から**本人だけが読める権限（600）で書き出す。
+    """秘密情報を含むファイルを、**本人だけが読める権限（600）で**、既存の内容を壊さずに書き出す。
 
-    以前は「既定の権限で書いてから chmod 600」だったため、作成から chmod までの間は
-    umask 次第（Ubuntu の既定は 022 → 644）で他のユーザーからキーが読めた。chmod に
-    失敗するとその権限のまま残り、--force の上書きでも元の権限のまま書き込まれていた。
-    そこで os.open の作成時の mode で 600 を指定し、既存ファイルを上書きする場合
-    （O_CREAT の mode は新規作成時にしか効かない）も、中身を書く前に 600 へ揃える。
-    Windows ではこの権限モデルが無く実質的に無視されるが、エラーにはならない。
+    手順は「同じフォルダに作成時から 600 の一時ファイルを作る → 権限・書き込み・fsync・クローズに
+    成功する → os.replace で置き換える」。以前は os.open(O_TRUNC) で元の内容を先に切り詰めてから
+    chmod を試し、失敗しても警告だけで新しい鍵を書いていたため、権限を絞れないまま鍵が残ったり、
+    書き込みの途中で失敗すると元の .env まで失われたりした（#209）。いまは権限の設定を含む
+    どの段階で失敗しても例外を呼び出し元へ返し、元のファイルには触らず、一時ファイルを回収する。
+    置き換えた後のファイルは一時ファイルの権限（600）を引き継ぐので、--force で緩い権限の既存ファイルを
+    上書きしても 600 に絞られる。
 
-    改行は LF に固定する（Windows で生成して Linux へ持って行っても崩れないように）。
+    Windows には os.fchmod が無く、このモードの権限モデルも無いため、権限の設定は省く
+    （mkstemp は Windows でもエラーなく作成できる）。改行は LF に固定する
+    （Windows で生成して Linux へ持って行っても崩れないように）。秘密の値は例外にもログにも出さない。
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        if hasattr(os, "fchmod"):
-            try:
+    # mkstemp は O_EXCL で作成し、POSIX では最初から 600 になる（他のユーザーに読める瞬間が無い）。
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        except BaseException:
+            os.close(fd)
+            raise
+        with handle:
+            if hasattr(os, "fchmod"):
                 os.fchmod(handle.fileno(), 0o600)
-            except OSError as exc:
-                print(f"注意: パーミッションを 600 に変更できませんでした: {exc}")
-        handle.write(text)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def main() -> int:
@@ -228,7 +246,14 @@ def main() -> int:
         return 0
 
     env_text = _build_env_text(values)
-    _write_secret_file(ENV_PATH, env_text)
+    try:
+        _write_secret_file(ENV_PATH, env_text)
+    except OSError as exc:
+        # 権限の設定・書き込み・置き換えのどこで失敗しても、既存の .env は変更していない。
+        # 秘密の値を含む文字列は出さない（OSError の説明は場所と原因だけ）。
+        print(f"エラー: .env を保存できませんでした（{type(exc).__name__}: {exc.strerror or '原因不明'}）。")
+        print("  既存の .env は変更していません。権限とディスクの空きを確認してからやり直してください。")
+        return 1
 
     print(f".env を作成しました: {ENV_PATH}")
     print("")

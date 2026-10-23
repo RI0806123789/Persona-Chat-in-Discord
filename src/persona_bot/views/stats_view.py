@@ -2,7 +2,7 @@ import discord
 from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
-from persona_bot.utils.discord_helpers import is_administrator, split_message
+from persona_bot.utils.discord_helpers import is_administrator, is_current_administrator, split_message
 from persona_bot.services.feedback_service import FeedbackService, get_default_service
 from persona_bot.services.stats_service import StatsService
 from persona_bot.views.view_parts import (
@@ -101,10 +101,12 @@ class RunStatsButton(ui.Button):
             caption, images = await view.stats.build_dashboard(
                 target_id, view.temp_item, viewer_id=view.viewer_id
             )
+            # 描画・解析の待機中にも権限は変わりうる。interaction.user は押した時点の写しなので、
+            # 送信直前に最新の Member で他人のデータを守る（本人の統計は管理者でなくてよい）。
+            allowed = target_id == view.viewer_id or await is_current_administrator(interaction)
             if not panel_operation_is_current(view, interaction):
                 return
-            # 描画・解析の待機中にも権限は変わりうる。送信直前にも他人のデータを守る。
-            if target_id != view.viewer_id and not is_administrator(interaction.user):
+            if not allowed:
                 await edit_panel_message(interaction, deferred=True,
                     content="この機能はサーバー管理者のみ利用できます。", view=None,
                 )
@@ -157,6 +159,17 @@ class RankingButton(ui.Button):
         except Exception as error:
             print(f"グラフ生成中にエラー: {error}")
             await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
+            return
+        # 描画の待機中にロールが外されうるので、送る直前に最新の Member で確かめる。
+        # 拒否・取得失敗・キャンセルのどれでも、作った画像のバッファを回収する。
+        allowed = False
+        try:
+            allowed = await is_current_administrator(interaction)
+        finally:
+            if not allowed and buffer is not None:
+                buffer.close()
+        if not allowed:
+            await interaction.followup.send("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
             return
         if buffer is None:
             await interaction.followup.send(
@@ -211,7 +224,7 @@ class FeedbackButton(ui.Button):
         try:
             summary = await feedback.build_summary_text(interaction.guild_id)
             # 集計の待機中に権限を失った場合も、管理者用の結果を送らない。
-            if not is_administrator(interaction.user):
+            if not await is_current_administrator(interaction):
                 await interaction.followup.send("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
                 return
             for chunk in split_message(summary) or ["表示できるフィードバックの集計がありません。"]:

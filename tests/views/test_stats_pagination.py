@@ -8,11 +8,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import discord
 
 from persona_bot.views.stats_view import FeedbackButton, RunStatsButton, StatsView
+from tests.helpers.member_helpers import make_member
 
 
 class StatsPaginationTests(unittest.IsolatedAsyncioTestCase):
@@ -25,7 +27,7 @@ class StatsPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.view = StatsView(self.stats, viewer_id="11", is_admin=True, feedback=self.feedback)
         self.addCleanup(self.view.stop)
         self.interaction = SimpleNamespace(
-            user=Mock(spec=discord.Member, guild_permissions=SimpleNamespace(administrator=True)), guild_id=1,
+            user=make_member(admin=True), guild_id=1,
             response=SimpleNamespace(defer=AsyncMock(), edit_message=AsyncMock(), send_message=AsyncMock()),
             edit_original_response=AsyncMock(), followup=SimpleNamespace(send=AsyncMock()),
         )
@@ -107,7 +109,7 @@ class StatsPaginationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feedback_revoked_permission_during_query_does_not_send_result(self):
         async def summary(guild_id):
-            self.interaction.user.guild_permissions.administrator = False
+            self.interaction.user.fresh.guild_permissions.administrator = False
             return "公開してはいけない架空の集計"
 
         self.feedback.build_summary_text.side_effect = summary

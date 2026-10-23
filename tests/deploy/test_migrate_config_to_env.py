@@ -145,6 +145,70 @@ class MigrationLoggingTests(unittest.TestCase):
         self.assertEqual(self.env_path.read_bytes(), original)
         self.assert_no_secret_fragments(output)
 
+    # ---- 保存に失敗したときの原本の保護（#209） ----------------------------------
+
+    def leftovers(self) -> list[str]:
+        # 一時ファイルが残っていないことを確かめる（.env と移行元のフォルダ以外は無いはず）。
+        return sorted(path.name for path in self.root.iterdir() if path.name not in (".env", "index"))
+
+    def assert_failed_without_touching_original(self, original: bytes, *, patches) -> None:
+        self.env_path.write_bytes(original)
+        with patches:
+            result, output = self.run_main("--force")
+        self.assertEqual(result, 1)
+        self.assertEqual(self.env_path.read_bytes(), original)
+        self.assertEqual(self.leftovers(), [])
+        self.assert_no_secret_fragments(output)
+        self.assertIn("変更していません", output)
+
+    def test_permission_failure_aborts_without_writing_secrets_or_truncating(self) -> None:
+        # fchmod が無い環境（Windows）でも失敗経路を試せるよう create=True で差し込む。
+        self.assert_failed_without_touching_original(
+            b"EXISTING_TEST_CONFIGURATION=keep\n",
+            patches=patch.object(migration.os, "fchmod", create=True, side_effect=PermissionError(1, "架空の権限失敗")),
+        )
+
+    def test_write_failure_keeps_original_and_removes_temporary_file(self) -> None:
+        self.assert_failed_without_touching_original(
+            b"EXISTING_TEST_CONFIGURATION=keep\n",
+            patches=patch.object(migration.os, "fsync", side_effect=OSError(28, "架空のディスク満杯")),
+        )
+
+    def test_replace_failure_keeps_original_and_removes_temporary_file(self) -> None:
+        self.assert_failed_without_touching_original(
+            b"EXISTING_TEST_CONFIGURATION=keep\n",
+            patches=patch.object(migration.os, "replace", side_effect=PermissionError(13, "架空の置換失敗")),
+        )
+
+    def test_new_file_failure_leaves_no_env_or_temporary_file(self) -> None:
+        with patch.object(migration.os, "fsync", side_effect=OSError(28, "架空のディスク満杯")):
+            result, output = self.run_main()
+        self.assertEqual(result, 1)
+        self.assertFalse(self.env_path.exists())
+        self.assertEqual(self.leftovers(), [])
+        self.assert_no_secret_fragments(output)
+
+    def test_temporary_file_is_created_private_and_secret_is_written_only_after_permission_step(self) -> None:
+        events = []
+        original_mkstemp = migration.tempfile.mkstemp
+
+        def mkstemp(*args, **kwargs):
+            fd, name = original_mkstemp(*args, **kwargs)
+            events.append(("mkstemp", Path(name).parent == self.root))
+            return fd, name
+
+        with patch.object(migration.tempfile, "mkstemp", side_effect=mkstemp), patch.object(
+            migration.os, "fchmod", create=True, side_effect=lambda fd, mode: events.append(("fchmod", mode)),
+        ):
+            result, _ = self.run_main()
+        self.assertEqual(result, 0)
+        # 置き換え先と同じフォルダに作り、書き込みの前に 600 を設定する。
+        self.assertEqual(events, [("mkstemp", True), ("fchmod", 0o600)])
+        self.assertEqual(dict(dotenv_values(self.env_path, interpolate=False)), self.values)
+        self.assertEqual(self.leftovers(), [])
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(self.env_path.stat().st_mode), 0o600)
+
     def test_missing_key_does_not_log_the_available_secret(self) -> None:
         self.set_source({"API_KEY_GEMINI": self.values["API_KEY_GEMINI"]})
         result, output = self.run_main("--dry-run")
