@@ -20,10 +20,12 @@ const HEADERS = {
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly safeMessage?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, safeMessage?: string) {
     super(message);
     this.status = status;
+    this.safeMessage = safeMessage;
   }
 }
 
@@ -36,15 +38,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
+    let safeDetail: string | undefined;
     try {
       const body: unknown = await response.json();
       if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
         detail = body.detail;
+        if ("detail_safe" in body && typeof body.detail_safe === "string") safeDetail = body.detail_safe;
       }
     } catch {
       // JSON でない応答（プロキシのエラーページなど）はステータスだけ見せる
     }
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, safeDetail);
   }
   return (await response.json()) as T;
 }

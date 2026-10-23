@@ -5,7 +5,7 @@ import { UnsetTag } from "../components/TopBar";
 import { Button, Card, EmptyState, InlineError, Notice, StatusChip } from "../components/ui";
 import { formatDateTime, formatRelative } from "../format";
 import { usePolling } from "../hooks";
-import { usePrivacy } from "../privacy";
+import { redactError, usePrivacy } from "../privacy";
 import type { CommandRecord, ConnectionState, Profile } from "../types";
 
 const HISTORY_INTERVAL_MS = 3000;
@@ -114,7 +114,7 @@ export function ConnectionPage({
           />
           {connected && connection?.connected_at && <span className="body-small muted">{formatRelative(connection.connected_at * 1000, now)}から</span>}
         </div>
-        {connection?.last_error && !connected && <InlineError>{privacy.redact(connection.last_error)}</InlineError>}
+        {connection?.last_error && !connected && <InlineError>{redactError(connection.last_error, connection.last_error_safe, privacy)}</InlineError>}
         <dl className="kv">
           <dt>ホスト鍵</dt>
           <dd className="mono break">{privacy.mask(connection?.fingerprint)}</dd>
@@ -150,8 +150,8 @@ export function ConnectionPage({
                     <td className="nowrap">
                       <Icon name={record.ok ? "checkCircle" : "error"} size={18} filled className={record.ok ? "ok-icon" : "err-icon"} /> {privacy.redact(record.label)}
                     </td>
-                    <td className="mono command-cell" title={privacy.redact(record.error ?? record.command)}>
-                      {privacy.redact(record.error ?? record.command)}
+                    <td className="mono command-cell" title={redactError(record.error ?? record.command, record.error_safe, privacy)}>
+                      {redactError(record.error ?? record.command, record.error_safe, privacy)}
                     </td>
                     <td className="num mono">{record.exit_status ?? "—"}</td>
                     <td className="num mono">{record.duration_ms} ms</td>

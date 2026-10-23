@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import * as React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { renderToStaticMarkup } from "react-dom/server";
 
 function compile(source, modules) {
   const exports = {};
@@ -18,6 +21,15 @@ const appSource = await source("App.tsx");
 const controllerSource = await source("controllers.ts");
 const dataSource = await source("pages/DataPage.tsx");
 const privacySource = await source("privacy.ts");
+const displayPrivacy = compile(privacySource, {react: React});
+const {Snackbar} = compile((await source("components/toast.tsx")).replace("function Snackbar(", "export function Snackbar("), {
+  react: React, "react/jsx-runtime": jsxRuntime, "../privacy": displayPrivacy, "./Icon": {Icon: () => null},
+});
+
+function noticeHtml(harness, notice = harness.notices.at(-1)) {
+  return renderToStaticMarkup(React.createElement(displayPrivacy.PrivacyContext.Provider, {value: harness.render().privacy},
+    React.createElement(Snackbar, {toast: {...notice, id: 1, leaving: false}, onDismiss() {}})));
+}
 
 function deferred() {
   let resolve, reject;
@@ -68,7 +80,7 @@ function consoleHarness(api, renderTree = false) {
     "./hooks": { useStoredState: (_key, initial) => runtime.hooks.useState(initial), useNow: () => 0,
       useMediaQuery: () => true, useLogStream: () => ({}), usePolling: () => {} },
     "./api": { api, errorMessage: (error) => error.message, ApiError: Error },
-    "./components/toast": { useToast: () => (notice) => notices.push(notice) },
+    "./components/toast": { useToast: () => (notice) => notices.push(notice), ToastViewport: "ToastViewport" },
     "./privacy": privacy, "./requestScope": scopes,
     "./navigation": { PAGES: [{ id: "overview" }], isPageId: () => true },
     "./profiles": { unsetFieldsOf: () => [] },
@@ -77,7 +89,7 @@ function consoleHarness(api, renderTree = false) {
     "./pages/OperationsPage": { OperationsPage: "OperationsPage" },
   };
   modules["./controllers"] = compile(controllerSource, modules);
-  const controls = "busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, stateUnknown, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, setStoredPage, notify";
+  const controls = "busyAction, requestAction, confirmOpen, requestDeploy, runDeploy, confirm, applyConnection, refreshStatus, refreshInsights, refreshDeploy, handleConnect, handleDisconnect, runAction, status, insights, deploy, stateUnknown, statusError, insightsError, setSelectedProfileId, setProfiles, setPrivacyOn, setStoredPage, notify, privacy";
   const exported = appSource.replace("function Console() {", "export function Console() {");
   const instrumented = renderTree
     ? exported.replace("  return (\n    <PrivacyContext.Provider", "  const tree = (\n    <PrivacyContext.Provider")
@@ -279,8 +291,15 @@ test("状態取得で判明したブランチをConsoleの通知でも隠す", a
   await harness.render().refreshStatus();
   harness.render().setPrivacyOn(true);
   harness.render().notify({title: `更新先 ${branch}`, detail: branch});
-  assert.equal(harness.notices.at(-1).title, `更新先 ${harness.privacy.MASK}`);
-  assert.equal(harness.notices.at(-1).detail, harness.privacy.MASK);
+  const notice = harness.notices.at(-1);
+  assert.equal(notice.title, `更新先 ${branch}`);
+  assert.equal(notice.detail, branch);
+  const html = noticeHtml(harness, notice);
+  assert.equal(html.includes(branch), false);
+  assert.ok(html.includes(`更新先 ${harness.privacy.MASK}`));
+  assert.ok(html.includes(`<p class="body-small">${harness.privacy.MASK}</p>`));
+  harness.render().setPrivacyOn(false);
+  assert.ok(noticeHtml(harness, notice).includes(branch));
 });
 
 test("伏せ字モードで通知の見出しと詳細、短いホーム名のパスも隠す", () => {
@@ -291,8 +310,71 @@ test("伏せ字モードで通知の見出しと詳細、短いホーム名の�
   harness.render().setPrivacyOn(true);
   harness.render().notify({ title: `架空の接続先 host.invalid`, detail: `${home}/.ssh/config` });
   const notice = harness.notices.at(-1);
-  assert.equal(notice.title, `${harness.privacy.MASK} ${harness.privacy.MASK}`);
-  assert.equal(notice.detail, `${harness.privacy.MASK}/.ssh/config`);
+  assert.equal(notice.title, "架空の接続先 host.invalid");
+  assert.equal(notice.detail, `${home}/.ssh/config`);
+  const html = noticeHtml(harness, notice);
+  for (const value of [profile.label, profile.host, home]) assert.equal(html.includes(value), false);
+  assert.ok(html.includes(`${harness.privacy.MASK} ${harness.privacy.MASK}`));
+  assert.ok(html.includes(`${harness.privacy.MASK}/.ssh/config`));
+  harness.render().setPrivacyOn(false);
+  assert.ok(noticeHtml(harness, notice).includes(`${home}/.ssh/config`));
+});
+
+test("#217 通知の描画先はConsoleの現在のPrivacyContext内に一つだけ配置する", () => {
+  const current = consoleHarness({}, true).render();
+  const children = (node) => Array.isArray(node) ? node.flatMap(children)
+    : node && typeof node === "object" ? [node, ...children(node.props?.children)] : [];
+  assert.equal(current.tree.props.value, current.privacy);
+  assert.equal(children(current.tree).filter((node) => node.type === "ToastViewport").length, 1);
+});
+
+test("#217 接続成功時に表示した通知も後から伏せ字へ切り替わる", async () => {
+  const profile = {id: "fixture", label: "FICTIONAL_CONNECTED_TARGET"};
+  const state = {...connection(profile.id), profile};
+  const harness = consoleHarness({connect: async () => state, connection: async () => state});
+  harness.render().setSelectedProfileId(profile.id);
+  await harness.render().handleConnect();
+  const notice = harness.notices.at(-1);
+  assert.equal(notice.title, "SSH で接続しました");
+  assert.equal(notice.detail, profile.label);
+  for (const enabled of [false, true, false]) {
+    harness.render().setPrivacyOn(enabled);
+    assert.equal(noticeHtml(harness, notice).includes(profile.label), !enabled);
+  }
+  assert.equal(harness.notices.length, 1);
+});
+
+test("#217 通知を保持した後の状態取得で判明したブランチも描画時に隠す", async () => {
+  const branch = "private/fictional-later-branch";
+  const harness = consoleHarness({status: async () => ({git: {branch}, fetched_at: 1})});
+  harness.render().applyConnection(connection("A"));
+  harness.render().setPrivacyOn(true);
+  harness.render().notify({title: `更新 ${branch}`, detail: branch, action: {label: `確認 ${branch}`, onClick() {}}});
+  const notice = harness.notices.at(-1);
+  assert.ok(noticeHtml(harness, notice).includes(branch));
+  await harness.render().refreshStatus();
+  const displayed = noticeHtml(harness, notice);
+  assert.equal(displayed.includes(branch), false);
+  assert.ok(displayed.includes(`更新 ${harness.privacy.MASK}`));
+  assert.ok(displayed.includes(`確認 ${harness.privacy.MASK}`));
+  harness.render().setPrivacyOn(false);
+  assert.ok(noticeHtml(harness, notice).includes(branch));
+  assert.equal(notice.detail, branch);
+});
+
+test("#217 保持した再試行通知は切替後も最新の選択先を使う", async () => {
+  const calls = [];
+  const harness = consoleHarness({connect: async (id) => {calls.push(id); throw new Error("架空の接続失敗");},
+    connection: async () => connection(null)});
+  harness.render().setSelectedProfileId("fixture-A");
+  await harness.render().handleConnect();
+  const notice = harness.notices.at(-1);
+  harness.render().setSelectedProfileId("fixture-B");
+  harness.render().setPrivacyOn(true);
+  noticeHtml(harness, notice);
+  notice.action.onClick();
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(calls, ["fixture-A", "fixture-B"]);
 });
 
 test("ログが途切れたときのツールチップにも伏せ字を適用する", async () => {
@@ -502,4 +584,40 @@ test("接続前のサービス操作の完了は新接続の実行中状態を�
   harness.render().applyConnection(connection(null));
   fresh.resolve({ok: true, message: "新しい完了"});
   await second;
+});
+
+
+test("#218 接続失敗通知はAPIの安全な診断と原文を両方保持する", async () => {
+  const owner = "LOCAL_OWNER";
+  const raw = "秘密鍵が見つかりません: /" + ["home", owner, ".ssh", "fixture-key"].join("/");
+  const safe = "秘密鍵が見つかりません: <LOCAL_PATH>（key_path を確認）";
+  const error = Object.assign(new Error(raw), {safeMessage: safe});
+  const harness = consoleHarness({connect: async () => {throw error;}, connection: async () => connection(null)});
+  harness.render().setSelectedProfileId("fixture");
+  harness.render().setPrivacyOn(true);
+  await harness.render().handleConnect();
+  const notice = harness.notices.at(-1);
+  assert.equal(notice.detail, raw);
+  assert.equal(notice.detailSafe, safe);
+  assert.equal(noticeHtml(harness, notice).includes(owner), false);
+  assert.ok(noticeHtml(harness, notice).includes("key_path"));
+  harness.render().setPrivacyOn(false);
+  assert.ok(noticeHtml(harness, notice).includes(raw));
+  assert.equal(harness.notices.length, 1);
+});
+
+test("#218 接続状態からの通知も保持された安全な診断を使う", () => {
+  const harness = consoleHarness({});
+  const raw = "known_hosts が見つかりません: /" + ["home", "LOCAL_OWNER", ".ssh", "known_hosts"].join("/");
+  const safe = "known_hosts が見つかりません: <LOCAL_PATH>（場所を確認）";
+  harness.render().applyConnection(connection("A"));
+  harness.render().setPrivacyOn(true);
+  harness.render().applyConnection({...connection(null), last_error: raw, last_error_safe: safe});
+  const notice = harness.notices.at(-1);
+  assert.equal(notice.detail, raw);
+  assert.equal(notice.detailSafe, safe);
+  assert.equal(noticeHtml(harness, notice).includes("LOCAL_OWNER"), false);
+  assert.ok(noticeHtml(harness, notice).includes("場所を確認"));
+  harness.render().setPrivacyOn(false);
+  assert.ok(noticeHtml(harness, notice).includes(raw));
 });

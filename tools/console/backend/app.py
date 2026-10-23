@@ -86,7 +86,10 @@ async def handle_not_connected(_request: Request, error: NotConnectedError) -> J
 
 @app.exception_handler(SshError)
 async def handle_ssh_error(_request: Request, error: SshError) -> JSONResponse:
-    return JSONResponse({"detail": str(error)}, status_code=502)
+    detail = {"detail": str(error)}
+    if error.safe_message is not None:
+        detail["detail_safe"] = error.safe_message
+    return JSONResponse(detail, status_code=502)
 
 
 @app.exception_handler(CommandStateUnknownError)

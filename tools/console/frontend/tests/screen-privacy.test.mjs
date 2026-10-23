@@ -253,9 +253,21 @@ test("#216 接続変更後は確認を閉じ古いサービス・デプロイcal
     }
   }
 });
+// 通知は原文で保持し、描画時の伏せ字状態で隠す（#217）。
+const {Snackbar} = compile(sources.get("components/toast.tsx").replace("function Snackbar(", "export function Snackbar("),
+  (name) => ({react: React, "react/jsx-runtime": jsxRuntime, "../privacy": privacy, "./Icon": {Icon: () => null}})[name] ?? {});
 test("#216 既存通知の伏せ字と実接続先のIDを維持する", () => {
   const h = appHarness(); h.render().setPrivacyOn(true); h.render();
   h.render().notify({title: `通知 ${label}`, detail: deployBranch});
-  assert.equal(h.notices.at(-1).title, `通知 ${privacy.MASK}`);
-  assert.equal(h.notices.at(-1).detail, privacy.MASK);
+  const notice = h.notices.at(-1);
+  assert.equal(notice.title, `通知 ${label}`);
+  assert.equal(notice.detail, deployBranch);
+  const display = () => renderToStaticMarkup(React.createElement(privacy.PrivacyContext.Provider, {value: h.render().privacy},
+    React.createElement(Snackbar, {toast: {...notice, id: 1, leaving: false}, onDismiss: noop})));
+  const masked = display();
+  for (const value of [label, deployBranch]) assert.equal(masked.includes(value), false);
+  assert.ok(masked.includes(`通知 ${privacy.MASK}`));
+  h.render().setPrivacyOn(false); h.render();
+  const plain = display();
+  for (const value of [label, deployBranch]) assert.ok(plain.includes(value));
 });

@@ -231,6 +231,9 @@ SSH設定に接続ユーザー名を任せている場合も、`bot_dir`のホ�
 - **ログは広く隠します。** ボットの出力は構造化されておらず、会話の本文と通常の運用ログを確実に区別できないため、伏せ字中は journald の `pid=1` かつ `source=systemd` の行（既知の秘密だけ置換）を除き、**通常の運用ログを含むすべてのログ本文を隠します**。各行は受信時に公開区分を付けて保持し、取得の最初・会話の見出し以降は、区切り線・計数・運用ログのような本文・別のPIDでも公開に戻しません。一時停止・保持上限・クリアの後も同じです。概要・検索・表示は同じ判定を使います（`frontend/src/logPrivacy.ts`）。伏せ字をOFFにすると原文を表示します
 - デプロイの出力も同様です。再起動ログを含む手順は出力全体（コンソールの診断文も）を隠し、区分のない旧形式の出力も隠します。ログを含まないと明示した通常のコマンド出力だけ、既知の秘密を置換して表示します
 - 接続先ラベル・現在/配備先のブランチ名は、画面・メニュー・title/aria 属性とも表示のたびに隠します。確認ダイアログの本文とデプロイのタイトルも、開いたあとの伏せ字の切り替えに追従します。確認入力の照合・送信する値・接続変更時の確認取消は変わりません
+- **通知は原文を保持し、表示のたびに伏せます。** 表示中の通知も、伏せ字の切り替え・後から増えた秘密値・カーソル/フォーカスによる保持中に追従します。通知の表示部分（`components/toast.tsx` の `ToastViewport`）は、伏せ字の設定を持つ `PrivacyContext` の内側に置いてください
+- **SSH設定のエラー（鍵・known_hosts の欠損）は、伏せ字中だけ安全な文面に切り替えます。** ローカルの home・所有者・任意のパスは `<LOCAL_HOME>`・`<LOCAL_PATH>` などに置き換え、ファイルの種類・`.ssh` の相対位置・`profiles.json` の設定項目・ホスト鍵の登録方法は残します。実際の場所の診断は伏せ字をOFFにして行います。接続エラー・操作履歴・通知に適用します
+- **運用ログの過去のチャンネル名とサーバー/チャンネルの識別子**（配信開始・接続失敗・ボイス移動の検知など）は、現在の接続やサーバーの名前一覧が無くても、接続エラー・ツールチップ・ログを含まないデプロイ出力・通知・systemd の行などで隠します（systemd 以外のログ本文は上記のとおり全体を隠します）。名前を途中で切らないよう広めに隠すため、同じ書式のレコードが近くに並ぶと間の診断文も伏せることがあります。ボット側のログ書式を変えたら `frontend/src/privacy.ts` の対応表も直してください
 - ボット本体のログ出力は変えていません。実ブラウザ・SSH・Discordでの確認は含みません
 - 伏せ字中は、トップアプリバーに「伏せ字中」のチップが出ます
 
@@ -279,7 +282,7 @@ $env:PYTHONIOENCODING = "utf-8"
 .venv\Scripts\python.exe -B -m unittest discover -s tests -v
 
 cd ..\frontend
-npm test        # 接続切替・伏せ字（ログ・画面・確認ダイアログ）・ログ・日本時間の日付範囲・共有フォントの配信・テーブルの中身の表示を確認
+npm test        # 接続切替・伏せ字（ログ・画面・確認ダイアログ・通知・SSH設定エラー・運用ログ）・ログ・日本時間の日付範囲・共有フォントの配信・テーブルの中身の表示を確認
 npm run build   # 型チェック（tsc --noEmit）+ ビルド
 ```
 
@@ -295,6 +298,9 @@ npm run build   # 型チェック（tsc --noEmit）+ ビルド
 | `frontend/tests/dbTables.test.mjs` | 画面のテーブル定義がバックエンドの `DB_TABLES` と一致すること、ID・名前・本文の列が伏せ字の対象になっていること、日時（ISO 8601・`pending_log` の書式・UNIX 秒）と解析結果の読み取り、古い版の DB の列の扱い |
 | `frontend/tests/log-privacy.test.mjs`・`frontend/tests/screen-privacy.test.mjs` | ログ行の公開区分（受信時・一時停止・保持上限・クリア後）と systemd 以外の本文の秘匿、概要・検索・表示の一致。接続先・ブランチ・デプロイ表示の描画時マスクと、確認ダイアログの伏せ字切り替えへの追従・実操作の値の維持を、実際の部品で確認 |
 | `test_deploy_log_privacy.py`（backend/tests） | 再起動ログを含む手順の `output_contains_logs` が、抜粋・文字数上限の後も真のままであること |
+| `frontend/tests/toast-privacy.test.mjs` | 通知の原文保持と描画時の伏せ字、伏せ字の切り替え・後から増えた秘密値・hover/focus 中への追従、消去・上限・再試行の維持 |
+| `frontend/tests/ssh-error-privacy.test.mjs`・`backend/tests/test_ssh_error_privacy.py`（backend/tests） | SSH設定エラーの通常の診断文と安全な文面の分離、API・接続状態・履歴・通知への受け渡し、伏せ字中の置き換えとOFFでの原文復帰 |
+| `frontend/tests/operational-log-privacy.test.mjs` | 運用ログの過去のチャンネル名・識別子の秘匿（ログ本文・検索・概要・デプロイ出力・ツールチップ）と、ボットの現行のログ書式との対応 |
 | `test_remote_commands.py` | コマンドの組み立て（ホワイトリスト・記号を含む名前の拒否・引用符）と、systemctl / free / df / git / journald の出力の読み取り |
 | `test_ssh_integration.py` | 模擬 SSH サーバーを空きポートで起動し、本物の SSH プロトコルで次を確かめる |
 | 画面`tests/log-stream.test.mjs` | エラー・正常終了・Origin拒絶後の自動再接続停止、理由とログの維持、手動再接続・古いイベントの破棄・SSH接続先切替・一時停止を実際のフックで検証 |
@@ -364,7 +370,7 @@ tools/console/
 └─ frontend/src/
    ├─ App.tsx                    全体の状態・定期更新・キーボード操作・画面幅の切り替え
    ├─ requestScope.ts            接続の変更と取得順序の照合（古い応答・タイマーの破棄）
-   ├─ privacy.ts                 伏せ字モード（隠す文字列の収集・描画時の mask / redact）
+   ├─ privacy.ts                 伏せ字モード（隠す文字列の収集・描画時の mask / redact・設定エラーの安全な文面・運用ログの名前と識別子）
    ├─ logPrivacy.ts              ログ行の公開区分（unknown / conversation / system）と判定
    ├─ dbTables.ts                bot.db のテーブルの見せ方（列の名前・種類・伏せ字の対象）と値の読み取り
    ├─ theme/theme.ts             シード色から M3 の配色を生成

@@ -5,7 +5,7 @@ import { Button, ConnectedButtonGroup, IconButton, InlineError, StatusChip, type
 import { formatClock } from "../format";
 import type { LogStream } from "../hooks";
 import { LEVEL_LABELS, classifyEntries, displayMessage, type LogLevel } from "../logs";
-import { conversationLines, redactLogLine, usePrivacy } from "../privacy";
+import { conversationLines, redactLogLine, redactOperationalMessages, usePrivacy } from "../privacy";
 import type { Profile } from "../types";
 import { NotConnected } from "./shared";
 
@@ -38,10 +38,11 @@ export function LogsPage({
   const withLevels = useMemo(() => {
     const levels = classifyEntries(stream.entries);
     const conversation = conversationLines(stream.entries);
+    const messages = redactOperationalMessages(stream.entries.map(displayMessage), privacy);
     return stream.entries.map((entry, index) => ({
       entry,
       level: levels[index],
-      text: redactLogLine(displayMessage(entry), conversation[index], privacy),
+      text: redactLogLine(messages[index], conversation[index], privacy),
     }));
   }, [stream.entries, privacy]);
   const counts = useMemo(() => {

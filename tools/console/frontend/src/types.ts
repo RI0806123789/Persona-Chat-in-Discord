@@ -40,6 +40,8 @@ export interface ConnectionState {
   fingerprint: string | null;
   server: ServerInfo | null;
   last_error: string | null;
+  /** ローカル設定の場所を含まない診断文。旧バックエンドは返さない。 */
+  last_error_safe?: string | null;
 }
 
 export interface ServiceStatus {
@@ -121,6 +123,7 @@ export interface CommandRecord {
   duration_ms: number;
   ok: boolean;
   error: string | null;
+  error_safe?: string | null;
 }
 
 export interface DbSummary {
