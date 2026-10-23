@@ -1,9 +1,11 @@
 import asyncio
+from functools import wraps
 
 import discord
 from discord import app_commands
 
 from persona_bot.core.app_state import BotState
+from persona_bot.core.background import TaskOwner
 from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.autonomous_stage import enable_stage_speaker
@@ -82,10 +84,21 @@ def register_commands(
     autonomous: AutonomousService,
     *,
     voice_guard: VoiceGuard | None = None,
+    task_owner: TaskOwner | None = None,
 ) -> None:
     tree.on_error = handle_command_error
+    command_tasks = task_owner if task_owner is not None else TaskOwner()
+
+    def owned_command(callback):
+        """Discordが生成したコマンド本体も、明示した所有者の終了待機へ登録する。"""
+        @wraps(callback)
+        async def invoke(interaction: discord.Interaction) -> None:
+            await command_tasks.run(callback(interaction))
+
+        return invoke
 
     @tree.command(name="functions", description="各種機能パネルを開きます（キャラ設定 / 会話要約 / 会話統計 / 自発会話 / リマインダー）。")
+    @owned_command
     async def functions(interaction: discord.Interaction) -> None:
         if await reject_blocked_interaction(interaction, blacklist.is_blocked):
             return
@@ -103,6 +116,7 @@ def register_commands(
         view.message = await interaction.original_response()
 
     @tree.command(name="join", description="ボットがボイスチャンネルに参加します")
+    @owned_command
     async def join(interaction: discord.Interaction) -> None:
         if await reject_blocked_interaction(interaction, blacklist.is_blocked):
             return
@@ -212,6 +226,7 @@ def register_commands(
         name="leave",
         description="ボットがボイスチャンネルから退出します（自律行動の配信もここで止められます）",
     )
+    @owned_command
     async def leave(interaction: discord.Interaction) -> None:
         if await reject_blocked_interaction(interaction, blacklist.is_blocked):
             return

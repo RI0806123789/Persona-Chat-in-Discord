@@ -182,6 +182,8 @@ SSH 経由でボットを見守り、サービス操作・デプロイを行う�
 
 `PersonaClient.background_tasks`（`TaskOwner`）がボット単位の所有者。`PersonaClient.start` とDiscordイベントからコンテキストを引き継ぎ、その配下の `spawn` を自動登録する。単独で起動する処理は `spawn(..., owner=client.background_tasks)` または `with client.background_tasks.scope()` で所有者を明示する。管理外の処理や別の所有者のタスクは終了対象に含めない。周期処理は `make_guarded_loop(..., owner=client.background_tasks)` で登録する。
 
+スラッシュコマンドはDiscordが本体タスクを直接生成するため、コンテキストの継承だけでは所有集合へ登録されない。`bot.py`から`register_commands(..., task_owner=client.background_tasks)`へ明示的に渡し、`/functions`・`/join`・`/leave`の共通入口で本体全体を`TaskOwner.run`に登録する。停止開始後はブラックリスト判定を含む本体を開始せず、実行中の本体と保護付きの後片付けを回収してから共有接続を閉じる。所有者を省略した単独登録では専用の`TaskOwner`を使う。
+
 終了は一つのタスクを共有する。受付停止・周期処理のキャンセル後、所有するイベントと背景タスクを中断して終了を待つ。`run_in_thread` の同期ワーカーと `wait_for_cleanup` の後片付けは直接キャンセルせず、親タスクも完了まで待つ。終了タスク自身は所有集合から分離し、後片付けを通常の `spawn` で起動しないこと（停止後は新規受付を拒否する）。その後、文書ワーカー・自律配信の終了callbackを呼び、Discord → Gemini → DBの順に閉じる。`close` の重複・呼出元の繰り返しキャンセルでも終了処理は一度だけ実行する。
 
 ### ギルド単位の設定 (`app_state.py`)
