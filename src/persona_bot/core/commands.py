@@ -236,6 +236,9 @@ def register_commands(
             print(f"接続エラー ({type(error).__name__}): {error}")
             await interaction.followup.send(f"⚠️ 接続に失敗しました（{type(error).__name__}: {error}）。")
         else:
+            if not is_current():
+                # 後続の有効な参加・退出に、この接続の切替・切断を委ねる。
+                return
             # 接続イベントでも登録されるが、人が選んだ接続先を明示的に意図した接続先にする。
             if voice_guard is not None and guild is not None:
                 voice_guard.adopt(guild.id, voice_channel.id)
