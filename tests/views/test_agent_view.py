@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import discord
 
 from persona_bot.config.constants import AGENT_DEFAULT_LINES
+from persona_bot.core.background import spawn
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport
 from persona_bot.views import agent_view
@@ -122,6 +123,157 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await run
         await asyncio.wait_for(worker_cancelled.wait(), 1)
+
+
+    async def wait_for_worker_cleanup(self, trigger, *, repeat=False, broken=False, report=False, late_button=False):
+        started, cleaning, release, cleaned = (asyncio.Event() for _ in range(4))
+        children = []
+
+        def start(coro, **kwargs):
+            task = spawn(coro, **kwargs)
+            children.append(task)
+            return task
+
+        async def work():
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # 中止を握り潰す子でも、依頼の終了理由は変えない。
+                if report:
+                    return AgentReport("中止後の架空の報告", [])
+                raise
+            finally:
+                cleaning.set()
+                await release.wait()
+                cleaned.set()
+                if broken:
+                    raise RuntimeError("架空の子の回収失敗")
+
+        with patch.object(agent_view, "spawn", side_effect=start), patch.object(
+            agent_view, "AGENT_TOTAL_TIMEOUT_SECONDS", 0.01 if trigger == "timeout" else 30,
+        ), patch("builtins.print"):
+            run = asyncio.create_task(self.progress.run(work()))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                if trigger == "button":
+                    self.progress._cancel_event.set()
+                elif trigger == "parent":
+                    run.cancel()
+                await asyncio.wait_for(cleaning.wait(), 2)
+                self.assertFalse(run.done())
+                self.assertFalse(cleaned.is_set())
+                if late_button:
+                    self.progress._cancel_event.set()
+                if repeat:
+                    for _ in range(3):
+                        run.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(run.done())
+                        self.assertFalse(cleaned.is_set())
+                release.set()
+                if trigger == "parent" or repeat:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(run, 2)
+                else:
+                    expected = "canceled" if trigger == "button" else "failed"
+                    self.assertEqual(await asyncio.wait_for(run, 2), (expected, None))
+                self.assertTrue(cleaned.is_set())
+                self.assertEqual(len(children), 2)
+                self.assertTrue(all(task.done() for task in children))
+            finally:
+                release.set()
+                await asyncio.gather(run, *children, return_exceptions=True)
+
+    async def test_all_stop_modes_wait_for_worker_finally(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress._cancel_event.clear()
+                await self.wait_for_worker_cleanup(trigger)
+
+    async def test_repeated_parent_cancellation_does_not_interrupt_worker_cleanup(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress._cancel_event.clear()
+                await self.wait_for_worker_cleanup(trigger, repeat=True)
+
+    async def test_worker_cleanup_exception_preserves_the_stop_outcome(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress._cancel_event.clear()
+                await self.wait_for_worker_cleanup(trigger, broken=True)
+
+    async def test_report_returned_after_cancellation_is_not_a_success(self) -> None:
+        for trigger in ("button", "timeout", "parent"):
+            with self.subTest(trigger=trigger):
+                self.progress._cancel_event.clear()
+                await self.wait_for_worker_cleanup(trigger, report=True)
+
+    async def test_late_cancel_button_during_cleanup_does_not_change_timeout_outcome(self) -> None:
+        await self.wait_for_worker_cleanup("timeout", late_button=True)
+
+    async def wait_for_cancel_waiter_cleanup(self, *, broken_worker=False, broken_waiter=False, cancel=False):
+        cleaning, release, cleaned = (asyncio.Event() for _ in range(3))
+        children = []
+        report = AgentReport("架空の正常な報告", [])
+
+        async def finish_waiter(coro):
+            try:
+                await coro
+            finally:
+                cleaning.set()
+                await release.wait()
+                cleaned.set()
+                if broken_waiter:
+                    raise RuntimeError("架空の中止待機の回収失敗")
+
+        def start(coro, **kwargs):
+            if kwargs["label"] == "サブエージェントの中止待ち":
+                coro = finish_waiter(coro)
+            task = spawn(coro, **kwargs)
+            children.append(task)
+            return task
+
+        async def work():
+            if broken_worker:
+                raise RuntimeError("架空の作業失敗")
+            return report
+
+        with patch.object(agent_view, "spawn", side_effect=start), patch("builtins.print"):
+            run = asyncio.create_task(self.progress.run(work()))
+            try:
+                await asyncio.wait_for(cleaning.wait(), 2)
+                self.assertFalse(run.done())
+                self.assertTrue(children[0].done())
+                if cancel:
+                    for _ in range(3):
+                        run.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(run.done())
+                        self.assertFalse(cleaned.is_set())
+                release.set()
+                if cancel:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(run, 2)
+                else:
+                    expected = ("failed", None) if broken_worker else ("done", report)
+                    self.assertEqual(await asyncio.wait_for(run, 2), expected)
+                self.assertTrue(cleaned.is_set())
+                self.assertTrue(all(task.done() for task in children))
+            finally:
+                release.set()
+                await asyncio.gather(run, *children, return_exceptions=True)
+
+    async def test_success_and_worker_exception_wait_for_cancel_waiter_cleanup(self) -> None:
+        for broken_worker in (False, True):
+            with self.subTest(broken_worker=broken_worker):
+                await self.wait_for_cancel_waiter_cleanup(broken_worker=broken_worker)
+
+    async def test_cancel_waiter_cleanup_failure_does_not_replace_worker_result(self) -> None:
+        await self.wait_for_cancel_waiter_cleanup(broken_waiter=True)
+
+    async def test_parent_cancel_during_cancel_waiter_cleanup_propagates_after_collection(self) -> None:
+        await self.wait_for_cancel_waiter_cleanup(cancel=True)
 
 
 class CancelButtonTests(unittest.IsolatedAsyncioTestCase):

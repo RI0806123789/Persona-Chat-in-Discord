@@ -22,7 +22,7 @@ import discord
 from discord import ui
 
 from persona_bot.config.constants import AGENT_PROGRESS_MIN_INTERVAL_SECONDS, AGENT_TOTAL_TIMEOUT_SECONDS
-from persona_bot.core.background import spawn
+from persona_bot.core.background import spawn, wait_for_cleanup
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport, render_agent_line
 
@@ -119,18 +119,27 @@ class AgentProgress:
                 {worker, canceled}, timeout=AGENT_TOTAL_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            canceled.cancel()
-            if not worker.done():
-                # 中止・期限切れ・呼び出し側のキャンセルのどれでも、子の生成を止める。
-                worker.cancel()
-        if worker.done() and not worker.cancelled():
+            # 中止後の後片付けが報告を返しても、正常に完了した作業と取り違えない。
+            worker_finished = worker.done()
+            cancel_requested = self._cancel_event.is_set()
+            for task in (worker, canceled):
+                if not task.done():
+                    task.cancel()
+
+            async def collect_children() -> None:
+                # 子の例外も回収し、片方の失敗で他方の終了待ちを打ち切らない。
+                await asyncio.gather(worker, canceled, return_exceptions=True)
+
+            # 実行枠の解放前に両方を回収する。追加のキャンセルも回収後に伝える。
+            await wait_for_cleanup(collect_children(), label="サブエージェントの終了待ち")
+        if worker_finished and not worker.cancelled():
             error = worker.exception()
             if error is not None:
                 print(f"サブエージェント: 作業中にエラーが発生しました: {type(error).__name__}: {error}")
                 return "failed", None
             report = worker.result()
             return ("done", report) if report is not None else ("failed", None)
-        if self._cancel_event.is_set():
+        if cancel_requested:
             print("サブエージェント: 依頼した本人が中止しました。")
             return "canceled", None
         print(f"サブエージェント: 期限（{AGENT_TOTAL_TIMEOUT_SECONDS:.0f}秒）に達したため中止しました。")

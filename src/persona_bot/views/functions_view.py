@@ -161,10 +161,8 @@ class StatsButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
-        if not hub.stats.has_data():
-            await interaction.response.send_message("まだ会話統計データがありません。", ephemeral=True)
-            return
-
+        # 全体の収集中データがなくても、本人は停止前の統計を閲覧できる。
+        # データ不足の案内は、本人を初期対象にしたダッシュボード表示に任せる。
         begin_panel_operation(hub, interaction)
         member = interaction.user
         is_admin = is_administrator(member)
