@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -22,6 +22,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.valid = True
         self.profile = {"voice": "架空の話者"}
         self.synthesize = AsyncMock(return_value=b"pcm")
+        self.real_play = voice._play_pcm
         self.play = AsyncMock()
         self.workers = []
 
@@ -55,7 +56,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.valid = False
         await self.workers[0]
         self.synthesize.assert_awaited_once_with("通常の架空の返信", self.profile)
-        self.play.assert_awaited_once_with(self.client, b"pcm")
+        self.play.assert_awaited_once_with(self.client, b"pcm", is_valid=ANY)
         self.assertEqual(voice._speech_queues, {})
 
     async def test_session_end_during_synthesis_discards_pcm(self) -> None:
@@ -69,6 +70,47 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.workers[0]
         self.synthesize.assert_awaited_once()
         self.play.assert_not_awaited()
+
+    async def test_worker_rechecks_connection_and_session_after_playback_lock(self) -> None:
+        for change in ("move", "replace", "end", "normal_reply_move"):
+            with self.subTest(change=change):
+                self.guild.voice_client = self.client
+                self.client.channel = SimpleNamespace(id=10)
+                self.valid = True
+                self.workers.clear()
+                lock = asyncio.Lock()
+                await lock.acquire()
+                entered = asyncio.Event()
+
+                async def play(*args, **kwargs):
+                    entered.set()
+                    await self.real_play(*args, **kwargs)
+
+                with patch.object(voice, "_play_pcm", side_effect=play), patch.object(
+                    voice, "_playback_locks", {self.client: lock},
+                ), patch.object(voice, "_play_pcm_locked", AsyncMock()) as locked_play:
+                    if change == "normal_reply_move":
+                        await voice.speak_text(self.guild, "通常の架空の返信")
+                    else:
+                        await self.enqueue()
+                    task = asyncio.create_task(self.workers[0])
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        self.assertFalse(task.done())
+                        if change in ("move", "normal_reply_move"):
+                            self.client.channel = SimpleNamespace(id=20)
+                        elif change == "replace":
+                            self.guild.voice_client = Mock(spec=discord.VoiceClient)
+                        else:
+                            self.valid = False
+                        lock.release()
+                        await asyncio.wait_for(task, 2)
+                    finally:
+                        if lock.locked():
+                            lock.release()
+                        await asyncio.gather(task, return_exceptions=True)
+                    locked_play.assert_not_awaited()
+                self.assertEqual(voice._speech_queues, {})
 
     async def test_connection_replacement_or_disconnect_during_synthesis_discards_pcm(self) -> None:
         for change in ("replace", "disconnect"):
@@ -97,7 +139,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.workers[0]
         self.synthesize.assert_awaited_once_with("架空のコメント応答", self.profile)
-        self.play.assert_awaited_once_with(self.client, b"pcm")
+        self.play.assert_awaited_once_with(self.client, b"pcm", is_valid=ANY)
 
     async def test_normal_queue_discards_old_connection_and_channel_requests(self) -> None:
         for change in ("replace", "move"):
@@ -135,7 +177,7 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
                     self.synthesize.assert_awaited_once_with("旧接続の一件目", self.profile)
                     await voice.speak_text(self.guild, "新接続の返信")
                     await self.workers[-1]
-                    self.play.assert_awaited_once_with(new, "新接続の返信".encode())
+                    self.play.assert_awaited_once_with(new, "新接続の返信".encode(), is_valid=ANY)
                     self.assertEqual(voice._speech_queues, {})
                 finally:
                     release.set()

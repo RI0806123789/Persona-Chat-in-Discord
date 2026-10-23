@@ -273,6 +273,75 @@ class VoiceGuardTests(unittest.IsolatedAsyncioTestCase):
         replacement.move_to.assert_not_awaited()
         self.assertEqual(self.guard.home_channel_id(1), MOVED_ID)
 
+    async def assert_join_during_return_is_preserved(
+        self, *, replace_connection: bool = False, readopt_original: bool = False,
+        fail: bool = True,
+    ) -> None:
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def pending_return(target, *, timeout):
+            entered.set()
+            await finish.wait()
+            if fail:
+                raise discord.HTTPException(Mock(status=500), "架空の移動失敗")
+
+        self.voice_client.move_to = AsyncMock(side_effect=pending_return)
+        operation = asyncio.create_task(self.connect_then_move())
+        current = self.voice_client
+        target = self.home if readopt_original else self.moved
+        try:
+            # 旧移動の開始を確かめてから、後続の /join 成功を再現する。
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            if replace_connection:
+                current = self.make_voice_client(target)
+                self.guild.voice_client = current
+            if readopt_original:
+                # 同じチャンネルへ切り直しても、古い保護情報とは別の登録になる。
+                self.guard.release(1)
+                current.channel = target
+            self.guard.adopt(1, target.id)
+        finally:
+            finish.set()
+            await asyncio.wait_for(operation, timeout=1)
+
+        self.voice_client.move_to.assert_awaited_once_with(
+            self.home, timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS,
+        )
+        self.voice_client.disconnect.assert_not_awaited()
+        current.disconnect.assert_not_awaited()
+        self.assertIs(self.guild.voice_client, current)
+        self.assertIs(current.channel, target)
+        self.assertEqual(self.guard.home_channel_id(1), target.id)
+
+    async def test_failed_return_preserves_home_adopted_on_the_same_connection(self) -> None:
+        await self.assert_join_during_return_is_preserved()
+
+    async def test_failed_return_preserves_replacement_connection_and_home(self) -> None:
+        await self.assert_join_during_return_is_preserved(replace_connection=True)
+
+    async def test_failed_return_preserves_readopted_home_with_the_same_channel_id(self) -> None:
+        await self.assert_join_during_return_is_preserved(readopt_original=True)
+
+    async def test_timed_out_return_preserves_home_adopted_on_the_same_connection(self) -> None:
+        # 例外を返さない時間切れでも、人が採用した移動先を優先する。
+        await self.assert_join_during_return_is_preserved(fail=False)
+
+    async def test_failed_return_preserves_replacement_with_unchanged_home(self) -> None:
+        replacement = self.make_voice_client(self.moved)
+
+        async def replaced_then_failed(target, *, timeout):
+            # 保護先が同じでも、接続が違えば古い処理は登録を解いてはいけない。
+            self.guild.voice_client = replacement
+            raise discord.HTTPException(Mock(status=500), "架空の移動失敗")
+
+        self.voice_client.move_to = AsyncMock(side_effect=replaced_then_failed)
+        await self.connect_then_move()
+        self.voice_client.disconnect.assert_not_awaited()
+        replacement.disconnect.assert_not_awaited()
+        self.assertIs(self.guild.voice_client, replacement)
+        self.assertEqual(self.guard.home_channel_id(1), HOME_ID)
+
 
 if __name__ == "__main__":
     unittest.main()

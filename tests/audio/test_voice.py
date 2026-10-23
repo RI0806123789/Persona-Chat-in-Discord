@@ -6,7 +6,7 @@ import sys
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import numpy as np
 
@@ -285,7 +285,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             for text in ("時間切れ", "失敗", "正常"):
                 await voice.speak_text(self.guild, text)
             await self.workers[0]
-        play.assert_awaited_once_with(self.client, b"pcm")
+        play.assert_awaited_once_with(self.client, b"pcm", is_valid=ANY)
         self.assertEqual(voice._speech_queues, {})
 
     async def test_gtts_network_timeouts_skip_failed_requests_and_next_edge_request_plays(self):
@@ -316,7 +316,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             voice.TTS_GTTS_CONNECT_TIMEOUT_SECONDS, voice.TTS_GTTS_READ_TIMEOUT_SECONDS,
         )] * 2)
         decode.assert_called_once()
-        play.assert_awaited_once_with(self.client, b"pcm")
+        play.assert_awaited_once_with(self.client, b"pcm", is_valid=ANY)
         self.assertEqual(voice._speech_queues, {})
 
     async def test_synthesis_deadline_waits_for_gtts_cleanup_before_advancing_queue(self):
@@ -355,7 +355,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         self.assertTrue(buffers[0].closed)
-        play.assert_awaited_once_with(self.client, b"pcm")
+        play.assert_awaited_once_with(self.client, b"pcm", is_valid=ANY)
         self.assertEqual(voice._speech_queues, {})
 
     async def test_worker_cancellation_clears_registration(self):
