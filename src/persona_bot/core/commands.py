@@ -1,11 +1,13 @@
 import asyncio
 from functools import wraps
+from typing import Callable
 
 import discord
 from discord import app_commands
 
 from persona_bot.core.app_state import BotState
-from persona_bot.core.background import TaskOwner
+from persona_bot.core.background import TaskOwner, wait_for_cleanup
+from persona_bot.core.voice_commands import VoiceCommandCoordinator, skip_superseded_voice_operation
 from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.autonomous_stage import enable_stage_speaker
@@ -88,6 +90,7 @@ def register_commands(
 ) -> None:
     tree.on_error = handle_command_error
     command_tasks = task_owner if task_owner is not None else TaskOwner()
+    voice_commands = VoiceCommandCoordinator()
 
     def owned_command(callback):
         """Discordが生成したコマンド本体も、明示した所有者の終了待機へ登録する。"""
@@ -155,7 +158,15 @@ def register_commands(
                 )
                 return
 
-        await interaction.response.defer()
+        await voice_commands.run(
+            interaction, lambda is_current: join_voice(interaction, voice_channel, is_current),
+        )
+
+    async def join_voice(
+        interaction: discord.Interaction, voice_channel: discord.VoiceChannel | discord.StageChannel,
+        is_current: Callable[[], bool],
+    ) -> None:
+        guild = interaction.guild
         # 自律行動でボットが自分から通話に入っている最中かもしれない。人が呼んだ
         # 接続を優先するため、ステージ枠の後始末まで含めて先に配信を終了させる
         # （ここを素の disconnect だけで済ませると、ボットが開いたステージ枠が
@@ -164,6 +175,8 @@ def register_commands(
             await autonomous.stop_session(
                 guild.id, reason=f"/join による上書き（{interaction.user}）"
             )
+            if await skip_superseded_voice_operation(interaction, is_current):
+                return
             voice_client = guild.voice_client
             if voice_client is not None:
                 # 既に同じチャンネルへ接続中なら、そのまま使う。切り直すと、読み上げ中の
@@ -181,7 +194,9 @@ def register_commands(
                 if voice_guard is not None:
                     voice_guard.release(guild.id)
                 try:
-                    await voice_client.disconnect(force=True)
+                    await wait_for_cleanup(
+                        voice_client.disconnect(force=True), label="参加前のボイス切断",
+                    )
                 except Exception as error:
                     print(f"接続切替エラー（既存接続の切断）: {type(error).__name__}")
                     await interaction.followup.send(
@@ -190,10 +205,14 @@ def register_commands(
                     )
                     return
 
+        if await skip_superseded_voice_operation(interaction, is_current):
+            return
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。
         try:
-            await voice_channel.connect(timeout=VOICE_CONNECT_TIMEOUT_SECONDS)
+            await wait_for_cleanup(
+                voice_channel.connect(timeout=VOICE_CONNECT_TIMEOUT_SECONDS), label="ボイス参加の接続完了",
+            )
         except discord.Forbidden:
             print(f"接続エラー (権限不足): {voice_channel.name}")
             await interaction.followup.send(
@@ -235,7 +254,10 @@ def register_commands(
             await interaction.response.send_message("ボットはボイスチャンネルに参加していません。")
             return
 
-        await interaction.response.defer()
+        await voice_commands.run(interaction, lambda _: leave_voice(interaction))
+
+    async def leave_voice(interaction: discord.Interaction) -> None:
+        guild = interaction.guild
         # 退出の後に、移動を戻す処理が元のチャンネルへ入り直さないよう先に保護を解く。
         if voice_guard is not None:
             voice_guard.release(guild.id)
@@ -258,7 +280,9 @@ def register_commands(
             # 念のため取り直してから切る。
             voice_client = guild.voice_client
             if voice_client is not None:
-                await voice_client.disconnect(force=True)
+                await wait_for_cleanup(
+                    voice_client.disconnect(force=True), label="退出時のボイス切断",
+                )
             await interaction.followup.send("退出しました。")
         except Exception as error:
             print(f"切断エラー: {error}")
