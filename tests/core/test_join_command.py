@@ -343,6 +343,118 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         voice.disconnect.assert_awaited_once_with(force=True)
         self.assertIsNone(self.guild.voice_client)
 
+    async def test_newer_defer_dropout_preserves_waiting_join_and_leave(self):
+        """先行接続の後でCの応答が失敗・中断しても、待機していたBの参加・退出を実行する。"""
+        for name in ("join", "leave"):
+            for error in (OSError("架空の応答失敗"), asyncio.CancelledError()):
+                with self.subTest(command=name, error=type(error).__name__):
+                    self.guild.voice_client = None
+                    self.voice_guard.reset_mock()
+                    self.interaction.followup.send.reset_mock()
+                    connected, release_connect = asyncio.Event(), asyncio.Event()
+                    old = self.connect_to_guild(
+                        self.guild, self.channel, started=connected, release=release_connect,
+                    )
+                    other_channel = self.make_channel(30)
+                    current = self.connect_to_guild(self.guild, other_channel)
+                    waiting = self.another_interaction(channel=other_channel, name=name)
+                    queued, deferring, release_defer = asyncio.Event(), asyncio.Event(), asyncio.Event()
+                    waiting.response.defer.side_effect = queued.set
+                    newest = self.another_interaction(name="leave")
+
+                    async def defer():
+                        deferring.set()
+                        await release_defer.wait()
+                        raise error
+
+                    newest.response.defer.side_effect = defer
+                    tasks = [asyncio.create_task(self.commands["join"](self.interaction))]
+                    try:
+                        await asyncio.wait_for(connected.wait(), 2)
+                        operations = self.coordinator._guilds[self.guild.id]
+                        tasks.append(asyncio.create_task(self.commands[name](waiting)))
+                        await asyncio.wait_for(queued.wait(), 2)
+                        tasks.append(asyncio.create_task(self.commands["leave"](newest)))
+                        await asyncio.wait_for(deferring.wait(), 2)
+                        release_connect.set()
+                        await asyncio.wait_for(tasks[0], 2)
+                        self.assertFalse(tasks[1].done())
+                        waiting.followup.send.assert_not_awaited()
+                        release_defer.set()
+                        if isinstance(error, asyncio.CancelledError):
+                            with self.assertRaises(asyncio.CancelledError):
+                                await asyncio.wait_for(tasks[2], 2)
+                        else:
+                            await asyncio.wait_for(tasks[2], 2)
+                            newest.response.send_message.assert_awaited_once()
+                        await asyncio.wait_for(tasks[1], 2)
+                    finally:
+                        release_connect.set()
+                        release_defer.set()
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    old.disconnect.assert_awaited_once_with(force=True)
+                    waiting.followup.send.assert_awaited_once()
+                    if name == "leave":
+                        self.assertIsNone(self.guild.voice_client)
+                        other_channel.connect.assert_not_awaited()
+                        waiting.followup.send.assert_awaited_once_with("退出しました。")
+                    else:
+                        self.assertIs(self.guild.voice_client, current)
+                        other_channel.connect.assert_awaited_once()
+                        self.voice_guard.adopt.assert_called_once_with(1, 30)
+                    self.assertEqual(operations.tokens, [])
+                    self.assertEqual(operations.deferring, set())
+                    self.assertEqual(operations.pending, 0)
+                    self.assertEqual(self.coordinator._guilds, {})
+
+    async def test_newest_cancellation_during_skip_notice_preserves_waiting_leave(self):
+        """見送り通知の送信中にCが脱落しても、Bの退出が先行接続を確実に切る。"""
+        connected, release_connect = asyncio.Event(), asyncio.Event()
+        old = self.connect_to_guild(self.guild, self.channel, started=connected, release=release_connect)
+        waiting = self.another_interaction(name="leave")
+        newest = self.another_interaction(name="join")
+        queued, newest_queued = asyncio.Event(), asyncio.Event()
+        waiting.response.defer.side_effect = queued.set
+        newest.response.defer.side_effect = newest_queued.set
+        entered, release_notice = asyncio.Event(), asyncio.Event()
+        tasks = [asyncio.create_task(self.commands["join"](self.interaction))]
+
+        async def send(content):
+            if "後から受け付けた" in content:
+                tasks[2].cancel()
+                entered.set()
+                await release_notice.wait()
+
+        waiting.followup.send.side_effect = send
+        try:
+            await asyncio.wait_for(connected.wait(), 2)
+            tasks.append(asyncio.create_task(self.commands["leave"](waiting)))
+            await asyncio.wait_for(queued.wait(), 2)
+            tasks.append(asyncio.create_task(self.commands["join"](newest)))
+            await asyncio.wait_for(newest_queued.wait(), 2)
+            release_connect.set()
+            await asyncio.wait_for(entered.wait(), 2)
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(tasks[2], 2)
+            old.disconnect.assert_not_awaited()
+            release_notice.set()
+            await asyncio.wait_for(asyncio.gather(*tasks[:2]), 2)
+        finally:
+            release_connect.set()
+            release_notice.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        old.disconnect.assert_awaited_once_with(force=True)
+        self.assertIsNone(self.guild.voice_client)
+        self.assertEqual(waiting.followup.send.await_count, 2)
+        self.assertEqual(waiting.followup.send.call_args.args[0], "退出しました。")
+        newest.followup.send.assert_not_awaited()
+
     async def test_later_join_during_connect_adopts_only_the_new_destination(self):
         """別チャンネルへの後続参加が古い接続を切り替え、その接続先だけを採用する。"""
         entered, release, deferred = asyncio.Event(), asyncio.Event(), asyncio.Event()
