@@ -93,12 +93,15 @@ print(json.dumps(views))
 
 
 def bot_persona_views(prompts: Path, saved_values: list[str]) -> list[list]:
-    """ボット本体の personas.py で、保存値ごとの実効ペルソナを求める（別プロセスで import する）。"""
+    """ボット本体の personas.py で、保存値ごとの実効ペルソナを求める（別プロセスで import する）。
+
+    ボットは日本語の警告を標準出力へ書く。-I は PYTHONIOENCODING などの環境変数を無視するため、
+    英語版 Windows（cp1252）でも書けるよう、コマンドラインの -X utf8 で入出力を UTF-8 にする。
+    """
     completed = subprocess.run(
-        [sys.executable, "-I", "-c", BOT_CATALOG_SCRIPT, str(BOT_CONFIG.parents[1]), str(prompts),
+        [sys.executable, "-I", "-X", "utf8", "-c", BOT_CATALOG_SCRIPT, str(BOT_CONFIG.parents[1]), str(prompts),
          json.dumps(saved_values)],
         capture_output=True, text=True, encoding="utf-8", timeout=60,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     if completed.returncode != 0:
         raise AssertionError(completed.stderr)
