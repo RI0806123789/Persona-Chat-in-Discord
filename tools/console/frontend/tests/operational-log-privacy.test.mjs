@@ -200,6 +200,38 @@ test("#219 離れた行の接尾辞までは名前として扱わず長いログ
   hidden(masked.at(-1), [oldName]);
 });
 
+test("#219 複数の運用ログで照合範囲が重なっても後続の名前を残さない", () => {
+  const formats = [
+    ["自律行動: ボイスチャンネル「", "」で配信を開始しました"],
+    ["自律行動: ", " への接続に失敗しました"],
+    ["自律行動: ステージ(", ")の準備に失敗しました"],
+    ["ボイス接続の保護: 元のチャンネル「", "」へ戻りました"],
+  ];
+  for (const [prefix, suffix] of formats) {
+    for (const [nextPrefix, nextSuffix] of formats) {
+      const name = "架空の前半" + suffix + "架空の後半";
+      for (let length = 430; length <= 530; length += 5) {
+        const text = prefix + oldName + suffix + "\r\n" + "診".repeat(length) + "\r\n"
+          + nextPrefix + name + nextSuffix;
+        const masked = current(true).redact(text);
+        hidden(masked, [oldName, "架空の前半", "架空の後半"]);
+        assert.equal(masked.split("\r\n").length, text.split("\r\n").length);
+        hidden(privacy.redactOperationalMessages(text.split("\n"), current(true)).join("\n"),
+          [oldName, "架空の前半", "架空の後半"]);
+        assert.equal(current(false).redact(text), text);
+      }
+    }
+  }
+});
+
+test("#219 名前に別の運用書式や補助面文字が含まれても名前全体を隠す", () => {
+  for (const name of ["🧪".repeat(100), "架空の前半\r\n自律行動: 架空の後半 への接続に失敗しました"]) {
+    const text = start("ステージ", name);
+    hidden(current(true).redact(text), ["🧪", "架空の前半", "架空の後半"]);
+    assert.equal(current(false).redact(text), text);
+  }
+});
+
 
 test("#219 現行ボットの配信開始書式を実ソースから読み両方の種類を確認する", async () => {
   const bot = await source("../../../../src/persona_bot/services/autonomous_service.py");

@@ -70,22 +70,40 @@ export function collectSecrets(parts: {
 // 上限がないと、離れた行の接尾辞まで一致してログ全体を隠し、長いログで照合も重くなる。
 const NAME_SPAN = "[\\s\\S]{0,512}";
 const CHANNEL_FIELDS = [
-  new RegExp(`(自律行動: (?:ボイス(?:チャンネル)?|ステージ)「)(${NAME_SPAN})(」で配信を開始しました)`, "g"),
-  new RegExp(`(自律行動: )(${NAME_SPAN})( への接続(?:を拒否されました|がタイムアウトしました|に失敗しました))`, "g"),
-  new RegExp(`(自律行動: ステージ\\()(${NAME_SPAN})(\\)の準備に失敗しました)`, "g"),
-  new RegExp(`(ボイス接続の保護: 元のチャンネル「)(${NAME_SPAN})(」へ戻(?:ります|りました))`, "g"),
+  new RegExp(`(?=(自律行動: (?:ボイス(?:チャンネル)?|ステージ)「)(${NAME_SPAN})(」で配信を開始しました))`, "g"),
+  new RegExp(`(?=(自律行動: )(${NAME_SPAN})( への接続(?:を拒否されました|がタイムアウトしました|に失敗しました)))`, "g"),
+  new RegExp(`(?=(自律行動: ステージ\\()(${NAME_SPAN})(\\)の準備に失敗しました))`, "g"),
+  new RegExp(`(?=(ボイス接続の保護: 元のチャンネル「)(${NAME_SPAN})(」へ戻(?:ります|りました)))`, "g"),
 ];
 const IDENTIFIER_FIELD = /(^|[^A-Za-z0-9_])(guild(?:_id)?|channel(?:_id)?|移動前|移動後)(\s*=\s*)(?:[0-9]+|<[^>\r\n]+>)/g;
 
 /** 既知の現在名に依存せず、運用ログの名前・識別子を隠す。 */
 function redactOperationalLog(text: string, mask: string): string {
-  let result = text;
+  const ranges: {start: number; end: number}[] = [];
+  // 原文の各開始位置を調べる。先に置換すると、重なった後続の名前の開始位置が失われる。
+  // 先読みで一致を消費せず、上限付きの範囲を集めてからまとめて伏せる。
   for (const field of CHANNEL_FIELDS) {
-    result = result.replace(field, (_match, prefix: string, value: string, suffix: string) =>
-      // 改行を残し、別エントリーへ分割された名前やデプロイ抜粋の行番号をずらさない。
-      prefix + (value ? value.replace(/[^\r\n]+/g, () => mask) : mask) + suffix,
-    );
+    for (const match of text.matchAll(field)) {
+      const start = match.index! + match[1].length;
+      ranges.push({start, end: start + match[2].length});
+    }
   }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: typeof ranges = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    else merged.push(range);
+  }
+  const parts: string[] = [];
+  let offset = 0;
+  for (const {start, end} of merged) {
+    // 改行を残し、別エントリーへ分割された名前やデプロイ抜粋の行番号をずらさない。
+    const value = text.slice(start, end);
+    parts.push(text.slice(offset, start), value ? value.replace(/[^\r\n]+/g, () => mask) : mask);
+    offset = end;
+  }
+  const result = parts.join("") + text.slice(offset);
   return result.replace(IDENTIFIER_FIELD, (_match, before: string, key: string, equals: string) => before + key + equals + mask);
 }
 
