@@ -70,7 +70,10 @@ def _extract_keys(path: Path) -> dict[str, str]:
     「変数に代入された文字列」だけなので、ast で構文解析して読むだけにする。
     """
     try:
-        source = path.read_text(encoding="utf-8")
+        # メモ帳の「UTF-8 (BOM 付き)」で保存された旧設定も読めるよう utf-8-sig で読む（#221）。
+        # utf-8 で読むと先頭に U+FEFF が残り、Python としては正しいファイルなのに ast.parse が
+        # 構文エラーにする（Python 自身はファイル先頭の BOM を読み飛ばす）。外れるのは先頭の1つだけ。
+        source = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         print(f"  ! 読み込めませんでした: {exc}")
         return {}

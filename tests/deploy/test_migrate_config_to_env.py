@@ -1,5 +1,7 @@
 """旧設定の移行ログにキーの値や断片が残らないことを検証する。"""
 
+import ast
+import codecs
 from contextlib import redirect_stdout
 import importlib
 import io
@@ -38,11 +40,12 @@ class MigrationLoggingTests(unittest.TestCase):
         self.addCleanup(paths.stop)
         original_read = Path.read_text
 
-        def read_source(path, *args, **kwargs):
+        def read_source(path, encoding=None, errors=None, *args, **kwargs):
             # 旧設定の架空キーはメモリ上だけに置く。実際のAST解析はそのまま通す。
+            # 実装が指定した文字コードでバイト列を本当に復号する（BOM の扱いを本物と同じにするため。#221）。
             if path == self.private_source:
-                return self.config_source
-            return original_read(path, *args, **kwargs)
+                return self.config_bytes.decode(encoding, errors or "strict")
+            return original_read(path, encoding, errors, *args, **kwargs)
 
         source_read = patch.object(Path, "read_text", read_source)
         source_read.start()
@@ -53,11 +56,15 @@ class MigrationLoggingTests(unittest.TestCase):
         }
         self.set_source(self.values)
 
-    def set_source(self, values) -> None:
+    def set_source(self, values, *, bom: bool = False) -> None:
         lines = [f"{name} = {value!r}" for name, value in values.items()]
         # 移行元はimport・実行せず、ASTの代入だけを読むことも確認する。
         lines.append('raise AssertionError("旧設定を実行してはいけません")')
-        self.config_source = "\n".join(lines) + "\n"
+        self.set_raw_source("\n".join(lines) + "\n", bom=bom)
+
+    def set_raw_source(self, text: str, *, bom: bool = False) -> None:
+        # メモ帳の「UTF-8 (BOM 付き)」保存と同じく、先頭に BOM を付けたバイト列も作れる。
+        self.config_bytes = (codecs.BOM_UTF8 if bom else b"") + text.encode("utf-8")
 
     def run_main(self, *args):
         output = io.StringIO()
@@ -214,6 +221,83 @@ class MigrationLoggingTests(unittest.TestCase):
         result, output = self.run_main("--dry-run")
         self.assertEqual(result, 1)
         self.assertIn("TOKEN_DISCORD", output)
+        self.assert_no_secret_fragments(output)
+        self.assertFalse(self.env_path.exists())
+
+    # ---- BOM 付き UTF-8 の旧設定（#221） ------------------------------------------
+
+    def extract_quietly(self) -> tuple[dict[str, str], str]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            found = migration._extract_keys(self.private_source)
+        return found, output.getvalue()
+
+    def test_bom_source_is_valid_python_and_yields_both_keys(self) -> None:
+        self.set_source(self.values, bom=True)
+        self.assertTrue(self.config_bytes.startswith(codecs.BOM_UTF8))
+        # Python 自身はこのバイト列を正しいソースとして受け付ける（中身は実行しない）。
+        ast.parse(self.config_bytes)
+        found, output = self.extract_quietly()
+        self.assertEqual(found, self.values)
+        self.assertEqual(output, "")
+
+    def test_bom_and_plain_sources_migrate_to_the_same_env(self) -> None:
+        results = {}
+        for bom in (False, True):
+            with self.subTest(bom=bom):
+                self.env_path.unlink(missing_ok=True)
+                self.set_source(self.values, bom=bom)
+                result, output = self.run_main()
+                self.assertEqual(result, 0, output)
+                self.assertEqual(dict(dotenv_values(self.env_path, interpolate=False)), self.values)
+                self.assert_no_secret_fragments(output)
+                results[bom] = (self.env_path.read_bytes(), output)
+        # BOM の有無で、生成される .env もログも変わらない。
+        self.assertEqual(results[True], results[False])
+
+    def test_invalid_python_is_still_rejected_with_or_without_bom(self) -> None:
+        assignments = "".join(f"{name} = {value!r}\n" for name, value in self.values.items())
+        cases = (
+            ("構文エラー", assignments + "def broken(:\n", False),
+            ("構文エラー", assignments + "def broken(:\n", True),
+            # 外すのは先頭の BOM 1つだけ。2つ目は Python と同じく不正な文字として扱う。
+            ("二重の BOM", "﻿" + assignments, True),
+        )
+        for label, text, bom in cases:
+            with self.subTest(label=label, bom=bom):
+                self.set_raw_source(text, bom=bom)
+                with self.assertRaises(SyntaxError):
+                    ast.parse(self.config_bytes)
+                found, output = self.extract_quietly()
+                self.assertEqual(found, {})
+                self.assertIn("Python として解釈できませんでした", output)
+                self.assert_no_secret_fragments(output)
+                result, output = self.run_main()
+                self.assertEqual(result, 1)
+                self.assertIn("キー未設定", output)
+                self.assert_no_secret_fragments(output)
+                self.assertFalse(self.env_path.exists())
+
+    def test_bom_source_adopts_only_top_level_string_assignments(self) -> None:
+        gemini, discord = self.values["API_KEY_GEMINI"], self.values["TOKEN_DISCORD"]
+        self.set_raw_source(
+            "import os\n"
+            "if True:\n"
+            f"    API_KEY_GEMINI = {gemini!r}\n"
+            "def load():\n"
+            f"    TOKEN_DISCORD = {discord!r}\n"
+            "class Settings:\n"
+            f"    API_KEY_GEMINI = {gemini!r}\n"
+            "TOKEN_DISCORD = os.environ['FAKE_TOKEN_NAME']\n"
+            'raise AssertionError("旧設定を実行してはいけません")\n',
+            bom=True,
+        )
+        found, output = self.extract_quietly()
+        self.assertEqual(found, {})
+        self.assert_no_secret_fragments(output)
+        result, output = self.run_main()
+        self.assertEqual(result, 1)
+        self.assertIn("キー未設定", output)
         self.assert_no_secret_fragments(output)
         self.assertFalse(self.env_path.exists())
 
