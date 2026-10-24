@@ -100,14 +100,19 @@ def _to_local_naive(iso_utc: str, tz: Any) -> datetime | None:
     return dt.astimezone(tz).replace(tzinfo=None)
 
 
-def _from_local_naive(local_naive: datetime, tz: Any) -> str:
-    """ローカルの素朴な日時を、保存用の UTC・秒精度 ISO 8601 文字列へ戻す。
+def _local_to_utc(local_naive: datetime, tz: Any) -> datetime:
+    """ローカルの素朴な日時を、保存用の UTC・秒精度の日時（tz 付き）へ戻す。
 
+    夏時間の切り替えで壁時計の時刻が二度現れる（曖昧な）場合は**1回目**を、
+    時計が進んで存在しない時刻は**進める前の UTC オフセット**で解釈して
+    進めた分だけ後ろへずらした時刻（例: America/New_York の 02:30 → 03:30）を使う。
+    どちらも PEP 495 の fold=0 の規則で、元の日時が持っていた fold に左右されないよう
+    ここで明示的に固定する。
     期限判定は ISO 文字列の比較で行うため、_utc_now() と同じくマイクロ秒を落として
     桁数を揃える（桁数が混ざると比較が壊れる）。
     """
-    utc = local_naive.replace(tzinfo=tz).astimezone(timezone.utc).replace(microsecond=0)
-    return utc.isoformat()
+    local = local_naive.replace(tzinfo=tz, fold=0)
+    return local.astimezone(timezone.utc).replace(microsecond=0)
 
 
 def _monthly_occurrence(anchor_local: datetime, months: int) -> datetime:
@@ -145,6 +150,12 @@ def next_occurrence(
     進める**（1回分だけ進めると、追い付くまで見回りのたびに通知が飛んでしまう）。
     過ぎた回をまとめて通知することはしない — 通知は最大1回、時刻は未来へ。
 
+    候補の日時はローカルの暦で作り、**UTC へ戻してから after と比べる**。
+    壁時計の時刻どうしで比べると、夏時間の終了で同じ時刻が二度現れる時間帯に
+    「壁時計では後だが UTC では前」の候補を採用し、過去の時刻を pending のまま
+    保存して次の見回りで同じ系列を取り直してしまう（#222）。
+    曖昧な時刻・存在しない時刻の解釈は _local_to_utc を参照。
+
     Args:
         remind_at: 今回通知した（＝進める前の）予定時刻。UTC の ISO 8601。
         recurrence: 'daily' / 'weekly' / 'monthly'。'none' や未知の値は None を返す。
@@ -171,7 +182,6 @@ def next_occurrence(
 
     if after.tzinfo is None:
         after = after.replace(tzinfo=timezone.utc)
-    after_local = after.astimezone(tz).replace(tzinfo=None)
 
     if kind == "monthly":
         # 反復の起点はアンカーではなく「今回の予定時刻の月」にする。
@@ -179,16 +189,21 @@ def next_occurrence(
         months = _month_distance(anchor_local, current_local)
         for _ in range(max_steps):
             months += 1
-            candidate = _monthly_occurrence(anchor_local, months)
-            if candidate > after_local:
-                return _from_local_naive(candidate, tz)
+            candidate = _local_to_utc(_monthly_occurrence(anchor_local, months), tz)
+            if candidate > after:
+                return candidate.isoformat()
     else:
         delta = timedelta(days=1) if kind == "daily" else timedelta(days=7)
-        candidate = current_local
+        # 今回が何回目かをアンカーからの経過で数え、次の回は**アンカーの壁時計の時刻**で
+        # 作る。前回の予定時刻に delta を足すと、夏時間の開始で存在しない時刻を
+        # ずらした回（02:30 → 03:30）から先がずっと 03:30 のままになるため。
+        # 四捨五入するのは、ずらした分（delta より十分短い）で回数を数え違えないため。
+        steps = round((current_local - anchor_local) / delta)
         for _ in range(max_steps):
-            candidate += delta
-            if candidate > after_local:
-                return _from_local_naive(candidate, tz)
+            steps += 1
+            candidate = _local_to_utc(anchor_local + delta * steps, tz)
+            if candidate > after:
+                return candidate.isoformat()
 
     # ここに来るのは「進めても未来に届かない」＝計算が前進していない不具合のとき。
     # 無限ループになるより、系列を止めて気づけるようにする。
