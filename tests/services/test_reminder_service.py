@@ -9,6 +9,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -93,6 +94,148 @@ class ReminderCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(channel.send.await_args.kwargs["allowed_mentions"].to_dict()["users"], [11])
                 else:
                     channel.send.assert_not_awaited()
+
+
+class ReminderDaylightSavingTests(unittest.TestCase):
+    """夏時間の切り替えをまたぐ繰り返しの次回時刻を確認する（#222）。"""
+
+    NEW_YORK = ZoneInfo("America/New_York")
+    TOKYO = ZoneInfo("Asia/Tokyo")
+
+    def next_at(self, remind_at, kind, after, tz=None, anchor=None):
+        return reminder_service.next_occurrence(
+            remind_at=remind_at, recurrence=kind, anchor=anchor or remind_at,
+            after=after, tz=tz or self.NEW_YORK,
+        )
+
+    def local(self, iso, tz=None):
+        return datetime.fromisoformat(iso).astimezone(tz or self.NEW_YORK)
+
+    def test_catch_up_from_second_ambiguous_hour_returns_future_for_all_kinds(self) -> None:
+        # 2026-11-01 06:15 UTC は夏時間終了後の二度目の 01:15（EST）。
+        after = datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc)
+        for kind, previous, expected in (
+            ("daily", "2026-10-31T05:30:00+00:00", "2026-11-02T06:30:00+00:00"),
+            ("weekly", "2026-10-25T05:30:00+00:00", "2026-11-08T06:30:00+00:00"),
+            ("monthly", "2026-10-01T05:30:00+00:00", "2026-12-01T06:30:00+00:00"),
+        ):
+            with self.subTest(kind=kind):
+                result = self.next_at(previous, kind, after)
+                self.assertEqual(result, expected)
+                self.assertGreater(datetime.fromisoformat(result), after)
+                self.assertEqual(self.local(result).strftime("%H:%M"), "01:30")
+
+    def test_every_moment_around_transitions_gets_future_wall_clock_time(self) -> None:
+        # 夏時間の終了日と開始日の前後を15分刻みで走査し、どの時点からでも未来の時刻を返す。
+        # 存在しない 02:30 だけは 03:30 へずらし、それ以外は元の壁時計の時刻にする。
+        fall_back = datetime(2026, 10, 31, 4, tzinfo=timezone.utc)
+        spring_forward = datetime(2026, 3, 7, 6, tzinfo=timezone.utc)
+        cases = (
+            ("daily", "2026-10-30T05:30:00+00:00", fall_back, {"01:30"}),
+            ("weekly", "2026-10-25T05:30:00+00:00", fall_back, {"01:30"}),
+            ("monthly", "2026-10-01T05:30:00+00:00", fall_back, {"01:30"}),
+            ("daily", "2026-03-06T07:30:00+00:00", spring_forward, {"02:30", "03:30"}),
+            ("weekly", "2026-03-01T07:30:00+00:00", spring_forward, {"02:30", "03:30"}),
+            ("monthly", "2026-02-08T07:30:00+00:00", spring_forward, {"02:30", "03:30"}),
+        )
+        for kind, previous, start, wall_clock in cases:
+            for step in range(4 * 48):
+                after = start + timedelta(minutes=15 * step)
+                with self.subTest(kind=kind, after=after.isoformat()):
+                    result = self.next_at(previous, kind, after)
+                    self.assertGreater(datetime.fromisoformat(result), after)
+                    self.assertIn(self.local(result).strftime("%H:%M"), wall_clock)
+
+    def test_ambiguous_day_without_downtime_notifies_once_at_first_occurrence(self) -> None:
+        first = self.next_at(
+            "2026-10-31T05:30:00+00:00", "daily", datetime(2026, 10, 31, 5, 30, 1, tzinfo=timezone.utc),
+        )
+        # 曖昧な 01:30 は1回目（EDT）を使う。
+        self.assertEqual(first, "2026-11-01T05:30:00+00:00")
+        second = self.next_at(first, "daily", datetime(2026, 11, 1, 5, 30, 1, tzinfo=timezone.utc),
+                              anchor="2026-10-31T05:30:00+00:00")
+        # 同じ日の二度目の 01:30 では通知せず、翌日の 01:30（EST）へ進む。
+        self.assertEqual(second, "2026-11-02T06:30:00+00:00")
+
+    def test_nonexistent_time_is_shifted_once_and_returns_to_anchor_time(self) -> None:
+        for kind, anchor, expected in (
+            ("daily", "2026-03-07T07:30:00+00:00",
+             ["2026-03-08T07:30:00+00:00", "2026-03-09T06:30:00+00:00", "2026-03-10T06:30:00+00:00"]),
+            ("weekly", "2026-03-01T07:30:00+00:00",
+             ["2026-03-08T07:30:00+00:00", "2026-03-15T06:30:00+00:00", "2026-03-22T06:30:00+00:00"]),
+            ("monthly", "2026-02-08T07:30:00+00:00",
+             ["2026-03-08T07:30:00+00:00", "2026-04-08T06:30:00+00:00", "2026-05-08T06:30:00+00:00"]),
+        ):
+            with self.subTest(kind=kind):
+                current, results = anchor, []
+                for _ in expected:
+                    current = self.next_at(
+                        current, kind, datetime.fromisoformat(current) + timedelta(seconds=1), anchor=anchor,
+                    )
+                    results.append(current)
+                # 存在しない 02:30 は 03:30（EDT）へずらし、次の回からは 02:30 に戻す。
+                self.assertEqual(results, expected)
+                self.assertEqual([self.local(value).strftime("%H:%M") for value in results],
+                                 ["03:30", "02:30", "02:30"])
+
+    def test_ordinary_days_tokyo_and_month_end_keep_existing_behavior(self) -> None:
+        normal = self.next_at("2026-06-10T13:00:00+00:00", "daily",
+                              datetime(2026, 6, 10, 13, 0, 1, tzinfo=timezone.utc))
+        self.assertEqual(normal, "2026-06-11T13:00:00+00:00")
+        tokyo = self.next_at("2026-11-01T00:00:00+00:00", "daily",
+                             datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc), tz=self.TOKYO)
+        self.assertEqual(tokyo, "2026-11-02T00:00:00+00:00")
+        # 月末の丸めは初回のアンカーを保つ（1/31 → 2/28 → 3/31）。
+        anchor = "2026-01-31T00:00:00+00:00"
+        february = self.next_at(anchor, "monthly", datetime(2026, 1, 31, 0, 0, 1, tzinfo=timezone.utc),
+                                tz=self.TOKYO)
+        march = self.next_at(february, "monthly", datetime(2026, 2, 28, 0, 0, 1, tzinfo=timezone.utc),
+                             tz=self.TOKYO, anchor=anchor)
+        self.assertEqual((february, march), ("2026-02-28T00:00:00+00:00", "2026-03-31T00:00:00+00:00"))
+        # 長期停止明けも1回で未来へ追い付く（秒精度・UTC の形式は変えない）。
+        caught_up = self.next_at("2026-01-01T00:00:00+00:00", "weekly",
+                                 datetime(2026, 6, 1, 12, 34, 56, 789, tzinfo=timezone.utc), tz=self.TOKYO)
+        self.assertEqual(caught_up, "2026-06-04T00:00:00+00:00")
+
+    def test_catch_up_limit_still_stops_the_series(self) -> None:
+        with patch("builtins.print"):
+            result = reminder_service.next_occurrence(
+                remind_at="2026-01-01T00:00:00+00:00", recurrence="daily", anchor="",
+                after=datetime(2026, 12, 1, tzinfo=timezone.utc), tz=self.NEW_YORK, max_steps=3,
+            )
+        self.assertIsNone(result)
+
+    def test_repeated_claim_at_same_moment_does_not_reclaim_the_series(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        db = Database(Path(directory.name) / "bot.db")
+        db.initialize()
+        self.addCleanup(db.close)
+        service = ReminderService(None, db, None)
+        service._tz = self.NEW_YORK
+        now = datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc)
+        ids = {
+            kind: db.reminder_add(
+                user_id="11", user_name="架空の利用者", guild_id=1, channel_id=10,
+                message=f"架空の予定-{kind}", remind_at=previous, created_at="2026-09-01T00:00:00+00:00",
+                recurrence=kind, recurrence_anchor=previous,
+            )
+            for kind, previous in (
+                ("daily", "2026-10-31T05:30:00+00:00"),
+                ("weekly", "2026-10-25T05:30:00+00:00"),
+                ("monthly", "2026-10-01T05:30:00+00:00"),
+            )
+        }
+        first = db.reminder_claim_due(now.isoformat(), service._build_next_at(now))
+        self.assertEqual(sorted(record["reminder_id"] for record in first), sorted(ids.values()))
+        self.assertEqual(db.reminder_claim_due(now.isoformat(), service._build_next_at(now)), [])
+        for kind, reminder_id in ids.items():
+            with self.subTest(kind=kind):
+                stored = dict(db._conn.execute(
+                    "SELECT status, remind_at FROM reminders WHERE reminder_id = ?", (reminder_id,)
+                ).fetchone())
+                self.assertEqual(stored["status"], "pending")
+                self.assertGreater(datetime.fromisoformat(stored["remind_at"]), now)
 
 
 class ReminderRegistrationTests(unittest.IsolatedAsyncioTestCase):

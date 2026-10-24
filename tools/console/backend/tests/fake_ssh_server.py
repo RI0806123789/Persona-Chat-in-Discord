@@ -376,9 +376,11 @@ def insights_output(bot: FakeBot) -> str:
     """remote_scripts/insights.py の出力の真似（Discord API・DB・ログから集めた状態）。"""
     now = time.time()
 
-    def settings(persona, model, mode, grounding, auto_topic, interval, autonomous, saved=True):
+    def settings(persona, model, mode, grounding, auto_topic, interval, autonomous, saved=True,
+                 source="saved", missing=None, builtin=False):
         return {
-            "persona": persona, "model": model, "respond_mode": mode, "grounding": grounding,
+            "persona": persona, "persona_source": source, "persona_missing": missing, "persona_builtin": builtin,
+            "model": model, "respond_mode": mode, "grounding": grounding,
             "auto_topic_enabled": auto_topic, "auto_topic_interval_hours": interval,
             "autonomous_enabled": autonomous, "saved": saved,
         }
@@ -388,6 +390,7 @@ def insights_output(bot: FakeBot) -> str:
         "source_dir": "src",
         "version": "ver0.1.7(BETA)",
         "autonomous_supported": True,
+        "persona_estimated": True,
         "discord": {
             "ok": True,
             "error": None,
@@ -397,9 +400,11 @@ def insights_output(bot: FakeBot) -> str:
                 {"name": "Persona Lab", "members": 42, "online": 11, "voice_channel": "雑談ステージ" if bot.active else None,
                  "settings": settings("ツンデレ", "Gemini 3.1 Flash Lite", "メンションのみに反応", True, True, 6, True)},
                 {"name": "雑談ラウンジ", "members": 71, "online": 19, "voice_channel": None,
-                 "settings": settings("お姉さん", "Gemini 3.5 Flash", "すべての発言に反応", False, True, 3, True)},
+                 "settings": settings("お姉さん", "Gemini 3.5 Flash", "すべての発言に反応", False, True, 3, True,
+                                      source="missing", missing="prompt_oneesan_old")},
                 {"name": "テスト用サーバー", "members": 3, "online": 1, "voice_channel": None,
-                 "settings": settings("標準", "Gemini 2.5 Flash", "メンションのみに反応", True, False, 6, False, saved=False)},
+                 "settings": settings("標準（組み込み）", "Gemini 2.5 Flash", "メンションのみに反応", True, False, 6, False,
+                                      saved=False, source="default", builtin=True)},
             ],
         },
         "dm_settings": settings("メイド", "Gemini 3.1 Flash Lite", "すべての発言に反応", False, False, 6, False),

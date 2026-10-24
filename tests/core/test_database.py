@@ -458,6 +458,17 @@ class ReminderClaimStatusTests(unittest.TestCase):
                     self.assertIsNone(claimed[reminder_id]["next_remind_at"])
                     self.assertEqual(self.stored(reminder_id)["status"], status)
 
+    def test_next_time_not_after_now_stops_series_instead_of_reclaiming(self) -> None:
+        # 現在以前の次回時刻を pending で残すと、次の見回りで同じ系列を取り直す（#222）。
+        for next_iso in ("2025-12-31T23:00:00+00:00", "2026-01-01T00:00:00+00:00"):
+            with self.subTest(next_iso=next_iso):
+                daily = self.add("daily")
+                claimed = self.claim(lambda record: next_iso)
+                self.assertEqual(claimed[daily]["status"], "canceled")
+                self.assertIsNone(claimed[daily]["next_remind_at"])
+                self.assertEqual(self.stored(daily)["status"], "canceled")
+                self.assertEqual(self.claim(lambda record: next_iso), {})
+
     def test_successful_calculation_keeps_recurrence_pending(self) -> None:
         daily = self.add("daily")
         claimed = self.claim(lambda record: "2026-01-02T00:00:00+00:00")

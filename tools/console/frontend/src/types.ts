@@ -220,7 +220,14 @@ export interface DeployResponse {
 // ---- ボットの中の状態（backend/remote_scripts/insights.py の出力）
 
 export interface GuildSettingsView {
+  /** ボットが応答に使うペルソナの表示名（現行版は prompts/ のファイル構成からの推定） */
   persona: string | null;
+  /** saved = 保存した選択 / default = 未選択なので既定 / missing = 保存したファイルが見つからないので既定 */
+  persona_source: "saved" | "default" | "missing";
+  /** 見つからない保存済みのペルソナ（拡張子なしのファイル名）。ボットはこの値を消さずに保持する */
+  persona_missing: string | null;
+  /** true = ペルソナのファイルが無く、組み込みの標準プロンプトで応答している */
+  persona_builtin: boolean;
   model: string | null;
   respond_mode: string | null;
   grounding: boolean;
@@ -268,6 +275,8 @@ export interface Insights {
   source_dir: string | null;
   version: string | null;
   autonomous_supported: boolean;
+  /** true = ペルソナを prompts/ のファイル構成からボットと同じ規則で推定した（現行版） */
+  persona_estimated: boolean;
   discord: DiscordInsight;
   dm_settings: GuildSettingsView;
   activity: ActivityInsight;

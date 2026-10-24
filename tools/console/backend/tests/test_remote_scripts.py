@@ -72,6 +72,42 @@ def make_fake_bot(root: Path, *, layout: str, with_autonomous_column: bool) -> N
     con.close()
 
 
+# ボット本体のペルソナ一覧（インサイトの推定がボットの規則と一致するかを確かめる）
+BOT_CONFIG = Path(__file__).resolve().parents[4] / "src" / "persona_bot" / "config"
+BOT_CATALOG_SCRIPT = '''
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from persona_bot.config.personas import load_persona_catalog, persona_file_name
+prompts = Path(sys.argv[2])
+catalog = load_persona_catalog(prompts, prompts / "personas.json")
+views = []
+for saved in json.loads(sys.argv[3]):
+    effective = catalog.resolve(saved)
+    # 形の正しい保存値はファイルが無くても保持され、形の誤った値は復元時に破棄される
+    source = "saved" if catalog.contains(saved) else "missing" if persona_file_name(saved) else "default"
+    missing = Path(persona_file_name(saved)).stem if source == "missing" else None
+    views.append([catalog.display_name(effective), source, missing, effective == ""])
+print(json.dumps(views))
+'''
+
+
+def bot_persona_views(prompts: Path, saved_values: list[str]) -> list[list]:
+    """ボット本体の personas.py で、保存値ごとの実効ペルソナを求める（別プロセスで import する）。
+
+    ボットは日本語の警告を標準出力へ書く。-I は PYTHONIOENCODING などの環境変数を無視するため、
+    英語版 Windows（cp1252）でも書けるよう、コマンドラインの -X utf8 で入出力を UTF-8 にする。
+    """
+    completed = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", "-c", BOT_CATALOG_SCRIPT, str(BOT_CONFIG.parents[1]), str(prompts),
+         json.dumps(saved_values)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr)
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
 def run_script(script: str, arguments: list[str], *, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-I", "-"] + arguments,
@@ -135,10 +171,13 @@ subprocess.run = _fake_run
         # DM（guild_id=0）の行。モデルは空なので既定値の表示名、自律行動は列が無いので None
         self.assertEqual(
             data["dm_settings"],
-            {"persona": "ツンデレ", "model": "Gemini 3.1 Flash Lite", "respond_mode": "すべての発言に反応",
+            {"persona": "ツンデレ", "persona_source": "saved", "persona_missing": None, "persona_builtin": False,
+             "model": "Gemini 3.1 Flash Lite", "respond_mode": "すべての発言に反応",
              "grounding": False, "auto_topic_enabled": True, "auto_topic_interval_hours": 3,
              "autonomous_enabled": None, "saved": True},
         )
+        # 旧版は固定の選択肢で表示し、prompts/ のファイル構成からは推定しない
+        self.assertFalse(data["persona_estimated"])
 
     def test_new_layout_and_autonomous_column(self) -> None:
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
@@ -281,36 +320,133 @@ subprocess.run = _fake_run
         self.assertEqual(data["dm_settings"]["persona"], "ツンデレ")
         self.assertEqual(data["dm_settings"]["model"], "Gemini 3.1 Flash Lite")
 
-    def test_personas_json_names_and_default_override_old_choices(self):
-        # ver0.1.8 以降はペルソナの表示名と既定をサーバー上の prompts/personas.json に書く
+    def make_current_bot(self, files=(), settings=None):
+        """現行版（personas.py がある版）の構成。files は prompts/ に置く架空のファイル名。"""
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
         source = self.root / "src/persona_bot/config"
-        # 新しい版には DEFAULT_PROMPT_FILE と PERSONA_CHOICES が無い
+        # 新しい版には DEFAULT_PROMPT_FILE と PERSONA_CHOICES が無く、personas.py がある
         constants = [line for line in CONSTANTS_PY.splitlines() if not line.startswith("DEFAULT_PROMPT_FILE")]
         (source / "constants.py").write_text("\n".join(constants), encoding="utf-8")
         (source / "choices.py").write_text(
             'MODEL_CHOICES = [app_commands.Choice(name="Gemini 3.1 Flash Lite", value=DEFAULT_MODEL_NAME)]\n',
             encoding="utf-8",
         )
+        (source / "personas.py").write_text((BOT_CONFIG / "personas.py").read_text(encoding="utf-8"), encoding="utf-8")
         prompts = self.root / "prompts"
         prompts.mkdir()
-        (prompts / "personas.json").write_text(json.dumps({
+        for name in files:
+            (prompts / name).write_text("架空のペルソナ", encoding="utf-8")
+        if settings is not None:
+            text = settings if isinstance(settings, str) else json.dumps(settings, ensure_ascii=False)
+            (prompts / "personas.json").write_text(text, encoding="utf-8")
+        return prompts
+
+    def personas_for(self, saved_values):
+        """保存値ごとのペルソナ表示。Discord API を使わず「保存済みサーバー」として ID 順に並べる。"""
+        con = sqlite3.connect(self.root / "memory/bot.db")
+        con.execute("DELETE FROM guild_settings")
+        con.executemany("INSERT INTO guild_settings (guild_id, prompt_file) VALUES (?, ?)",
+                        list(enumerate(saved_values, 1)))
+        con.commit()
+        con.close()
+        data = self.insights(journal=[])
+        settings = [guild["settings"] for guild in data["discord"]["guilds"]]
+        self.assertEqual(len(settings), len(saved_values))
+        return data, settings
+
+    def persona_view(self, settings):
+        return tuple(settings[key] for key in ("persona", "persona_source", "persona_missing", "persona_builtin"))
+
+    def test_personas_json_names_and_default_override_old_choices(self):
+        # ver0.1.8 以降はペルソナの表示名と既定をサーバー上の prompts/personas.json に書く
+        prompts = self.make_current_bot(["prompt_tsun.txt", "架空の既定.txt"], {
             "default": "架空の既定.txt",
             "personas": {"prompt_tsun.txt": {"name": "架空の キャラ"}, "架空の既定.txt": {"name": "架空の既定キャラ"}},
-        }, ensure_ascii=False), encoding="utf-8")
+        })
         responses = {
             "/users/@me": {"username": "架空のボット"},
             "/users/@me/guilds": [{"id": str(GUILD_ID), "name": "架空のサーバー"}],
             f"/guilds/{GUILD_ID}/voice-states/@me": 404,
         }
         data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
-        self.assertEqual(data["dm_settings"]["persona"], "架空の キャラ")
-        self.assertEqual(data["discord"]["guilds"][0]["settings"]["persona"], "架空の既定キャラ")
+        self.assertTrue(data["persona_estimated"])
+        self.assertEqual(self.persona_view(data["dm_settings"]), ("架空の キャラ", "saved", None, False))
+        self.assertEqual(self.persona_view(data["discord"]["guilds"][0]["settings"]),
+                         ("架空の既定キャラ", "default", None, False))
 
         (prompts / "personas.json").write_text("{壊れた", encoding="utf-8")
         data = self.insights(journal=[])
         self.assertEqual(data["dm_settings"]["persona"], "prompt_tsun")
         self.assertTrue(any("personas.json" in error for error in data["errors"]))
+
+    def test_default_without_settings_file_is_first_file_by_name(self):
+        # personas.json が無くても、ボットは有効なファイルのうちファイル名順で先頭を既定にする（#223）
+        self.make_current_bot(["prompt_b.txt", "prompt_a.txt", ".隠し.txt", "メモ.md", "00_prompt_format.txt"])
+        data, settings = self.personas_for(["", "../prompts/prompt_b.txt"])
+        self.assertEqual(self.persona_view(settings[0]), ("prompt_a", "default", None, False))
+        self.assertEqual(self.persona_view(settings[1]), ("prompt_b", "saved", None, False))
+        self.assertEqual(self.persona_view(data["dm_settings"]), ("prompt_a", "default", None, False))
+        self.assertTrue(data["persona_estimated"])
+
+    def test_omitted_or_missing_default_falls_back_to_first_listed_persona(self):
+        entries = {"prompt_c.txt": {"name": "架空のC"}, "prompt_a.txt": {"name": "架空のA"}}
+        for index, default in enumerate((None, "架空の存在しない既定.txt", 123)):
+            with self.subTest(default=default):
+                self.root = Path(self.temp.name) / f"case-{index}"
+                settings = {"personas": entries} if default is None else {"default": default, "personas": entries}
+                self.make_current_bot(["prompt_a.txt", "prompt_b.txt", "prompt_c.txt"], settings)
+                _, views = self.personas_for([""])
+                # JSON に書いた順が先なので prompt_c が先頭になる。存在しない既定の名前は表示しない
+                self.assertEqual(self.persona_view(views[0]), ("架空のC", "default", None, False))
+
+    def test_missing_saved_file_shows_saved_name_separately_from_effective_default(self):
+        self.make_current_bot(["prompt_a.txt"], {"default": "prompt_a.txt", "personas": {"prompt_a.txt": {"name": "架空のA"}}})
+        _, views = self.personas_for(["../prompts/prompt_消えた.txt", "../prompts/../.env", "架空の旧形式"])
+        # ボットは保存値を消さずに既定で応答する。保存値は別の項目で返す
+        self.assertEqual(self.persona_view(views[0]), ("架空のA", "missing", "prompt_消えた", False))
+        # ペルソナの形でない値は、ボットが復元時に破棄して既定へ戻す
+        self.assertEqual(self.persona_view(views[1]), ("架空のA", "default", None, False))
+        self.assertEqual(self.persona_view(views[2]), ("架空のA", "default", None, False))
+
+    def test_templates_only_uses_builtin_persona(self):
+        self.make_current_bot(["00_prompt_format.txt", "00_prompt_format.json"])
+        data, views = self.personas_for(["", "../prompts/prompt_消えた.txt", "../prompts/00_prompt_format.txt"])
+        self.assertEqual(self.persona_view(views[0]), ("標準（組み込み）", "default", None, True))
+        self.assertEqual(self.persona_view(views[1]), ("標準（組み込み）", "missing", "prompt_消えた", True))
+        self.assertEqual(self.persona_view(views[2]), ("標準（組み込み）", "default", None, True))
+        self.assertEqual(data["errors"], [])
+
+    def test_estimate_matches_bot_catalog_rules(self):
+        # 同じファイル構成に対して、ボット本体の load_persona_catalog と結果が一致する
+        long_name = "x" * (100 - len("../prompts/") - len(".txt") + 1) + ".txt"
+        just_fits = "y" * (100 - len("../prompts/") - len(".txt")) + ".txt"
+        files = ["prompt_b.txt", "prompt_a.txt", "架空.txt", "UPPER.TXT", ".hidden.txt", "note.md",
+                 "00_prompt_format.txt", "00_prompt_format.json", long_name, just_fits]
+        layouts = {
+            "設定ファイルなし": None,
+            "既定の省略と表示名": {"personas": {"架空.txt": {"name": " 架空の  名前 "}, "prompt_b.txt": {"name": ""},
+                                          "ghost.txt": {"name": "存在しない"}, "UPPER.TXT": "誤った形"}},
+            "存在しない既定": {"default": "ghost.txt", "personas": {"prompt_b.txt": {}}},
+            "有効な既定": {"default": "prompt_b.txt"},
+            "テンプレートを既定": {"default": "00_prompt_format.txt"},
+            "壊れたJSON": "{壊れた",
+            "最上位が配列": [],
+            "personasが配列": {"personas": ["prompt_b.txt"], "default": 1},
+        }
+        saved_values = ["", "../prompts/prompt_a.txt", "../prompts/prompt_b.txt", "../prompts/ghost.txt",
+                        "../prompts/UPPER.TXT", "../prompts/" + long_name, "../prompts/" + just_fits,
+                        "../prompts/../.env", "../prompts/00_prompt_format.txt", "../prompts/.hidden.txt", "架空の旧形式"]
+        for index, (layout, settings) in enumerate(layouts.items()):
+            with self.subTest(layout=layout):
+                self.root = Path(self.temp.name) / f"case-{index}"
+                prompts = self.make_current_bot(files, settings)
+                (prompts / "dir.txt").mkdir()
+                # ボットと同じ定数（接頭辞・テンプレート名・値の上限）を読む
+                (self.root / "src/persona_bot/config/constants.py").write_text(
+                    (BOT_CONFIG / "constants.py").read_text(encoding="utf-8"), encoding="utf-8")
+                _, views = self.personas_for(saved_values)
+                expected = bot_persona_views(prompts, saved_values)
+                self.assertEqual([list(self.persona_view(view)) for view in views], expected)
 
     def test_voice_permission_error_is_local_but_rate_limit_stops_later_requests(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)

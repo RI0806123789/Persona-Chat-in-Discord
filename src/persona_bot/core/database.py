@@ -839,6 +839,7 @@ class Database:
             now_iso: 期限判定に使う現在時刻（UTC の ISO 8601）。
             next_at: 1行分の記録を受け取り、次回の remind_at（UTC の ISO 8601）を
                 返す**同期**関数。もう繰り返さないなら None を返す。
+                now_iso 以前の時刻を返した場合も None と同じく系列を止める。
                 **この関数の中から Database のメソッドを呼ばないこと** —
                 self._lock は再入不可の threading.Lock なので、同じスレッドから
                 再取得するとデッドロックしてボット全体が固まる。
@@ -867,6 +868,16 @@ class Database:
                     print(
                         f"データベース: リマインダーの次回時刻を計算できませんでした"
                         f" (id={reminder_id}): {error}"
+                    )
+                    next_iso = None
+
+                # 次回時刻が現在以前だと pending のまま残り、上の SELECT と同じ条件で
+                # 次の見回りが同じ系列を取り直し続ける（#222）。計算側の不具合として
+                # 「作れなかった」扱いにし、下の分岐で系列を止める。
+                if next_iso and str(next_iso) <= str(now_iso):
+                    print(
+                        f"データベース: リマインダーの次回時刻が現在以前のため系列を止めます"
+                        f" (id={reminder_id}, 次回={next_iso})"
                     )
                     next_iso = None
 
