@@ -3,12 +3,15 @@
 // - マウスを乗せている間・フォーカスがある間は、消えるまでの時間を止める（読み終わる前に消えないように）
 // - 通知は aria-live で読み上げ、失敗だけは role="alert" ですぐ読ませる
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { redactError, usePrivacy } from "../privacy";
 import { Icon } from "./Icon";
 
 export interface ToastInput {
   tone: "good" | "critical" | "info";
   title: string;
   detail?: string;
+  /** 原文と独立した、ローカル設定の場所を含まない診断文。 */
+  detailSafe?: string;
   action?: { label: string; onClick: () => void };
 }
 
@@ -24,6 +27,7 @@ const LEAVE_MS = 260;
 const MAX_VISIBLE = 3;
 
 const ToastContext = createContext<(toast: ToastInput) => void>(() => undefined);
+const ToastStateContext = createContext<{ toasts: Toast[]; dismiss: (id: number) => void }>({ toasts: [], dismiss: () => undefined });
 
 let nextId = 1;
 
@@ -42,17 +46,26 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   return (
     <ToastContext.Provider value={notify}>
-      {children}
-      <div className="m3-snackbars" aria-live="polite">
-        {toasts.map((toast) => (
-          <Snackbar key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
-        ))}
-      </div>
+      <ToastStateContext.Provider value={{ toasts, dismiss }}>{children}</ToastStateContext.Provider>
     </ToastContext.Provider>
   );
 }
 
+/** 通知の保存先とは分け、現在のPrivacyContextの内側で表示する。 */
+export function ToastViewport() {
+  const { toasts, dismiss } = useContext(ToastStateContext);
+  return (
+    <div className="m3-snackbars" aria-live="polite">
+      {toasts.map((toast) => (
+        <Snackbar key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
+      ))}
+    </div>
+  );
+}
+
 function Snackbar({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+  const privacy = usePrivacy();
+  const detail = redactError(toast.detail, toast.detailSafe, privacy);
   const [held, setHeld] = useState(false);
   const remaining = useRef(toast.action ? VISIBLE_WITH_ACTION_MS : VISIBLE_MS);
   const dismissRef = useRef(onDismiss);
@@ -82,8 +95,8 @@ function Snackbar({ toast, onDismiss }: { toast: Toast; onDismiss: () => void })
     >
       <Icon name={toast.tone === "good" ? "checkCircle" : toast.tone === "critical" ? "error" : "info"} size={20} filled />
       <div className="m3-snackbar-text">
-        <strong className="body-medium">{toast.title}</strong>
-        {toast.detail && <p className="body-small">{toast.detail}</p>}
+        <strong className="body-medium">{privacy.redact(toast.title)}</strong>
+        {detail && <p className="body-small">{detail}</p>}
       </div>
       {toast.action && (
         <button
@@ -94,7 +107,7 @@ function Snackbar({ toast, onDismiss }: { toast: Toast; onDismiss: () => void })
             onDismiss();
           }}
         >
-          {toast.action.label}
+          {privacy.redact(toast.action.label)}
         </button>
       )}
       <button type="button" className="m3-snackbar-close" onClick={onDismiss} aria-label="閉じる">

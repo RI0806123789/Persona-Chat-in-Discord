@@ -97,6 +97,9 @@ Windows・Python 3.13.3（`.venv`、google-genai 2.31.0）でボット738件・�
 | #162 | `utils/test_shared_helpers.py` | 実際の`discord.File`が借用するバッファを使い、送信側がFileを閉じても、成功・失敗・キャンセルとも実バッファのcloseは1回だけ |
 | #215 | 画面`tests/log-privacy.test.mjs`・`tests/log-stream.test.mjs`・コンソール`backend/tests/test_deploy_log_privacy.py` | 受信時の公開区分を、バッファ・一時停止・保持上限・クリア後も保つ。取得開始と会話見出し以降は、区切り線・計数・運用ログ風の本文・別PIDでも隠し、`pid=1`かつ`source=systemd`だけ既知の秘密を置換して表示。概要は全保持行を判定してから切り出す。デプロイのログ混在出力・属性なしの旧形式は全体を隠し、偽と明示した出力だけ置換、伏せ字OFFは原文 |
 | #216 | 画面`tests/screen-privacy.test.mjs` | 接続先ラベル・現在/配備先ブランチ・デプロイの見出し/説明/確認ラベルを、表示とtitle/ariaの両方で描画時に隠し、OFFで原文へ戻る。確認ダイアログは開いた後の伏せ字の切り替えに追従し、確認入力・操作対象・接続変更時の取消・古いコールバックの拒否を維持 |
+| #217 | 画面`tests/toast-privacy.test.mjs`・`tests/connection.test.mjs` | 通知を原文で保持し、実描画で title・detail・action ラベルを伏せる。表示済み通知が伏せ字のOFF/ONと後から増えた秘密値、hover・focus 中にも追従し、消去・上限・再試行・タイマーは維持 |
+| #218 | コンソール`backend/tests/test_ssh_error_privacy.py`・画面`tests/ssh-error-privacy.test.mjs` | 欠損した鍵・明示/既定の known_hosts のエラーに通常の診断文と別の安全な文面を持たせ、API・接続状態・履歴・通知へ通す。伏せ字中はローカルの home・所有者・任意パスを隠して対処方法を残し、通常表示は従来のまま。再接続・切断で現在の安全文を消し履歴は保持 |
+| #219 | 画面`tests/operational-log-privacy.test.mjs` | 配信開始・接続失敗・ボイス移動検知・復帰の運用ログから、現在の接続・insights が無くても過去のチャンネル名と guild/channel・移動前後の識別子を隠す。ログ本文・検索・概要・デプロイ出力・ツールチップ、複数行・複数対象・重なる照合範囲・補助面文字・伏せ字OFFの原文を確認し、現行のボットのログ書式の読み取りで対応表のずれも検出。#215 の systemd 以外の本文秘匿を緩めないことも確認 |
 
 DB移行の版をトランザクション外へ移す案は、現行の原子的なロールバックを壊すため採用しない。旧音声ワーカーの参照照合、ログの自動再接続停止、Fileとバッファの順序は既に実装済みのため維持する。配信停止の`CancelledError`も握りつぶさず、後片付け後に呼出元へ伝える契約を維持する。
 

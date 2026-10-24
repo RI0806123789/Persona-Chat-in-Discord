@@ -3,7 +3,7 @@ import { Icon } from "../components/Icon";
 import { Button, Card, Chip, InlineError, Notice, Sparkline, SplitButton, Stat, StatusChip } from "../components/ui";
 import { formatBytes, formatClock, formatDuration, formatNumber, formatPercent, formatRelative } from "../format";
 import { LEVEL_LABELS, classifyEntries, displayMessage } from "../logs";
-import { conversationLines, redactLogLine, usePrivacy } from "../privacy";
+import { conversationLines, redactLogLine, redactOperationalMessages, usePrivacy } from "../privacy";
 import type { PageId } from "../navigation";
 import { canStopService, ratioOf, serviceTone, usageTone } from "../status";
 import type { ConnectionState, Insights, LogEntry, Profile, Sample, ServiceAction, StatusResponse } from "../types";
@@ -386,6 +386,8 @@ function RecentLogs({ logs, onNavigate }: { logs: LogEntry[]; onNavigate: (page:
   const privacy = usePrivacy();
   // 会話の秘匿判定は表示範囲を切る前に行う。Tracebackの分類は直前40件を使う。
   const conversation = conversationLines(logs);
+  // 行をまたぐ運用ログの名前も、表示範囲を切る前に隠す。
+  const messages = redactOperationalMessages(logs.map(displayMessage), privacy).slice(-8);
   const tail = logs.slice(-40);
   const tailLevels = classifyEntries(tail);
   const tailConversation = conversation.slice(-40);
@@ -393,7 +395,7 @@ function RecentLogs({ logs, onNavigate }: { logs: LogEntry[]; onNavigate: (page:
   const recent = tail.slice(-8).map((entry, index) => ({
     entry,
     level: tailLevels[offset + index],
-    text: redactLogLine(displayMessage(entry), tailConversation[offset + index], privacy),
+    text: redactLogLine(messages[index], tailConversation[offset + index], privacy),
   }));
   return (
     <Card

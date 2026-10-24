@@ -3,7 +3,7 @@ import { ApiError, api, errorMessage } from "./api";
 import { Icon } from "./components/Icon";
 import { ConfirmDialog, ShortcutHelp, type ConfirmRequest } from "./components/overlays";
 import { CompactFab, ModalNavigationRail, NavigationBar, NavigationRail, type FabAction } from "./components/Sidebar";
-import { ToastProvider, useToast, type ToastInput } from "./components/toast";
+import { ToastProvider, ToastViewport, useToast } from "./components/toast";
 import { TopAppBar, type ThemeChoice } from "./components/TopBar";
 import { Kbd } from "./components/ui";
 import { useLogStream, useMediaQuery, useNow, usePolling, useStoredState } from "./hooks";
@@ -66,7 +66,7 @@ function isTyping(target: EventTarget | null): boolean {
 }
 
 function Console() {
-  const rawNotify = useToast();
+  const notify = useToast();
   const now = useNow();
 
   // ---- 表示の設定（ブラウザに覚えておく）
@@ -137,13 +137,6 @@ function Console() {
     [connection, profiles, insights, status?.git, dbUserNames],
   );
   const privacy = useMemo(() => createPrivacy(privacyOn, secrets), [privacyOn, secrets]);
-  const privacyRef = useRef(privacy);
-  privacyRef.current = privacy;
-  // 通知の詳細（接続エラーの文など）にもホスト名が入りうるので、出す前に伏せる
-  const notify = useCallback(
-    (toast: ToastInput) => rawNotify({ ...toast, title: privacyRef.current.redact(toast.title), detail: toast.detail && privacyRef.current.redact(toast.detail) }),
-    [rawNotify],
-  );
 
   useEffect(() => {
     if (themeChoice) document.documentElement.dataset.theme = themeChoice;
@@ -184,7 +177,7 @@ function Console() {
     (state: ConnectionState) => {
       const nextKey = `${state.profile?.id ?? ""}:${state.connected_at ?? ""}`;
       if (wasConnected.current && !state.connected && state.last_error) {
-        notify({ tone: "critical", title: "SSH 接続が切れました", detail: state.last_error });
+        notify({ tone: "critical", title: "SSH 接続が切れました", detail: state.last_error, detailSafe: state.last_error_safe ?? undefined });
       }
       if (!state.connected || dataConnectionKey.current !== nextKey) {
         requestScope.current.invalidate();
@@ -382,6 +375,7 @@ function Console() {
         tone: "critical",
         title: "接続できませんでした",
         detail: errorMessage(error),
+        detailSafe: error instanceof ApiError ? error.safeMessage : undefined,
         action: { label: "再試行", onClick: () => void handleConnectRef.current() },
       });
     } finally {
@@ -747,6 +741,7 @@ function Console() {
         <ConfirmDialog request={confirm} open={confirmOpen} onClose={() => setConfirmOpen(false)} />
         <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       </div>
+      <ToastViewport />
     </PrivacyContext.Provider>
   );
 }

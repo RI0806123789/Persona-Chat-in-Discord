@@ -26,8 +26,26 @@ KEEPALIVE_SECONDS = 30
 HISTORY_MAX = 200
 
 
+def _safe_config_location(path: Path, *, key: bool = False) -> str:
+    """既知の配置だけ残し、任意の所有者・ディレクトリ・ファイル名を画面へ出さない。"""
+    parts = [part for part in str(path).replace("\\", "/").split("/") if part]
+    if parts and parts[0].endswith(":"):
+        parts = parts[1:]
+    if ".ssh" not in parts:
+        return "<LOCAL_PATH>"
+    home = len(parts) >= 3 and parts[0].lower() in {"home", "users"} and parts[2] == ".ssh"
+    parent = "<LOCAL_HOME>" if home else "<LOCAL_PATH>"
+    filename = "<KEY_FILE>" if key else "known_hosts" if parts[-1] == "known_hosts" else "<KNOWN_HOSTS_FILE>"
+    return f"{parent}/.ssh/{filename}"
+
+
 class SshError(Exception):
-    """画面にそのまま表示してよい日本語のエラー。"""
+    """通常の診断文と、必要なら伏せ字用の安全な文面を持つ日本語のエラー。"""
+
+    def __init__(self, message: str, *, safe_message: str | None = None) -> None:
+        super().__init__(message)
+        # 通常の診断文は維持し、設定由来のローカル情報を含まない文面を別に運ぶ。
+        self.safe_message = safe_message
 
 
 class NotConnectedError(SshError):
@@ -57,6 +75,7 @@ class CommandRecord:
     duration_ms: int
     ok: bool
     error: str | None = None
+    error_safe: str | None = None
 
 
 class _ConnectionWatcher(asyncssh.SSHClient):
@@ -82,6 +101,7 @@ class SshSession:
         self.fingerprint: str | None = None
         self.server_info: dict | None = None
         self.last_error: str | None = None
+        self.last_error_safe: str | None = None
         self.history: deque[CommandRecord] = deque(maxlen=HISTORY_MAX)
         self.generation = 0  # 接続し直す前の集計結果を使い回さないための世代
         self.command_state_unknown = False
@@ -106,6 +126,7 @@ class SshSession:
             "fingerprint": self.fingerprint if self.connected else None,
             "server": self.server_info if self.connected else None,
             "last_error": self.last_error,
+            "last_error_safe": self.last_error_safe,
         }
 
     def history_list(self) -> list[dict]:
@@ -118,6 +139,7 @@ class SshSession:
         async with self._lock:
             await self._close_current()
             self.last_error = None
+            self.last_error_safe = None
             target = f"{profile.username + '@' if profile.username else ''}{profile.host}"
             if profile.port:
                 target += f":{profile.port}"
@@ -128,9 +150,11 @@ class SshSession:
                 conn = await asyncssh.connect(**options)
             except Exception as error:  # noqa: BLE001 — どんな失敗も画面向けの文言に変える
                 message = _describe_connect_error(error, profile)
+                safe_message = error.safe_message if isinstance(error, SshError) else None
                 self.last_error = message
-                self._record("SSH 接続", f"ssh {target}", None, started, ok=False, error=message)
-                raise SshError(message) from error
+                self.last_error_safe = safe_message
+                self._record("SSH 接続", f"ssh {target}", None, started, ok=False, error=message, error_safe=safe_message)
+                raise SshError(message, safe_message=safe_message) from error
 
             self._conn = conn
             self.profile = profile
@@ -152,6 +176,7 @@ class SshSession:
         self.fingerprint = None
         self.server_info = None
         self.last_error = None
+        self.last_error_safe = None
         if conn is None:
             return
         # 先に self._conn を空にしておくので、自分で閉じた場合は「切れた」扱いにならない
@@ -177,7 +202,11 @@ class SshSession:
         if profile.key_path:
             key_path = resolve_local_path(profile.key_path)
             if not key_path.is_file():
-                raise SshError(f"秘密鍵が見つかりません: {key_path}")
+                raise SshError(
+                    f"秘密鍵が見つかりません: {key_path}",
+                    safe_message=f"秘密鍵が見つかりません: {_safe_config_location(key_path, key=True)}"
+                    "（profiles.json の key_path の場所を確かめてください）",
+                )
             options["client_keys"] = [str(key_path)]
 
         if profile.known_hosts:
@@ -185,7 +214,9 @@ class SshSession:
             if not known_hosts.is_file():
                 raise SshError(
                     f"known_hosts が見つかりません: {known_hosts}"
-                    "（profiles.json の known_hosts の場所を確かめてください。null なら ~/.ssh/known_hosts を使います）"
+                    "（profiles.json の known_hosts の場所を確かめてください。null なら ~/.ssh/known_hosts を使います）",
+                    safe_message=f"known_hosts が見つかりません: {_safe_config_location(known_hosts)}"
+                    "（profiles.json の known_hosts の場所を確かめてください。null なら ~/.ssh/known_hosts を使います）",
                 )
             options["known_hosts"] = str(known_hosts)
         else:
@@ -195,7 +226,9 @@ class SshSession:
             if not default_known_hosts.is_file():
                 raise SshError(
                     f"{default_known_hosts} がありません。PowerShell で一度 ssh {profile.host} を実行し、"
-                    "フィンガープリントを確認してからホスト鍵を登録してください。"
+                    "フィンガープリントを確認してからホスト鍵を登録してください。",
+                    safe_message="<LOCAL_HOME>/.ssh/known_hosts がありません。PowerShell で一度 ssh <SSH_HOST> を実行し、"
+                    "フィンガープリントを確認してからホスト鍵を登録してください。",
                 )
             options["known_hosts"] = str(default_known_hosts)
 
@@ -216,6 +249,7 @@ class SshSession:
         self.server_info = None
         reason = f"（{exc}）" if exc else ""
         self.last_error = f"SSH 接続が切れました{reason}。もう一度接続してください。"
+        self.last_error_safe = None
         self.history.append(
             CommandRecord(time.time(), "接続断", "-", None, 0, ok=False, error=self.last_error)
         )
@@ -376,9 +410,10 @@ class SshSession:
         *,
         ok: bool,
         error: str | None = None,
+        error_safe: str | None = None,
     ) -> int:
         duration_ms = round((time.perf_counter() - started) * 1000)
-        self.history.append(CommandRecord(time.time(), label, command, exit_status, duration_ms, ok, error))
+        self.history.append(CommandRecord(time.time(), label, command, exit_status, duration_ms, ok, error, error_safe))
         return duration_ms
 
 
