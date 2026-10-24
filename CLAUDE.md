@@ -604,7 +604,7 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 - **ログ出力とエンコーディング**: Windows の既定コンソールは cp932 で、絵文字を `print` すると `UnicodeEncodeError` でそこの処理が止まる。`bot.py` の冒頭で標準出力を UTF-8（`errors="replace"`）へ再設定しているので通常は問題ないが、**`bot.py` を経由しない単体スクリプトから同じモジュールを動かすときは `PYTHONIOENCODING=utf-8` を付けること**。
 - **Discord の制限**: 2000文字を超える返信は `send_long_reply`/`split_message` を通す。`send_long_reply` は**1通目（元メッセージへの `reply`）**を返し、フィードバックのリアクション付与がそれを使う（戻り値を最後のチャンクに変えない。戻り値を無視する呼び出しはそのままでよい）。グラウンディング返信はリンクの埋め込みプレビューを抑制する。
 - **`ng/NG_WORD_private.txt`** は gitignore されており、読み込み時に `NG_WORD.txt` の上にマージされる。`/functions` の 🔄 NGワード再読込 で再起動なしに再読み込みできる。
-- **手書きのテキストは `utf-8-sig` で読む**: NGワード（`ng_word_service._load_words_from_file`）とペルソナ（`paths.load_prompt_template`）、`storage.load_json_file` が読む `projects.json`・`blacklist.json` は、メモ帳の「UTF-8 (BOM 付き)」保存でも先頭に U+FEFF を残さない。`utf-8` に戻さないこと — BOM は `strip()` で消えないため、1行目のコメントがNGワードとして登録され、1行目のNGワードは検知できなくなる（JSON は `json.loads` が BOM を拒否し、正しい中身ごと破損扱いで退避される）。`find_ng_words` は `dict.fromkeys` で重複を除き、文中に最初に現れた順を保つ（`set` だと順序が実行ごとに変わる）。
+- **手書きのテキストは `utf-8-sig` で読む**: NGワード（`ng_word_service._load_words_from_file`）とペルソナ（`paths.load_prompt_template`）、`storage.load_json_file` が読む `projects.json`・`blacklist.json`、旧設定の移行元（`deploy/migrate_config_to_env.py` の `_extract_keys` が読む旧 `config_private.py`・`config.py`）は、メモ帳の「UTF-8 (BOM 付き)」保存でも先頭に U+FEFF を残さない。`utf-8` に戻さないこと — BOM は `strip()` で消えないため、1行目のコメントがNGワードとして登録され、1行目のNGワードは検知できなくなる（JSON は `json.loads` が BOM を拒否し、正しい中身ごと破損扱いで退避される。旧設定は文字列の `ast.parse` が構文エラーにし、キー未設定で移行が止まる。#221）。`find_ng_words` は `dict.fromkeys` で重複を除き、文中に最初に現れた順を保つ（`set` だと順序が実行ごとに変わる）。
 
 ## 作業完了時の手順（PR 作成とプライバシーチェック）
 
