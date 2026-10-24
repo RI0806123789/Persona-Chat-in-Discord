@@ -12,6 +12,7 @@ from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import run_in_thread, spawn, wait_for_cleanup
 from persona_bot.config.constants import (
+    DOCUMENT_FAILURE_NOTICE,
     DOCUMENT_MEMORY_CONTEXT_LIMIT,
     DOCUMENT_ONLY_QUESTION,
     DOCUMENT_QUEUE_MAX_ACTIVE_PER_USER,
@@ -26,6 +27,7 @@ from persona_bot.config.constants import (
 from persona_bot.services.content_moderator import ContentModerator, screen_bot_response_with_status
 from persona_bot.core.database import Database
 from persona_bot.utils.discord_helpers import (
+    REPLY_ALLOWED_MENTIONS,
     clean_message_content,
     fetch_channel_history_text,
     format_grounding_sources,
@@ -44,6 +46,27 @@ from persona_bot.utils.usage_graph import UsageTracker
 
 # 処理が終わった（もう再処理しない）タスクのステータス
 _TERMINAL_STATUSES = {"completed", "failed"}
+
+
+class DocumentUserError(ValueError):
+    """利用者が対処でき、文面をそのまま失敗の返信へ載せてよい文書処理の失敗（#220）。
+
+    返信は公開チャンネルに出るため、文面は固定の案内と利用者自身の添付のファイル名だけで作り、
+    例外の本文・内部のパス・接続先を含めないこと。これ以外の例外（一般の ValueError を含む）は
+    内容に関わらず定型文だけを返し、詳細はログと失敗記録（queue_tasks.error）にだけ残す。
+    """
+
+
+def build_failure_notice(error: BaseException) -> str:
+    """失敗の返信の本文を作る。DocumentUserError 以外の例外の文面は載せない。"""
+    if isinstance(error, DocumentUserError):
+        return f"{DOCUMENT_FAILURE_NOTICE}\n詳細: {error}"
+    return DOCUMENT_FAILURE_NOTICE
+
+
+def describe_error(error: BaseException) -> str:
+    """ログと失敗記録へ残す内部向けの診断（例外の型と本文）。利用者への返信には使わない。"""
+    return f"{type(error).__name__}: {error}"
 
 
 class DocumentService:
@@ -190,7 +213,7 @@ class DocumentService:
                 if is_supported_document_attachment(attachment)
             ]
             if not attachments:
-                raise ValueError("対応する文書添付が見つかりませんでした。")
+                raise DocumentUserError("対応する文書の添付が見つかりませんでした。")
 
             # 文書タスクは投稿者の記憶スペースに紐付けて処理する（ユーザー別記憶）。
             author_id = str(task.get("author_id") or message.author.id)
@@ -282,19 +305,22 @@ class DocumentService:
             if self._stopping:
                 # 終了中の中断は processing のまま残し、次回起動時に復旧する。
                 return
-            print(f"文書タスク処理エラー: {error}")
+            # 診断（例外の型と本文）はログと失敗記録にだけ残し、公開の返信とは分ける（#220）。
+            diagnosis = describe_error(error)
+            print(f"文書タスク処理エラー: {diagnosis}")
             try:
                 await self._update_task(
                     task_id,
                     status="failed",
                     finished_at=utc_now_iso(),
-                    error=str(error),
+                    error=diagnosis,
                 )
             except Exception as update_error:
                 print(f"文書タスク: 失敗状態の保存に失敗しました: {type(update_error).__name__}")
             if message is not None:
                 try:
-                    await message.reply(f"エラーが発生しました。（文書処理に失敗しました）\n詳細: {error}")
+                    # 返信に載せるファイル名は利用者の入力なので、返信先の本人以外へは通知させない。
+                    await message.reply(build_failure_notice(error), allowed_mentions=REPLY_ALLOWED_MENTIONS)
                 except Exception as reply_error:
                     print(f"文書タスク失敗通知エラー: {reply_error}")
             return
@@ -335,7 +361,7 @@ class DocumentService:
         model_name: str,
     ) -> dict[str, Any]:
         if attachment.size > MAX_DOCUMENT_SIZE_BYTES:
-            raise ValueError(f"ファイルサイズが上限を超えています: {attachment.filename}")
+            raise DocumentUserError(f"ファイルサイズが上限を超えています: {attachment.filename}")
 
         suffix = Path(attachment.filename).suffix.lower()
         temp_path: Path | None = None
@@ -372,7 +398,7 @@ class DocumentService:
             temp_file.close()
             temp_bytes = await attachment.read()
             if len(temp_bytes) > MAX_DOCUMENT_SIZE_BYTES:
-                raise ValueError(f"ファイルサイズが上限を超えています: {attachment.filename}")
+                raise DocumentUserError(f"ファイルサイズが上限を超えています: {attachment.filename}")
             # 書き込み完了まで待ち、キャンセル時も回収後の再作成を防ぐ。
             await run_in_thread(temp_path.write_bytes, temp_bytes)
             downloaded = True
@@ -396,12 +422,13 @@ def validate_pdf_file(temp_path: Path) -> None:
     try:
         from pypdf import PdfReader
     except ImportError as error:
-        # 失敗の詳細はユーザーへの返信にも載るため、英語の例外ではなく原因が分かる文にする
+        # 利用者には対処できないサーバー側の不足なので返信には載せない（定型文になる。#220）。
+        # ログと失敗記録で原因が分かるよう、英語の例外ではなく原因が分かる文にする。
         raise ValueError("PDFの検証に必要な pypdf がインストールされていません。") from error
     with temp_path.open("rb") as file:
         reader = PdfReader(file)
         if reader.is_encrypted:
-            raise ValueError("PDFが暗号化されています。")
+            raise DocumentUserError("PDFが暗号化されています。パスワードを外してから送ってください。")
 
 
 def validate_text_file(temp_path: Path) -> None:
@@ -412,7 +439,13 @@ def validate_text_file(temp_path: Path) -> None:
     # 単純な decode() だと正常な日本語ファイルが境界位置次第で拒否される。
     truncated = len(preview_bytes) >= TEXT_VALIDATION_PREVIEW_BYTES
     decoder = codecs.getincrementaldecoder("utf-8-sig")()
-    decoder.decode(preview_bytes, final=not truncated)
+    try:
+        decoder.decode(preview_bytes, final=not truncated)
+    except UnicodeDecodeError as error:
+        # 英語のデコードエラーの文面ではなく、利用者が直せる案内を返す（元の例外は __cause__ に残る）。
+        raise DocumentUserError(
+            "テキストを UTF-8 として読み取れませんでした。UTF-8 で保存し直してから送ってください。"
+        ) from error
 
 
 async def validate_document_file(temp_path: Path, suffix: str) -> None:
