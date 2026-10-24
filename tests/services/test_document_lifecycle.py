@@ -20,7 +20,7 @@ from persona_bot.core.app_state import BotState
 from tests.helpers.persona_helpers import install_persona_catalog
 from persona_bot.core.database import Database
 from persona_bot.services import document_service, memory_service
-from persona_bot.services.document_service import DocumentService, validate_pdf_file
+from persona_bot.services.document_service import DocumentService, DocumentUserError, validate_pdf_file
 from persona_bot.services.memory_service import MemoryService
 
 
@@ -332,7 +332,9 @@ class PdfStreamTests(unittest.TestCase):
                     if outcome == "success":
                         validate_pdf_file(path)
                     else:
-                        with self.assertRaises(ValueError):
+                        # 暗号化だけが利用者へ伝える検証エラー。読込側の例外はそのまま伝わる（#220）。
+                        expected = DocumentUserError if outcome == "encrypted" else ValueError
+                        with self.assertRaises(expected):
                             validate_pdf_file(path)
                 self.assertTrue(streams[0].closed)
                 path.unlink()
@@ -349,7 +351,7 @@ class PdfStreamTests(unittest.TestCase):
                 with path.open("wb") as stream:
                     writer.write(stream)
                 if encrypted:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(DocumentUserError):
                         validate_pdf_file(path)
                 else:
                     validate_pdf_file(path)

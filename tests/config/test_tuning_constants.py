@@ -37,8 +37,9 @@ class DocumentTuningTests(unittest.TestCase):
             for content in (b"a\xffbc", b"\xe3"):
                 with self.subTest(content=content):
                     path.write_bytes(content)
-                    with self.assertRaises(UnicodeDecodeError):
+                    with self.assertRaises(module.DocumentUserError) as raised:
                         module.validate_text_file(path)
+                    self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
 
 
 class ModerationAndChoiceTuningTests(unittest.TestCase):
