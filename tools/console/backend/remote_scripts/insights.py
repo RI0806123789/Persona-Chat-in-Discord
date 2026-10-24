@@ -124,37 +124,106 @@ def choice_names(list_name):
     return names
 
 
-def persona_settings():
-    """prompts/personas.json から {値: 表示名} と既定のペルソナの値を読む。
+def text_constant(values, name, default):
+    value = values.get(name)
+    return value if isinstance(value, str) and value else default
 
-    ver0.1.8 以降のボットはペルソナの固定の選択肢を持たず、表示名と既定は利用者が
-    サーバー上に置く personas.json に書く。無い・読めない場合は空にし、旧版の
-    choices.py の選択肢とファイル名での表示に任せる。
-    """
+
+# ---------------------------------------------------------------- ペルソナ
+# ver0.1.8 以降のボット（persona_bot/config/personas.py がある版）は固定の選択肢を持たず、
+# prompts/ の .txt と任意の prompts/personas.json から一覧と既定を作る。ここでは
+# ボットを import せずに同じ規則を再現する。旧版は choices.py の選択肢をそのまま使う。
+
+PERSONAS_SOURCE = find_source("persona_bot/config/personas.py")
+PERSONA_CONSTANTS = read_constants(PERSONAS_SOURCE)
+PERSONA_VALUE_PREFIX = text_constant(CONSTANTS, "PERSONA_VALUE_PREFIX", "../prompts/")
+PROMPT_TEMPLATE_FILE_NAME = text_constant(CONSTANTS, "PROMPT_TEMPLATE_FILE_NAME", "00_prompt_format.txt")
+BUILTIN_PERSONA_NAME = text_constant(PERSONA_CONSTANTS, "BUILTIN_PERSONA_DISPLAY_NAME", "標準（組み込み）")
+_select_limit = CONSTANTS.get("DISCORD_SELECT_VALUE_MAX_LENGTH")
+SELECT_VALUE_MAX_LENGTH = (
+    _select_limit if isinstance(_select_limit, int) and not isinstance(_select_limit, bool) and _select_limit > 0 else 100
+)
+
+
+def is_persona_file_name(name):
+    """ボットの personas._is_persona_file_name と同じ判定（テンプレート・隠し・.txt 以外を除く）。"""
+    return (
+        bool(name)
+        and "/" not in name
+        and "\\" not in name
+        and not name.startswith(".")
+        and name != PROMPT_TEMPLATE_FILE_NAME
+        and Path(name).suffix.lower() == ".txt"
+    )
+
+
+def persona_file_name(value):
+    """保存値がペルソナの形（"../prompts/<名前>.txt"）ならファイル名、違えば None。"""
+    if not isinstance(value, str) or not value.startswith(PERSONA_VALUE_PREFIX):
+        return None
+    name = value[len(PERSONA_VALUE_PREFIX):]
+    return name if is_persona_file_name(name) else None
+
+
+def load_persona_settings():
+    """prompts/personas.json を読む。無い・読めない場合は空にする（ボットも無視して続行する）。"""
     path = BOT_DIR / "prompts" / "personas.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return {}, None
+        return {}
     except (OSError, ValueError):
         note("prompts/personas.json を読めませんでした。JSON の形式と読み取り権限を確認してください。")
-        return {}, None
+        return {}
     if not isinstance(data, dict):
         note("prompts/personas.json の最上位がオブジェクトではありません。")
-        return {}, None
+        return {}
+    return data
+
+
+def load_persona_catalog():
+    """現行版のボットと同じ規則で、ペルソナの {値: 表示名}（一覧の順）と既定の値を作る。
+
+    ボットは起動時とキャラ設定パネルを開いたときに読み直した一覧（スナップショット）で
+    応答する。ここでは今のファイル構成から推定するため、その後に足したり消したりした
+    ファイルは、ボットにはまだ反映されていないことがある。prompts/ を読めない場合は
+    None を返し、推定しない。
+    """
+    prompts = BOT_DIR / "prompts"
+    files = set()
+    try:
+        if prompts.is_dir():
+            for path in prompts.iterdir():
+                name = path.name
+                # ボットはセレクトの値の上限を超える名前を選択肢から外す
+                if (is_persona_file_name(name) and len(PERSONA_VALUE_PREFIX + name) <= SELECT_VALUE_MAX_LENGTH
+                        and path.is_file()):
+                    files.add(name)
+    except OSError:
+        note("prompts/ を読めませんでした。読み取り権限を確認してください。")
+        return None
+    settings = load_persona_settings()
+    entries = settings.get("personas")
+    entries = entries if isinstance(entries, dict) else {}
+    # personas.json に書いた順を優先し、書いていないファイルはファイル名の順に続ける
+    ordered = [name for name in entries if name in files] + sorted(name for name in files if name not in entries)
     names = {}
-    entries = data.get("personas")
-    for file_name, entry in entries.items() if isinstance(entries, dict) else ():
-        name = entry.get("name") if isinstance(entry, dict) else None
-        if isinstance(name, str) and name.strip():
-            names["../prompts/" + file_name] = " ".join(name.split())
-    default = data.get("default")
-    return names, ("../prompts/" + default) if isinstance(default, str) and default else None
+    for name in ordered:
+        entry = entries.get(name)
+        display = entry.get("name") if isinstance(entry, dict) else None
+        display = " ".join(display.split()) if isinstance(display, str) else ""
+        names[PERSONA_VALUE_PREFIX + name] = display or Path(name).stem
+    default = settings.get("default")
+    if isinstance(default, str) and PERSONA_VALUE_PREFIX + default in names:
+        default_value = PERSONA_VALUE_PREFIX + default
+    else:
+        # default が無い・見つからないときは先頭、1つも無ければ空（組み込みの標準）
+        default_value = next(iter(names), "")
+    return names, default_value
 
 
-PERSONA_NAMES, PERSONA_DEFAULT = persona_settings()
-# personas.json の表示名を優先し、旧版の choices.py の選択肢で補う
-PERSONAS = {**choice_names("PERSONA_CHOICES"), **PERSONA_NAMES}
+PERSONA_CATALOG = load_persona_catalog() if PERSONAS_SOURCE else None
+LEGACY_PERSONAS = choice_names("PERSONA_CHOICES")
 MODELS = choice_names("MODEL_CHOICES")
 MODES = choice_names("RESPOND_MODE_CHOICES")
 
@@ -200,10 +269,41 @@ def load_guild_settings():
     return rows
 
 
+def describe_persona(row):
+    """保存値と、ボットが応答に使うペルソナ（現行版はファイル構成からの推定）をまとめる。
+
+    persona_source は saved（保存した選択）・default（未選択なので既定）・
+    missing（保存したファイルが見つからないので既定）。ボットは見つからない保存値を
+    消さずに既定で応答するため、保存値（persona_missing）と実効の表示名を分けて返す。
+    """
+    saved = row.get("prompt_file")
+    saved = saved if isinstance(saved, str) else ""
+    if PERSONA_CATALOG is None:
+        # 旧版（または prompts/ を読めない）: 保存値か既定（DEFAULT_PROMPT_FILE）の表示名
+        value = saved or text_constant(CONSTANTS, "DEFAULT_PROMPT_FILE", "")
+        return {
+            "persona": LEGACY_PERSONAS.get(value, Path(value).stem or None),
+            "persona_source": "saved" if saved else "default",
+            "persona_missing": None,
+            "persona_builtin": False,
+        }
+    names, default_value = PERSONA_CATALOG
+    if saved in names:
+        effective, source = saved, "saved"
+    else:
+        effective = default_value
+        # ペルソナの形でない保存値は、ボットが復元時に破棄して既定へ戻す
+        source = "missing" if persona_file_name(saved) else "default"
+    return {
+        "persona": names[effective] if effective else BUILTIN_PERSONA_NAME,
+        "persona_source": source,
+        "persona_missing": Path(persona_file_name(saved)).stem if source == "missing" else None,
+        "persona_builtin": not effective,
+    }
+
+
 def describe_settings(row):
     """DB の行（無ければ空）を、既定値を補った表示用の設定にする。"""
-    # 未保存のサーバーは既定のペルソナ（personas.json の default、旧版は DEFAULT_PROMPT_FILE）
-    prompt_file = row.get("prompt_file") or PERSONA_DEFAULT or CONSTANTS.get("DEFAULT_PROMPT_FILE") or ""
     model = row.get("model_name") or CONSTANTS.get("DEFAULT_MODEL_NAME") or ""
     mode = row.get("respond_mode") or CONSTANTS.get("DEFAULT_RESPOND_MODE") or ""
 
@@ -216,7 +316,7 @@ def describe_settings(row):
     else:
         autonomous = None  # この版の DB には列が無い（自律行動に未対応の版）
     return {
-        "persona": PERSONAS.get(prompt_file, Path(prompt_file).stem or None),
+        **describe_persona(row),
         "model": MODELS.get(model, model or None),
         "respond_mode": MODES.get(mode, mode or None),
         "grounding": flag("grounding_enabled", True),
@@ -439,6 +539,8 @@ TOKEN = read_token()
 result["source_dir"] = WORK_DIR.name if WORK_DIR else None
 result["version"] = deployed_version()
 result["autonomous_supported"] = "autonomous_enabled" in SETTINGS_COLUMNS
+# ペルソナを prompts/ のファイル構成から推定したか（現行版で prompts/ を読めたとき）
+result["persona_estimated"] = PERSONA_CATALOG is not None
 result["discord"] = collect_discord(settings_rows)
 result["dm_settings"] = describe_settings(settings_rows.get(0, {}))
 result["activity"] = collect_activity()

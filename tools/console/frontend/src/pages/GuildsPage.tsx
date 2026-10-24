@@ -2,6 +2,7 @@ import { LoadingIndicator } from "../components/expressive";
 import { Icon, type IconName } from "../components/Icon";
 import { Card, Chip, InlineError, Notice, StatusChip } from "../components/ui";
 import { formatRelative } from "../format";
+import { describePersona, PERSONA_ESTIMATE_NOTE } from "../personaView";
 import { usePrivacy } from "../privacy";
 import type { GuildSettingsView, Insights, Profile } from "../types";
 import { NotConnected } from "./shared";
@@ -98,6 +99,7 @@ export function GuildsPage({
         <Notice>
           サーバー名・人数・ボイス接続は Discord API（サーバー上のトークンで読み取り）、設定は bot.db の guild_settings（読み取り専用）から取得しています
           （{insightsFetchedAt ? formatRelative(insightsFetchedAt * 1000, now) : "—"}）。話したいゲージや配信中のセッションはボットのメモリの中にしか無いため、ボットを変えずには表示できません。
+          {insights.persona_estimated && PERSONA_ESTIMATE_NOTE}
         </Notice>
       </div>
     </div>
@@ -105,8 +107,9 @@ export function GuildsPage({
 }
 
 function SettingsList({ settings }: { settings: GuildSettingsView }) {
+  const persona = describePersona(settings);
   const rows: { icon: IconName; label: string; value: string; muted?: boolean }[] = [
-    { icon: "sparkle", label: "ペルソナ", value: settings.persona ?? "—" },
+    { icon: "sparkle", label: "ペルソナ", value: persona.value },
     { icon: "bolt", label: "モデル", value: settings.model ?? "—" },
     { icon: "chat", label: "応答", value: settings.respond_mode ?? "—" },
     { icon: "search", label: "Google 検索", value: settings.grounding ? "ON" : "OFF" },
@@ -133,6 +136,11 @@ function SettingsList({ settings }: { settings: GuildSettingsView }) {
           </li>
         ))}
       </ul>
+      {persona.notes.map((note) => (
+        <span key={note} className="body-small muted">
+          {note}
+        </span>
+      ))}
       {!settings.saved && <span className="body-small muted">保存された設定が無いため、既定値で動いています。</span>}
     </>
   );
