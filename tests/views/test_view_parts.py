@@ -1,15 +1,18 @@
 """エフェメラルパネルの往復後もWebhook経由で時間切れ表示にできることを確認する。"""
 
+import asyncio
 from pathlib import Path
 import io
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.views.view_parts import BackButton, PanelView, send_graph_ephemeral, swap_panel
+from persona_bot.core.background import TaskOwner
+from discord import ui
 
 
 class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
@@ -98,3 +101,43 @@ class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await send_graph_ephemeral(interaction, buffer, "graph.png", "グラフ", followup=followup)
                 self.assertTrue(buffer.closed)
                 self.assertEqual(sending.await_count, 2)
+
+    async def test_ui_callback_rejected_after_shutdown_started(self):
+        """終了開始後に新しい UI 操作が拒否されることを確認する（#248）。"""
+        owner = TaskOwner()
+        panel = PanelView(timeout_notice="時間切れです。", task_owner=owner)
+        self.addCleanup(panel.stop)
+
+        button = Mock(spec=ui.Button)
+        button.custom_id = "test_button"
+        button._provided_custom_id = True
+        button._is_v2 = Mock(return_value=False)
+        button._total_count = 1
+        button.row = 0
+        button.width = 1
+
+        async def callback(interaction):
+            pass
+
+        button.callback = callback
+        button._run_checks = AsyncMock(return_value=True)
+        button._refresh_state = Mock()
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(is_done=Mock(return_value=False), defer=AsyncMock()),
+            extras={}, message=SimpleNamespace(edit=AsyncMock()),
+            data={},
+        )
+
+        panel._panel_state.current = panel
+        panel.add_item(button)
+
+        # 終了フラグを立てる
+        owner.stopping = True
+
+        # 終了開始後のディスパッチは None を返す（受付拒否）
+        result = panel._dispatch_item(button, interaction)
+        self.assertIsNone(result)
+
+        # interaction_check も False を返す
+        self.assertFalse(await panel.interaction_check(interaction))
