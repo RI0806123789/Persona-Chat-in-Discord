@@ -32,7 +32,7 @@ from deploy import DeployManager
 from local_repo import local_schema_version
 from managed_server import MANAGED_ENV, run_server
 from profiles import Profile, ProfileError, load_profiles
-from ssh_session import CommandStateUnknownError, NotConnectedError, SshError, SshSession
+from ssh_session import CommandResult, CommandStateUnknownError, NotConnectedError, SshError, SshSession
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -48,6 +48,9 @@ ALLOWED_ORIGINS = {f"http://{host}:{port}" for host in ("127.0.0.1", "localhost"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 ACTION_LABELS = {"start": "起動", "stop": "停止", "restart": "再起動"}
+SERVICE_CONTROL_TIMEOUT_SECONDS = 60
+SERVICE_JOB_TIMEOUT_SECONDS = 60
+SERVICE_JOB_POLL_SECONDS = 0.5
 
 
 @asynccontextmanager
@@ -70,6 +73,7 @@ deploys = DeployManager()
 _connection_change_lock = asyncio.Lock()
 operations: deque[dict] = deque(maxlen=100)
 _operation_ids = itertools.count(1)
+_service_completion_pending = False
 
 
 @app.middleware("http")
@@ -123,7 +127,9 @@ def get_connection() -> dict:
 
 def _connection_snapshot() -> dict:
     """接続先によらない更新操作の停止状態も、接続・切断の応答に含める。"""
-    return {**session.snapshot(), "state_unknown": session.command_state_unknown or deploys.state_unknown}
+    return {**session.snapshot(), "state_unknown": (
+        session.command_state_unknown or deploys.state_unknown or _service_completion_pending
+    )}
 
 
 @app.post("/api/connect")
@@ -353,6 +359,10 @@ async def control_service(action: str, body: ServiceTarget | None = None) -> dic
                 if task.cancelled():
                     raise
                 canceled = True
+            except Exception as error:
+                if canceled:
+                    raise asyncio.CancelledError from error
+                raise
         if canceled:
             raise asyncio.CancelledError
         return operation
@@ -368,12 +378,9 @@ async def _control_service(action: str, body: ServiceTarget | None) -> dict:
     if body is None or body.profile_id != profile.id or body.connected_at != session.connected_at:
         raise HTTPException(status_code=409, detail="確認後に接続状態が変わりました。接続先を確認して操作をやり直してください。")
     label = ACTION_LABELS[action]
-    command = rc.service_control_command(profile.service, action)
-    result = await session.run(command, label=f"サービス{label}", timeout=60)
+    result = await _run_service_control(profile.service, action, label)
 
     ok = result.exit_status == 0
-    if ok:
-        _invalidate_insights()
     if ok:
         message = f"{profile.service} を{label}しました。"
     elif "password is required" in result.stderr or "a terminal is required" in result.stderr:
@@ -393,6 +400,74 @@ async def _control_service(action: str, body: ServiceTarget | None) -> dict:
     }
     operations.appendleft(operation)
     return operation
+
+
+def _mark_service_completion_pending() -> None:
+    global _service_completion_pending
+    _service_completion_pending = True
+
+
+async def _run_service_control(service: str, action: str, label: str) -> CommandResult:
+    """SSHの終了とsystemdジョブの終了を両方確認するまで、共通ロック内で待つ。"""
+    global _service_completion_pending
+    # 送信前の名前・操作の検証失敗は、遠隔での実行が不明な状態と区別する。
+    command = rc.service_control_command(service, action)
+    try:
+        try:
+            result = await session.run(
+                command, label=f"サービス{label}",
+                timeout=SERVICE_CONTROL_TIMEOUT_SECONDS, wait_for_exit=True,
+                on_waiting=_mark_service_completion_pending,
+            )
+        except (SshError, asyncio.CancelledError):
+            # 通信断・終了通知なしでは追加コマンドを送らない。既知の終了後の
+            # 期限超過・中断は、失敗を返す前にもsystemd側の残留ジョブを確かめる。
+            if not session.command_state_unknown:
+                await _wait_for_service_job(service)
+                _invalidate_insights()
+            raise
+        except Exception as error:
+            session.command_state_unknown = True
+            raise CommandStateUnknownError(
+                "サービス操作中に予期しないエラーが起き、遠隔操作の終了を確認できません。"
+                "サーバーで処理の終了とサービスの状態を確認してからバックエンドを起動し直してください。"
+            ) from error
+        await _wait_for_service_job(service)
+        _invalidate_insights()
+        return result
+    finally:
+        _service_completion_pending = False
+
+
+async def _wait_for_service_job(service: str) -> None:
+    """systemctl自体の終了だけでは残り得る、当該unitのジョブを期限付きで確認する。"""
+    _mark_service_completion_pending()
+    deadline = time.monotonic() + SERVICE_JOB_TIMEOUT_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SshError("systemdジョブの終了確認が期限を超えました。")
+            result = await session.run(
+                rc.service_job_command(service), label="サービス操作の終了確認",
+                timeout=min(SERVICE_JOB_TIMEOUT_SECONDS, remaining),
+            )
+            if result.exit_status != 0:
+                raise SshError("systemdジョブの状態を取得できませんでした。")
+            job = rc.parse_service_job(result.stdout)
+            if job == 0:
+                return
+            _mark_service_completion_pending()
+            await asyncio.sleep(min(SERVICE_JOB_POLL_SECONDS, max(0, deadline - time.monotonic())))
+    except Exception as error:
+        session.command_state_unknown = True
+        raise CommandStateUnknownError(
+            "サービス操作のsystemdジョブが終了したことを確認できず、状態不明です。"
+            "サーバーで処理の終了とサービスの状態を確認してからバックエンドを起動し直してください。"
+        ) from error
+    except asyncio.CancelledError:
+        session.command_state_unknown = True
+        raise
 
 
 @app.get("/api/operations")

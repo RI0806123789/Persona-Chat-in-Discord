@@ -83,6 +83,34 @@ const {TopAppBar} = load("components/TopBar.tsx");
 const {ConnectionPage} = load("pages/ConnectionPage.tsx");
 const {NotConnected} = load("pages/shared.tsx");
 const {DeployCard} = load("pages/DeployCard.tsx");
+const {GuildsPage} = load("pages/GuildsPage.tsx");
+
+test("#251 サーバー一覧の部分取得は既存行を表示しながら全件取得と区別する", () => {
+  const settings = {persona: null, persona_source: "default", persona_missing: null, persona_builtin: false,
+    model: null, respond_mode: null, grounding: false, auto_topic_enabled: false,
+    auto_topic_interval_hours: 6, autonomous_enabled: false, saved: true};
+  const props = {connected: true, connecting: false, onConnect: noop, selectedProfile: profile,
+    insights: {discord: {ok: false, partial: true, error: "取得上限", guilds: [{name: "架空の取得済みサーバー",
+      members: 1, online: 1, voice_channel: null, settings}]}, dm_settings: settings},
+    insightsFetchedAt: 1, insightsError: null, now: 1000};
+  const partial = html(GuildsPage, props, false);
+  assert.ok(partial.includes("サーバー一覧は一部取得です"));
+  assert.ok(partial.includes("取得済みの一覧と保存済み設定だけ"));
+  assert.ok(partial.includes("架空の取得済みサーバー"));
+  const unavailable = html(GuildsPage, {...props, insights: {...props.insights,
+    discord: {...props.insights.discord, partial: false}}}, false);
+  assert.ok(unavailable.includes("サーバー一覧を取得できませんでした"));
+  assert.equal(unavailable.includes("サーバー一覧は一部取得です"), false);
+  const complete = html(GuildsPage, {...props, insights: {...props.insights,
+    discord: {...props.insights.discord, ok: true, partial: false, error: null}}}, false);
+  assert.equal(complete.includes("サーバー一覧は一部取得です"), false);
+  const overview = html(OverviewPage, {connected: true, status: null, samples: [], logs: [], now: 1000,
+    insights: {...props.insights, errors: [], activity: {window_hours: 24, gemini_calls: 0, gemini_tokens: 0,
+      conversations: 0, last_conversation_at: null, gateway_connects: 0, gateway_resumes: 0,
+      gateway_invalidated: 0, heartbeat_blocked: 0, exceptions: 0, autonomous_events: []}}}, false);
+  assert.ok(overview.includes("一部取得"));
+  assert.ok(overview.includes("サーバー一覧で取得済みの情報を確認してください"));
+});
 
 test("#216 専用欄は短い値やredact対象外のラベルでも全体を隠す", () => {
   const shortProfile = {...profile, label: "xy"};

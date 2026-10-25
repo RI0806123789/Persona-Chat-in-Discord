@@ -78,6 +78,19 @@ def service_control_command(service: str, action: str) -> str:
     return f"sudo -n systemctl {action} {_check_safe_name(service)}"
 
 
+def service_job_command(service: str) -> str:
+    """値のないJobも明示行で取得し、応答欠落とジョブなしを区別する。"""
+    return f"systemctl show {_check_safe_name(service)} --no-pager --all --property=Job"
+
+
+def parse_service_job(text: str) -> int:
+    """systemctlの空のJob表示と、版による0表示をジョブなしとして扱う。"""
+    match = re.fullmatch(r"Job=([0-9]*)", text.strip())
+    if match is None:
+        raise ValueError("systemdジョブの応答形式を確認できませんでした。")
+    return int(match.group(1) or "0")
+
+
 def journal_command(service: str, *, lines: int, follow: bool, use_sudo: bool) -> str:
     """journald からボットのログを JSON 形式で取り出す（1行が1件）。"""
     lines = max(1, min(int(lines), MAX_LOG_LINES))

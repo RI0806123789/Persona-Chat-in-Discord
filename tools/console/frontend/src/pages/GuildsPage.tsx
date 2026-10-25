@@ -52,7 +52,10 @@ export function GuildsPage({
     <div className="grid">
       {!discord.ok && (
         <div className="span-12">
-          <InlineError>Discord API: {discord.error}（サーバー一覧を取得できませんでした）</InlineError>
+          <InlineError>
+            Discord API: {discord.error}
+            {discord.partial ? "（サーバー一覧は一部取得です。取得済みの一覧と保存済み設定だけを表示しています）" : "（サーバー一覧を取得できませんでした）"}
+          </InlineError>
         </div>
       )}
 

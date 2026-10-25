@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import app
+import remote_commands as rc
 from deploy import DeployManager, DeployRunner, StepFailed, new_record
 from profiles import Profile
 from ssh_session import CommandResult, SshError, SshSession
@@ -136,6 +137,8 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.tasks = []
 
         async def run(command, **kwargs):
+            if command == rc.service_job_command(self.selected.service):
+                return CommandResult("Job=\n", "", 0, 1)
             self.events.append("service-start")
             self.started.set()
             await self.release.wait()
@@ -293,10 +296,9 @@ class ServiceOperationConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(app._connection_change_lock.locked())
 
     async def test_command_error_releases_lock_for_next_operation(self):
-        self.session.run.side_effect = SshError("架空の操作失敗")
+        self.session.run.side_effect = [SshError("架空の操作失敗"), CommandResult("Job=\n", "", 0, 1)]
         with self.assertRaises(SshError):
             await app.control_service("stop", self.target)
         self.assertFalse(app._connection_change_lock.locked())
-        self.session.run.side_effect = None
-        self.session.run.return_value = CommandResult("", "", 0, 1)
+        self.session.run.side_effect = [CommandResult("", "", 0, 1), CommandResult("Job=\n", "", 0, 1)]
         self.assertTrue((await app.control_service("restart", self.target))["ok"])

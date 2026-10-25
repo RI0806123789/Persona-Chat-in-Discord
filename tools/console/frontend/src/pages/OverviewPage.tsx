@@ -314,7 +314,11 @@ function BotInsightsCard({
           hint={`${insights.version ?? "版不明"}${insights.source_dir ? `（${insights.source_dir}/）` : ""}`}
         />
         <Stat label="Discord API の応答" value={discord.api_rtt_ms != null ? `${discord.api_rtt_ms} ms` : "—"} hint="サーバー → Discord の往復" />
-        <Stat label="参加サーバー" value={discord.ok ? `${guilds.length}` : "—"} hint={discord.ok ? `メンバー ${members} 人 · オンライン ${online} 人` : undefined} />
+        <Stat
+          label="参加サーバー"
+          value={discord.ok ? `${guilds.length}` : discord.partial ? "一部取得" : "—"}
+          hint={discord.ok ? `メンバー ${members} 人 · オンライン ${online} 人` : discord.partial ? "サーバー一覧で取得済みの情報を確認してください" : undefined}
+        />
         <Stat
           label="ボイス接続"
           value={discord.ok ? `${voiceGuilds.length}` : "—"}

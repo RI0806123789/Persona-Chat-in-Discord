@@ -136,8 +136,10 @@ import io, json, subprocess, urllib.request, urllib.error, urllib.parse
 _responses = {responses!r}
 _journal = {journal!r}
 def _fake_urlopen(request, **kwargs):
-    path = urllib.parse.urlsplit(request.full_url).path.removeprefix('/api/v10')
-    value = (_responses or {{}}).get(path, 404)
+    parsed = urllib.parse.urlsplit(request.full_url)
+    path = parsed.path.removeprefix('/api/v10')
+    target = path + ('?' + parsed.query if parsed.query else '')
+    value = (_responses or {{}}).get(target, (_responses or {{}}).get(path, 404))
     if isinstance(value, int):
         raise urllib.error.HTTPError(request.full_url, value, 'test', {{}}, None)
     return io.BytesIO(json.dumps(value).encode())
@@ -225,6 +227,31 @@ subprocess.run = _fake_run
         self.assertIs(guild["settings"]["autonomous_enabled"], False)
         self.assertFalse(guild["settings"]["saved"])
         for secret in (FAKE_TOKEN, str(GUILD_ID), str(GUILD_ID + 1), str(GUILD_ID + 2)):
+            self.assertNotIn(secret, self.stdout)
+
+    def test_paginated_discord_script_keeps_settings_after_first_200_guilds(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        con = sqlite3.connect(self.root / "memory/bot.db")
+        try:
+            con.execute("INSERT INTO guild_settings (guild_id, respond_mode) VALUES (?, 'all')", (GUILD_ID + 200,))
+            con.commit()
+        finally:
+            con.close()
+        guilds = [{"id": str(GUILD_ID + index), "name": f"架空サーバー {index}"} for index in range(201)]
+        responses = {
+            "/users/@me": {"username": "架空ボット"},
+            "/users/@me/guilds?with_counts=true&limit=200": guilds[:200],
+            f"/users/@me/guilds?with_counts=true&limit=200&after={GUILD_ID + 199}": guilds[200:],
+        }
+        data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
+        self.assertTrue(data["discord"]["ok"])
+        self.assertFalse(data["discord"]["partial"])
+        self.assertEqual(len(data["discord"]["guilds"]), 201)
+        last = data["discord"]["guilds"][-1]
+        self.assertEqual(last["name"], "架空サーバー 200")
+        self.assertTrue(last["settings"]["saved"])
+        self.assertEqual(last["settings"]["respond_mode"], "すべての発言に反応")
+        for secret in (FAKE_TOKEN, str(GUILD_ID), str(GUILD_ID + 200)):
             self.assertNotIn(secret, self.stdout)
 
     def test_discord_errors_keep_db_and_log_results(self):

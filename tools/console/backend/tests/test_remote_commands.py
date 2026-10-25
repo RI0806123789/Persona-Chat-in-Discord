@@ -27,6 +27,17 @@ class CommandBuildTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             rc.service_control_command("bot", "reboot")
 
+    def test_service_job_requires_an_explicit_property_line(self):
+        self.assertEqual(rc.service_job_command("bot"), "systemctl show bot --no-pager --all --property=Job")
+        for text, expected in (("Job=\n", 0), ("Job=0\n", 0), ("Job=42\n", 42)):
+            with self.subTest(text=text):
+                self.assertEqual(rc.parse_service_job(text), expected)
+        for text in ("", "Job=-1", "42", "Job=0\nJob=42", "Job=0\nActiveState=active"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                rc.parse_service_job(text)
+        with self.assertRaises(ValueError):
+            rc.service_job_command("bot; id")
+
     def test_rejects_service_name_with_shell_symbols(self):
         with self.assertRaises(ValueError):
             rc.service_show_command("bot; rm -rf ~")
