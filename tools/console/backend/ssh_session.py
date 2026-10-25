@@ -266,7 +266,7 @@ class SshSession:
         wait_for_exit: bool = False,
         on_waiting: Callable[[], None] | None = None,
     ) -> CommandResult:
-        """単発実行。デプロイだけ wait_for_exit を指定し、期限・中断後も終了を待つ。"""
+        """単発実行。更新操作は wait_for_exit を指定し、期限・中断後も終了を待つ。"""
         if wait_for_exit:
             return await self._run_waiting_for_exit(
                 command, label=label, input=input, timeout=timeout, on_waiting=on_waiting,
@@ -302,7 +302,7 @@ class SshSession:
         timeout: float,
         on_waiting: Callable[[], None] | None,
     ) -> CommandResult:
-        """デプロイの実行は終了確認と回収まで所有し、次の更新との競合を防ぐ。"""
+        """更新操作の実行は終了確認と回収まで所有し、次の更新との競合を防ぐ。"""
         self.require_command_completion()
         conn = self._require_conn()
         started = time.perf_counter()
@@ -395,7 +395,7 @@ class SshSession:
         return self._conn
 
     def require_command_completion(self) -> None:
-        """再接続後も、終了不明のデプロイと次の更新・サービス操作を並行させない。"""
+        """再接続後も、終了不明の操作と次の更新・サービス操作を並行させない。"""
         if self.command_state_unknown:
             raise CommandStateUnknownError(
                 "遠隔コマンドの終了が未確認で、状態不明です。サーバーで処理の終了と状態を確認してからバックエンドを起動し直してください。"

@@ -59,7 +59,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -203,6 +203,11 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   WHERE user_id = ? ORDER BY id / WHERE user_id = ? AND id <= ? を、並べ替えなしの索引検索にする。
     13: [
         "CREATE INDEX IF NOT EXISTS idx_pending_log_user_id ON pending_log (user_id, id)",
+    ],
+    # バージョン14: 記念日巡回のキー別取得で、無関係なプロフィールの全件走査を避ける。
+    #   ユーザー別の取得・更新には従来の (user_id, key) 主キーを引き続き使う。
+    14: [
+        "CREATE INDEX IF NOT EXISTS idx_profile_key_user ON profile (key, user_id)",
     ],
 }
 

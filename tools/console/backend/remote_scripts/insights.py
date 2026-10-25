@@ -16,11 +16,13 @@
 import ast
 import json
 import os
+import queue
 import re
 import shlex
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +34,14 @@ JOURNAL_SUDO = "--journal-sudo" in sys.argv[4:]
 # 回帰テストではネットワークに出ないよう、接続先を環境変数で差し替える
 API_BASE = os.environ.get("PBC_DISCORD_API_BASE", "https://discord.com/api/v10")
 USER_AGENT = "DiscordBot (persona-bot-console, 0.1)"
+# SSH 側の60秒の応答期限より前に、部分取得の結果を返す余裕を残す。
+INSIGHTS_TIMEOUT_SECONDS = 50
+DISCORD_TIMEOUT_SECONDS = 20
+DISCORD_REQUEST_TIMEOUT_SECONDS = 6
+DISCORD_GUILD_PAGE_SIZE = 200
+DISCORD_MAX_GUILD_PAGES = 50
+DISCORD_MAX_VOICE_GUILDS = 100
+INSIGHTS_DEADLINE = time.monotonic() + INSIGHTS_TIMEOUT_SECONDS
 
 result = {"errors": []}
 
@@ -362,15 +372,40 @@ class DiscordRateLimit(DiscordError):
     """全サーバーの追加取得を止める利用制限。"""
 
 
-def discord_get(path, token):
+class DiscordDeadline(DiscordError):
+    """Discord の追加取得に使える時間が残っていない。"""
+
+
+def discord_get(path, token, *, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise DiscordDeadline("Discord API の取得時間の上限に達しました。時間をおいて更新してください。")
     request = urllib.request.Request(
         API_BASE + path,
         headers={"Authorization": "Bot " + token, "User-Agent": USER_AGENT},
     )
     started = time.perf_counter()
+    completed = queue.Queue(maxsize=1)
+
+    def read_response():
+        # urlopen の timeout は個々の受信待ちに適用される。細切れの応答でも全体の期限を越えない。
+        # 期限後の受信スレッドは結果を表示せず、スクリプトの終了も妨げない。
+        try:
+            with urllib.request.urlopen(request, timeout=min(DISCORD_REQUEST_TIMEOUT_SECONDS, remaining)) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            completed.put((body, None))
+        except Exception as error:
+            completed.put((None, error))
+
+    threading.Thread(target=read_response, daemon=True).start()
     try:
-        with urllib.request.urlopen(request, timeout=6) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        body, error = completed.get(timeout=remaining)
+        if error:
+            raise error
+        if time.monotonic() >= deadline:
+            raise DiscordDeadline("Discord API の取得時間の上限に達しました。時間をおいて更新してください。")
+    except queue.Empty:
+        raise DiscordDeadline("Discord API の取得時間の上限に達しました。時間をおいて更新してください。") from None
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None, round((time.perf_counter() - started) * 1000)
@@ -386,41 +421,86 @@ def discord_get(path, token):
     return body, round((time.perf_counter() - started) * 1000)
 
 
+def discord_guild_id(guild):
+    """ID を浮動小数点へ変換せず照合する。ID 自体は出力しない。"""
+    value = guild.get("id") if isinstance(guild, dict) else None
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise DiscordError("Discord API のサーバー識別子を読み取れませんでした。")
+    text = str(value)
+    if len(text) > 20 or not text.isascii() or not text.isdecimal() or not 0 < int(text) < 2 ** 64:
+        raise DiscordError("Discord API のサーバー識別子を読み取れませんでした。")
+    return int(text)
+
+
+def collect_discord_guilds(token, *, deadline):
+    guilds = {}
+    after = 0
+    try:
+        for _ in range(DISCORD_MAX_GUILD_PAGES):
+            path = f"/users/@me/guilds?with_counts=true&limit={DISCORD_GUILD_PAGE_SIZE}"
+            if after:
+                path += f"&after={after}"
+            page, _ = discord_get(path, token, deadline=deadline)
+            if not isinstance(page, list) or len(page) > DISCORD_GUILD_PAGE_SIZE:
+                raise DiscordError("Discord API のサーバー一覧を読み取れませんでした。")
+            if not page:
+                return guilds, None
+            # ページ全体を確認してから取り込む。途中の不正値で既存ページを失わない。
+            entries = [(discord_guild_id(guild), guild) for guild in page]
+            cursor = max(guild_id for guild_id, _ in entries)
+            if cursor <= after:
+                raise DiscordError("Discord API のサーバー一覧の取得が進まないため中止しました。")
+            for guild_id, guild in entries:
+                guilds.setdefault(guild_id, guild)
+            if len(page) < DISCORD_GUILD_PAGE_SIZE:
+                return guilds, None
+            after = cursor
+        raise DiscordError("サーバー一覧の取得上限に達しました。全件は取得できていません。")
+    except DiscordError as error:
+        return guilds, error
+
+
 def collect_discord(settings_rows):
     token = TOKEN
+    deadline = min(INSIGHTS_DEADLINE, time.monotonic() + DISCORD_TIMEOUT_SECONDS)
 
-    def unavailable(message):
+    def saved_guilds(excluded=()):
         # API が使えなくても、DB に保存済みの設定は ID を伏せた名前で表示する
-        guilds = [
+        return [
             {"name": f"保存済みサーバー {index}", "members": None, "online": None,
              "voice_channel": None, "voice_error": "Discord API からボイス状態を取得できませんでした。",
              "settings": describe_settings(row)}
-            for index, row in enumerate((row for key, row in settings_rows.items() if key != 0), 1)
+            for index, row in enumerate((row for key, row in settings_rows.items() if key != 0 and key not in excluded), 1)
         ]
-        return {"ok": False, "error": message, "guilds": guilds}
+
+    def unavailable(message):
+        return {"ok": False, "partial": False, "error": message, "guilds": saved_guilds()}
 
     if not token:
         return unavailable(".env に TOKEN_DISCORD がありません。")
     try:
-        me, rtt_ms = discord_get("/users/@me", token)
-        guilds, _ = discord_get("/users/@me/guilds?with_counts=true", token)
-        if not isinstance(me, dict) or not isinstance(guilds, list):
+        me, rtt_ms = discord_get("/users/@me", token, deadline=deadline)
+        if not isinstance(me, dict):
             raise DiscordError("Discord API の応答を読み取れませんでした。")
+        guilds, list_error = collect_discord_guilds(token, deadline=deadline)
+        if list_error and not guilds:
+            return unavailable(str(list_error))
         summaries = []
-        rate_error = None
-        for guild in guilds:
+        rate_error = str(list_error) if isinstance(list_error, (DiscordRateLimit, DiscordDeadline)) else None
+        for index, (guild_id, guild) in enumerate(guilds.items()):
             voice_error = rate_error
-            guild_id = int(guild["id"])
+            if voice_error is None and index >= DISCORD_MAX_VOICE_GUILDS:
+                voice_error = "ボイス状態の取得上限に達したため、このサーバーの確認を省略しました。"
             voice_channel = None
             if voice_error is None:
                 try:
-                    voice, _ = discord_get(f"/guilds/{guild_id}/voice-states/@me", token)
+                    voice, _ = discord_get(f"/guilds/{guild_id}/voice-states/@me", token, deadline=deadline)
                     if voice and voice.get("channel_id"):
-                        channel, _ = discord_get(f"/channels/{voice['channel_id']}", token)
+                        channel, _ = discord_get(f"/channels/{voice['channel_id']}", token, deadline=deadline)
                         voice_channel = (channel or {}).get("name") or "（名前を取得できないチャンネル）"
                 except DiscordError as error:
                     voice_error = str(error)
-                    if isinstance(error, DiscordRateLimit):
+                    if isinstance(error, (DiscordRateLimit, DiscordDeadline)):
                         rate_error = voice_error
                     note(f"ボイス状態を取得できませんでした。{voice_error}")
             summaries.append({
@@ -439,7 +519,10 @@ def collect_discord(settings_rows):
     discriminator = me.get("discriminator") if me else None
     if username and discriminator and discriminator != "0":
         username = f"{username}#{discriminator}"
-    return {"ok": True, "error": None, "api_rtt_ms": rtt_ms, "bot_user": username, "guilds": summaries}
+    if list_error:
+        summaries.extend(saved_guilds(guilds))
+    return {"ok": list_error is None, "partial": list_error is not None, "error": str(list_error) if list_error else None,
+            "api_rtt_ms": rtt_ms, "bot_user": username, "guilds": summaries}
 
 
 # ---------------------------------------------------------------- ログ（直近24時間）
@@ -453,7 +536,11 @@ def journal(arguments):
     if JOURNAL_SUDO:
         command = ["sudo", "-n"] + command
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, errors="replace")
+        remaining = INSIGHTS_DEADLINE - time.monotonic()
+        if remaining <= 0:
+            note("インサイトの取得時間の上限に達したため、ログの追加取得を省略しました。")
+            return []
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=min(30, remaining), errors="replace")
     except (OSError, subprocess.SubprocessError):
         note("journalctl を実行できませんでした。ログの読み取り権限を確認してください。")
         return []

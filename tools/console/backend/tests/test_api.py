@@ -86,6 +86,59 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         status, _ = await request("/api/service/reboot", method="POST")
         self.assertEqual(status, 400)
 
+    async def test_service_timeout_waits_for_fake_ssh_exit_and_checks_systemd_job(self):
+        """本物のSSHチャネルでも応答期限後は操作を打ち切らず、Job確認まで待つ。"""
+        target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+        with mock.patch.object(app, "_connection_change_lock", asyncio.Lock()), mock.patch.object(
+            app, "SERVICE_CONTROL_TIMEOUT_SECONDS", 0.01,
+        ), mock.patch.object(self.session, "run", wraps=self.session.run) as run:
+            service = asyncio.create_task(request("/api/service/stop", method="POST", body=target))
+            try:
+                for _ in range(100):
+                    if app._connection_snapshot()["state_unknown"]:
+                        break
+                    await asyncio.sleep(0.005)
+                self.assertTrue(app._connection_snapshot()["state_unknown"])
+                self.assertTrue(app._connection_change_lock.locked())
+                self.assertFalse(service.done())
+                status, _ = await asyncio.wait_for(service, 2)
+                self.assertEqual(status, 502)
+            finally:
+                await asyncio.gather(service, return_exceptions=True)
+        control = next(call for call in run.await_args_list if "systemctl stop" in call.args[0])
+        self.assertTrue(control.kwargs["wait_for_exit"])
+        self.assertIn(rc.service_job_command(self.profile.service), [call.args[0] for call in run.await_args_list])
+        self.assertFalse(self.bot.active)
+        self.assertFalse(self.session.command_state_unknown)
+        self.assertFalse(app._connection_snapshot()["state_unknown"])
+        self.assertFalse(app._connection_change_lock.locked())
+
+    async def test_manual_job_confirmation_failure_survives_reconnect_and_allows_reads(self):
+        """手動操作から生じた終了不明も、再接続で消さず更新だけを止める。"""
+        run = self.session.run
+
+        async def fail_job_confirmation(command, **kwargs):
+            if command == rc.service_job_command(self.profile.service):
+                return CommandResult("", "架空の非公開詳細", 1, 1)
+            return await run(command, **kwargs)
+
+        with mock.patch.object(app, "_connection_change_lock", asyncio.Lock()), mock.patch.object(
+            app, "deploys", DeployManager(),
+        ), mock.patch.object(app, "load_profiles", return_value=({self.profile.id: self.profile}, "検証用設定")):
+            target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
+            with mock.patch.object(self.session, "run", side_effect=fail_job_confirmation):
+                status, content = await request("/api/service/start", method="POST", body=target)
+            self.assertEqual(status, 409)
+            self.assertNotIn("非公開詳細", content.decode())
+            self.assertTrue(self.session.command_state_unknown)
+            self.assertEqual((await request("/api/disconnect", method="POST"))[0], 200)
+            self.assertEqual((await request("/api/connect", method="POST", body={"profile_id": self.profile.id}))[0], 200)
+            self.assertTrue(app._connection_snapshot()["state_unknown"])
+            self.assertEqual((await request("/api/status"))[0], 200)
+            target["connected_at"] = self.session.connected_at
+            for path in ("/api/service/restart", "/api/deploy"):
+                self.assertEqual((await request(path, method="POST", body=target))[0], 409)
+
     async def test_unknown_deploy_allows_reads_and_reconnect_but_blocks_mutations(self):
         """状態不明でも概要・ログ・DB閲覧と再接続を許可し、更新操作だけを409にする。"""
         manager = DeployManager()
@@ -279,7 +332,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sudo_failure_is_recorded_with_japanese_instructions(self):
         target = {"profile_id": self.profile.id, "connected_at": self.session.connected_at}
-        with mock.patch.object(self.session, "run", return_value=CommandResult("", "sudo: a password is required", 1, 2)):
+        with mock.patch.object(self.session, "run", side_effect=[
+            CommandResult("", "sudo: a password is required", 1, 2), CommandResult("Job=\n", "", 0, 1),
+        ]):
             status, body = await request("/api/service/restart", method="POST", body=target)
         self.assertEqual(status, 200)
         operation = json.loads(body)
@@ -292,7 +347,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         summary = json.loads(body)
         self.assertEqual(summary["schema_version"], 13)
-        self.assertEqual(summary["latest_schema_version"], 13)
+        self.assertEqual(summary["latest_schema_version"], 14)
 
     async def test_db_table_rows_are_read_through_api_with_paging(self):
         status, body = await request("/api/db/tables/feedback?offset=100&limit=50")

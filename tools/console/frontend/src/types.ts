@@ -250,6 +250,8 @@ export interface GuildInsight {
 
 export interface DiscordInsight {
   ok: boolean;
+  /** true = 一覧の後続ページが未取得。表示件数は参加サーバー総数ではない */
+  partial?: boolean;
   error: string | null;
   api_rtt_ms?: number;
   bot_user?: string | null;

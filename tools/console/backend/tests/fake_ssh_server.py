@@ -687,6 +687,9 @@ async def dispatch(command: str, process: asyncssh.SSHServerProcess, bot: FakeBo
             process.stdout.write(stdout)
             process.stderr.write(stderr)
             return code
+    if command == f"systemctl show {SERVICE_NAME} --no-pager --all --property=Job":
+        process.stdout.write("Job=\n")
+        return 0
     if command.startswith(f"systemctl show {SERVICE_NAME} "):
         process.stdout.write(bot.service_show())
         return 0
