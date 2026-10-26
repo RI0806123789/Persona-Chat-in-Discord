@@ -181,10 +181,11 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reminder_keeps_mention_next_date_and_chunk_limits(self) -> None:
         channel = SimpleNamespace(send=AsyncMock())
-        service = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), None, make_filter())
+        db = SimpleNamespace(reminder_is_pending=Mock(return_value=True))
+        service = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), db, make_filter())
         with patch.object(reminder_service, "send_long_message", wraps=send_long_message) as sending:
             await service._notify({
-                "channel_id": 10, "user_id": "11", "message": "あ" * 4001,
+                "reminder_id": 1, "channel_id": 10, "user_id": "11", "message": "あ" * 4001,
                 "next_remind_at": "2026-01-02T01:00:00+00:00",
             })
         sending.assert_awaited_once()
@@ -198,9 +199,10 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reminder_body_cannot_ping_everyone_roles_or_other_users(self) -> None:
         channel = SimpleNamespace(send=AsyncMock())
-        service = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), None, make_filter())
+        db = SimpleNamespace(reminder_is_pending=Mock(return_value=True))
+        service = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), db, make_filter())
         await service._notify({
-            "channel_id": 10, "user_id": "11",
+            "reminder_id": 1, "channel_id": 10, "user_id": "11",
             "message": "@everyone @here <@&22> <@33> 架空の集合",
             "next_remind_at": "2026-01-02T01:00:00+00:00",
         })

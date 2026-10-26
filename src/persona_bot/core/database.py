@@ -692,18 +692,39 @@ class Database:
         """
         with self._lock:
             rows = self._conn.execute("SELECT * FROM guild_settings").fetchall()
+        return {row["guild_id"]: self._guild_settings_values(row) for row in rows}
+
+    @staticmethod
+    def _guild_settings_values(row: sqlite3.Row) -> dict[str, Any]:
+        """全件復元と再参加時の復元で、保存列の変換を揃える。"""
         return {
-            row["guild_id"]: {
-                "prompt_file": row["prompt_file"],
-                "model_name": row["model_name"],
-                "respond_mode": row["respond_mode"],
-                "grounding_enabled": bool(row["grounding_enabled"]),
-                "auto_topic_enabled": bool(row["auto_topic_enabled"]),
-                "auto_topic_interval_hours": row["auto_topic_interval_hours"],
-                "autonomous_enabled": bool(row["autonomous_enabled"]),
-            }
-            for row in rows
+            "prompt_file": row["prompt_file"],
+            "model_name": row["model_name"],
+            "respond_mode": row["respond_mode"],
+            "grounding_enabled": bool(row["grounding_enabled"]),
+            "auto_topic_enabled": bool(row["auto_topic_enabled"]),
+            "auto_topic_interval_hours": row["auto_topic_interval_hours"],
+            "autonomous_enabled": bool(row["autonomous_enabled"]),
         }
+
+    def guild_state_load(self, guild_id: int) -> tuple[dict[str, Any], dict[str, str]]:
+        """1サーバー分の設定と記念日の投稿記録を、同じロック内で読み出す。
+
+        再参加時に全件を走査せず、そのサーバーの主キーで取得する。
+        どちらかの読込に失敗した場合は例外を伝え、未復元の設定を使わせない。
+        """
+        guild_key = int(guild_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM guild_settings WHERE guild_id = ?", (guild_key,)
+            ).fetchone()
+            posts = self._conn.execute(
+                "SELECT user_id, label, posted_date FROM anniversary_posts WHERE guild_id = ?",
+                (guild_key,),
+            ).fetchall()
+        values = self._guild_settings_values(row) if row is not None else {}
+        posted = {f"{post['user_id']}:{post['label']}": post["posted_date"] for post in posts}
+        return values, posted
 
     def guild_settings_save(
         self,
@@ -932,6 +953,15 @@ class Database:
             ).fetchone()
         return int(row["count"]) if row else 0
 
+    def reminder_is_pending(self, reminder_id: int) -> bool:
+        """繰り返し通知の送信直前に、系列がまだ有効かを確認する。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM reminders WHERE reminder_id = ? AND status = 'pending'",
+                (int(reminder_id),),
+            ).fetchone()
+        return row is not None
+
     def reminder_cancel(self, reminder_id: int, user_id: str) -> dict[str, Any] | None:
         """リマインダーを取り消す。取り消せた場合はその内容を返す。
 
@@ -1140,6 +1170,11 @@ class Database:
         """対象ユーザーの全項目だけを保存し、他ユーザーの行には触れない。"""
         with self._lock, self._conn:
             self._stats_upsert_user(user_id, entry)
+
+    def stats_delete_user(self, user_id: str) -> None:
+        """新規行の保存中断を補償する。通常の蓄積データ削除には使わない。"""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM user_stats WHERE user_id = ?", (str(user_id),))
 
     def _stats_upsert_user(self, user_id: str, entry: dict[str, Any]) -> None:
         """呼び出し側がDBロックとトランザクションを保持した状態で使う。"""

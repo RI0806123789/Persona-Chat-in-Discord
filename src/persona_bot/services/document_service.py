@@ -229,7 +229,7 @@ class DocumentService:
 
             # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
             guild_id = message.guild.id if message.guild is not None else None
-            guild_settings = self._state.get_guild(guild_id)
+            guild_settings = await self._state.get_guild_async(guild_id)
             response_settings = guild_settings.snapshot_response()
 
             summaries = [

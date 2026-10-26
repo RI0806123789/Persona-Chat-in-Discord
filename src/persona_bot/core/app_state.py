@@ -1,4 +1,5 @@
 import asyncio
+from weakref import WeakValueDictionary
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -91,6 +92,7 @@ class GuildSettings:
     # DB が未接続（None）のときは保存を試みない（DB を使わないテスト等で動くように）。
     guild_id: int | None = None
     _db: Any = field(default=None, repr=False, compare=False)
+
     # persist() の直列化用。並行した保存の書き込み順が入れ替わって、
     # 古い値で新しい値を上書きしないようにする（persist の説明を参照）。
     _persist_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
@@ -152,7 +154,7 @@ class GuildSettings:
         return DM_SETTINGS_GUILD_KEY if self.guild_id is None else self.guild_id
 
     def apply_persisted(self, values: dict[str, Any]) -> None:
-        """DB から読み出した設定値を反映する（起動時の復元用）。
+        """DB から読み出した設定値を反映する（起動時・再参加時の復元用）。
 
         値が空・欠落している項目は既定値のままにする（列を増やした直後の行など、
         中途半端なデータでボットが起動しなくなることを避けるため）。
@@ -256,8 +258,16 @@ class GuildSettings:
 
 
 @dataclass
+class _GuildSettingsLoad:
+    """同じサーバーの初回読込を直列化し、退出で古い結果を無効にする。"""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    valid: bool = True
+
+
+@dataclass
 class BotState:
-    # ギルドID → そのサーバー専用の設定。get_guild() が初回アクセス時に自動生成する。
+    # ギルドID → そのサーバー専用の設定。初回は get_guild_async() がDBから復元する。
     guild_settings: dict[int, GuildSettings] = field(default_factory=dict)
     # DM（ギルドに属さない会話）専用の設定。すべての DM で共有する単一スロット。
     dm_settings: GuildSettings = field(default_factory=GuildSettings)
@@ -280,21 +290,68 @@ class BotState:
 
     # 設定の保存先。restore_from_database() で紐づけられる。
     _db: Any = field(default=None, repr=False, compare=False)
+    # 読込中・待機中だけ保持し、過去に退出したサーバーの識別子を溜めない。
+    _guild_loads: WeakValueDictionary[int, _GuildSettingsLoad] = field(
+        default_factory=WeakValueDictionary, repr=False, compare=False,
+    )
 
     def get_guild(self, guild_id: int | None) -> GuildSettings:
-        """guild_id に対応する設定を返す。未登録のギルドはデフォルト値で自動生成する。
+        """復元済みの設定を同期的に返す。DBを使わない場合は既定値で生成する。
 
         DM（guild_id が None）は全 DM 共有の dm_settings を返す。
-        新しく作った設定にも DB を引き継ぐため、そのまま persist() で保存できる。
+        DB接続済みの未登録サーバーは get_guild_async() で取得する。同期の入口から
+        DBを読まないことで、保存中の共有ロック待ちでもイベントループを止めない。
         """
         if guild_id is None:
             return self.dm_settings
         settings = self.guild_settings.get(guild_id)
         if settings is None:
+            if self._db is not None:
+                raise RuntimeError("未復元のサーバー設定は get_guild_async() で取得してください。")
             settings = GuildSettings()
             settings.attach(self._db, guild_id)
             self.guild_settings[guild_id] = settings
         return settings
+
+    def get_guild_if_ready(self, guild_id: int | None) -> GuildSettings | None:
+        """同期の活動観測用。DB復元が必要なら見送り、DB未接続なら従来どおり生成する。"""
+        if self._db is not None and guild_id is not None and guild_id not in self.guild_settings:
+            return None
+        return self.get_guild(guild_id)
+
+    async def get_guild_async(self, guild_id: int | None) -> GuildSettings:
+        """保存済みの設定と記念日を、イベントループを塞がずに初回復元する。
+
+        同じサーバーへの並行要求は同じ設定を共有する。他サーバーとDMの取得は待たせない。
+        読込失敗・キャンセル時は未復元の既定値を登録せず、次回アクセスで再試行する。
+        """
+        if guild_id is None or guild_id in self.guild_settings or self._db is None:
+            return self.get_guild(guild_id)
+        loading = self._guild_loads.get(guild_id)
+        if loading is None:
+            loading = _GuildSettingsLoad()
+            self._guild_loads[guild_id] = loading
+        async with loading.lock:
+            if not loading.valid:
+                raise RuntimeError("サーバー退出により設定の復元を中止しました。")
+            settings = self.guild_settings.get(guild_id)
+            if settings is None:
+                values, posted = await run_in_thread(self._db.guild_state_load, guild_id)
+                if not loading.valid:
+                    raise RuntimeError("サーバー退出により設定の復元を中止しました。")
+                settings = GuildSettings()
+                settings.apply_persisted(values)
+                settings.anniversary_posted_dates.update(posted)
+                settings.attach(self._db, guild_id)
+                self.guild_settings[guild_id] = settings
+            return settings
+
+    def forget_guild(self, guild_id: int) -> None:
+        """退出したサーバーの一時設定と、待機中の古い読込結果を無効にする。"""
+        self.guild_settings.pop(guild_id, None)
+        loading = self._guild_loads.pop(guild_id, None)
+        if loading is not None:
+            loading.valid = False
 
     def restore_from_database(self, db: Any) -> None:
         """Database を紐づけ、保存済みの設定と記念日の投稿記録をメモリへ復元する。
@@ -325,10 +382,15 @@ class BotState:
             print(f"データベース: {len(saved_settings)} 件のサーバー設定を復元しました。")
 
     def _settings_for_key(self, guild_key: int) -> GuildSettings:
-        """DB 上のギルドキー（DM は 0）に対応する設定を返す。"""
+        """起動時の一括復元先を返す。取得済みの値を使うため、ここではDBを読み直さない。"""
         if guild_key == DM_SETTINGS_GUILD_KEY:
             return self.dm_settings
-        return self.get_guild(guild_key)
+        settings = self.guild_settings.get(guild_key)
+        if settings is None:
+            settings = GuildSettings()
+            settings.attach(self._db, guild_key)
+            self.guild_settings[guild_key] = settings
+        return settings
 
     def iter_all_guild_settings(self):
         """(guild_id, GuildSettings) を全件返す。DM は guild_id=None として含む。

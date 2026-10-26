@@ -200,6 +200,8 @@ class EventLoopIOTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_canceled_stats_save_cannot_overwrite_a_later_clear(self) -> None:
         service = StatsService(self.db, None)
+        # 既存行の更新を中断し、元行への補償が終わるまで後着の削除を待たせる。
+        await service.record("test-user", "架空", "変更前の発言", datetime.now(timezone.utc))
         entered, release = asyncio.Event(), threading.Event()
         loop = asyncio.get_running_loop()
         original = self.db.stats_save_user
@@ -223,11 +225,11 @@ class EventLoopIOTests(unittest.IsolatedAsyncioTestCase):
                 clear = spawn(service.clear_user_data("test-user"), label="統計削除")
                 for _ in range(5):
                     await asyncio.sleep(0)
-                self.assertEqual(writes, [1])
+                self.assertEqual(writes, [2])
             finally:
                 release.set()
                 await asyncio.gather(task, *([clear] if clear else []), return_exceptions=True)
-        self.assertEqual(writes, [1, 0])
+        self.assertEqual(writes, [2, 1, 0])
         self.assertEqual(self.db.stats_load_all()["test-user"]["total_count"], 0)
 
     async def test_usage_graph_uses_snapshot_during_new_records(self) -> None:

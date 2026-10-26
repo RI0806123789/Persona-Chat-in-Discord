@@ -188,7 +188,7 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         install_persona_catalog(self, *personas)
         expected = {}
         for index, guild_id in enumerate((1, 2, None)):
-            settings = state.get_guild(guild_id)
+            settings = await state.get_guild_async(guild_id)
             values = {
                 "current_prompt_file": personas[index],
                 "current_model_name": MODEL_CHOICES[index].value,
@@ -220,8 +220,9 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         # 復元済み・新規サーバーのどちらも、その後の変更を同じDBへ保存できる。
         restored.get_guild(1).grounding_enabled = False
         await restored.get_guild(1).persist()
-        restored.get_guild(3).autonomous_enabled = True
-        await restored.get_guild(3).persist()
+        new_settings = await restored.get_guild_async(3)
+        new_settings.autonomous_enabled = True
+        await new_settings.persist()
         again = BotState()
         again.restore_from_database(self.db)
         self.assertFalse(again.get_guild(1).grounding_enabled)

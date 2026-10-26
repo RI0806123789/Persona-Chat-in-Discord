@@ -184,10 +184,9 @@ class StatsService:
             async with self._save_lock:
                 if self.is_opted_out(user_id):
                     return True
-                entry = self.cache.get(user_id)
+                entry = deepcopy(self.cache.get(user_id))
                 if entry is None:
                     entry = self._new_entry(user_name)
-                    self.cache[user_id] = entry
                 entry["user_name"] = user_name
                 entry["total_count"] = int(entry.get("total_count", 0)) + 1
                 hourly = entry.get("hourly")
@@ -205,7 +204,10 @@ class StatsService:
                     samples.append(text)
                     if len(samples) > STATS_RECENT_SAMPLES_MAX:
                         del samples[: len(samples) - STATS_RECENT_SAMPLES_MAX]
-                return await self._save_user_locked(user_id)
+                if not await self._save_user_locked(user_id, entry):
+                    return False
+                self.cache[user_id] = entry
+                return True
         except Exception as error:
             print(f"会話統計の記録に失敗: {error}")
             return False
@@ -215,17 +217,37 @@ class StatsService:
         async with self._save_lock:
             return await self._save_user_locked(user_id)
 
-    async def _save_user_locked(self, user_id: str) -> bool:
-        """_save_lock 保持中に使う。入れ子の可変値も保存用にコピーする。"""
-        entry = self.cache.get(user_id)
+    async def _save_user_locked(self, user_id: str, entry: dict | None = None) -> bool:
+        """候補を保存する。失敗・中断時は公開済みキャッシュを変更しない。"""
+        previous = deepcopy(self.cache.get(user_id))
+        entry = previous if entry is None else entry
         if entry is None:
             return True
         try:
             await run_in_thread(self._db.stats_save_user, user_id, deepcopy(entry))
+        except asyncio.CancelledError:
+            # 同期ワーカーは中断できず、ここへ戻る時点では保存済みの場合もある。
+            # ロックを離す前に元行へ戻し、後続の更新へ未確定の値を引き継がない。
+            await wait_for_cleanup(
+                self._restore_user_locked(user_id, previous), label="会話統計の中断後の復元",
+            )
+            raise
         except Exception as error:
             print(f"会話統計の保存に失敗: {error}")
             return False
         return True
+
+    async def _restore_user_locked(self, user_id: str, previous: dict | None) -> None:
+        """中断した書き込みを対象1行だけ補償し、繰り返しキャンセルでも回収する。"""
+        try:
+            if previous is None:
+                await run_in_thread(self._db.stats_delete_user, user_id)
+            else:
+                await run_in_thread(self._db.stats_save_user, user_id, previous)
+        except Exception as error:
+            # 保存先自体に障害があれば完全な復元は保証できない。成功とは扱わず、
+            # 呼出元には元のキャンセルを伝え、復元失敗を運用ログに残す。
+            print(f"会話統計の中断後の復元に失敗: {error}")
 
     # ---- 収集停止（opt-out） ----------------------------------------------
 
@@ -248,15 +270,17 @@ class StatsService:
         フラグを立てる（「発言してからでないと停止できない」を避けるため）。
         """
         async with self._save_lock:
-            entry = self.cache.get(user_id)
+            entry = deepcopy(self.cache.get(user_id))
             if entry is None:
                 entry = self._new_entry(user_name)
-                self.cache[user_id] = entry
             elif user_name:
                 entry["user_name"] = user_name
             entry["opt_out"] = bool(opted_out)
+            if not await self._save_user_locked(user_id, entry):
+                return False
+            self.cache[user_id] = entry
             self._analysis_versions[user_id] = self._analysis_versions.get(user_id, 0) + 1
-            return await self._save_user_locked(user_id)
+            return True
 
     async def clear_user_data(self, user_id: str) -> bool:
         """そのユーザーの蓄積データ（集計値・発言サンプル・解析キャッシュ）を消す。
@@ -266,7 +290,7 @@ class StatsService:
         保存できたかを返す（プライバシー操作の失敗は隠さずユーザーへ伝える）。
         """
         async with self._save_lock:
-            entry = self.cache.get(user_id)
+            entry = deepcopy(self.cache.get(user_id))
             if entry is None:
                 return True
             now_iso = utc_now_iso()
@@ -277,8 +301,11 @@ class StatsService:
             entry["analysis"] = None
             entry["first_seen"] = now_iso
             entry["last_seen"] = now_iso
+            if not await self._save_user_locked(user_id, entry):
+                return False
+            self.cache[user_id] = entry
             self._analysis_versions[user_id] = self._analysis_versions.get(user_id, 0) + 1
-            return await self._save_user_locked(user_id)
+            return True
 
     # ---- 参照ヘルパー -----------------------------------------------------
 
@@ -447,11 +474,11 @@ class StatsService:
                     or self._analysis_tasks.get(user_id) is not flight
                     or self._entry_opted_out(entry)):
                 return deepcopy(entry.get("analysis"))
-            previous = entry.get("analysis")
-            entry["analysis"] = analysis
-            if not await self._save_user_locked(user_id):
-                entry["analysis"] = previous
-                return previous
+            candidate = deepcopy(entry)
+            candidate["analysis"] = analysis
+            if not await self._save_user_locked(user_id, candidate):
+                return deepcopy(entry.get("analysis"))
+            self.cache[user_id] = candidate
         return analysis
 
     @staticmethod
