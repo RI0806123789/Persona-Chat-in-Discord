@@ -15,9 +15,11 @@
 DB のクレームと同一トランザクションの中から呼ばれる。
 """
 
+import asyncio
 import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from weakref import WeakValueDictionary
 
 import discord
 
@@ -226,6 +228,16 @@ class ReminderService:
         self._db = db
         self._ng_filter = ng_filter
         self._tz = resolve_timezone(REMINDER_TIMEZONE, purpose="リマインダーの表示・日時解釈")
+        # 実行中・待機中だけ保持し、使い終わった系列のロックを溜めない。
+        self._delivery_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+
+    def _delivery_lock(self, reminder_id: int) -> asyncio.Lock:
+        """系列ごとに取消と送信を順序付ける（DBの同期ロックとは別）。"""
+        lock = self._delivery_locks.get(reminder_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._delivery_locks[reminder_id] = lock
+        return lock
 
     # ---- 登録 -----------------------------------------------------------------
 
@@ -338,9 +350,11 @@ class ReminderService:
             return []
 
     async def cancel(self, reminder_id: int, user_id: str) -> dict[str, Any] | None:
-        """リマインダーを取り消す。取り消せた場合はその内容を返す（他人のものは不可）。"""
+        """本人の系列を取り消す。送信開始後なら今回の送信終了を待って次回分を止める。"""
         try:
-            return await run_in_thread(self._db.reminder_cancel, int(reminder_id), str(user_id))
+            reminder_id = int(reminder_id)
+            async with self._delivery_lock(reminder_id):
+                return await run_in_thread(self._db.reminder_cancel, reminder_id, str(user_id))
         except Exception as error:
             print(f"リマインダー: 取り消しに失敗しました: {error}")
             return None
@@ -492,4 +506,15 @@ class ReminderService:
             users=[discord.Object(id=int(record["user_id"]))],
             everyone=False, roles=False, replied_user=False,
         )
-        await send_long_message(channel, body, allowed_mentions=allowed_mentions)
+        if not next_at:
+            # 単発はクレーム時に完了済みで、これ以降の取消は成功しない。
+            await send_long_message(channel, body, allowed_mentions=allowed_mentions)
+            return
+
+        # チャンネル取得・スレッド再開を待つ間は取消を妨げず、送信直前に確認する。
+        # 送信中はこの系列だけをロックし、開始済みの通知は完了してから取消を返す。
+        # DBの共有同期ロックは通信中に保持しない。
+        async with self._delivery_lock(int(record["reminder_id"])):
+            if not await run_in_thread(self._db.reminder_is_pending, int(record["reminder_id"])):
+                return
+            await send_long_message(channel, body, allowed_mentions=allowed_mentions)

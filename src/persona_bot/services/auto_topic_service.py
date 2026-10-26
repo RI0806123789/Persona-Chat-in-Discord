@@ -38,8 +38,8 @@ class AutoTopicService:
     """自発的な会話（無会話チャンネルへの話題提供）と記念日の自動お祝いを管理するサービス。
 
     どちらもサーバー（ギルド）ごとの GuildSettings（ペルソナ・モデル・監視チャンネル
-    など）を使って動作するため、BotState.get_guild() / iter_all_guild_settings()
-    を介して全サーバーを横断して見回る。
+    など）を使い、同期の観測は BotState.get_guild_if_ready() で復元済み設定を参照する。
+    iter_all_guild_settings() を介して全サーバーを横断して見回る。
 
     自発的な会話: ボットが会話に参加したチャンネルを監視対象として登録し、設定した
     時間会話が無ければ、過去の話題をもとに Gemini で話しかけを生成して投稿する。
@@ -86,7 +86,9 @@ class AutoTopicService:
         """
         if guild_id is None:
             return
-        self._state.get_guild(guild_id).auto_topic_channels[channel_id] = datetime.now(timezone.utc)
+        guild_settings = self._state.get_guild_if_ready(guild_id)
+        if guild_settings is not None:
+            guild_settings.auto_topic_channels[channel_id] = datetime.now(timezone.utc)
 
     def mark_activity(self, channel_id: int, guild_id: int | None) -> None:
         """監視対象チャンネルの最終活動時刻を更新する。未登録なら何もしない。
@@ -96,8 +98,8 @@ class AutoTopicService:
         """
         if guild_id is None:
             return
-        guild_settings = self._state.get_guild(guild_id)
-        if channel_id in guild_settings.auto_topic_channels:
+        guild_settings = self._state.get_guild_if_ready(guild_id)
+        if guild_settings is not None and channel_id in guild_settings.auto_topic_channels:
             guild_settings.auto_topic_channels[channel_id] = datetime.now(timezone.utc)
 
     async def run_pending_checks(self) -> None:

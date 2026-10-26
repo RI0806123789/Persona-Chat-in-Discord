@@ -15,6 +15,7 @@ from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
 from persona_bot.utils.discord_helpers import is_administrator, reject_blocked_interaction
 from persona_bot.views.functions_view import FunctionsView
+from persona_bot.views.view_parts import edit_panel_message
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
@@ -121,12 +122,22 @@ def register_commands(
         is_admin = is_administrator(interaction.user)
         # ペルソナ・モデル等はサーバー（ギルド）ごとに独立している。DM では guild_id が
         # 無いため、全DM共有の設定スロット（state.dm_settings）が使われる。
-        guild_settings = state.get_guild(interaction.guild_id)
+        deferred = False
+        try:
+            guild_settings = state.get_guild(interaction.guild_id)
+        except RuntimeError:
+            # 初回復元だけDB待機を伴うため、Discordの応答期限より先に受領を返す。
+            await interaction.response.defer(ephemeral=True)
+            deferred = True
+            guild_settings = await state.get_guild_async(interaction.guild_id)
         view = FunctionsView(
             guild_settings, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, is_admin=is_admin
         )
         # 機能パネルは本人だけに見えるよう ephemeral で送信する
-        await interaction.response.send_message(view.build_preview(), view=view, ephemeral=True)
+        if deferred:
+            await edit_panel_message(interaction, content=view.build_preview(), view=view, deferred=True)
+        else:
+            await interaction.response.send_message(view.build_preview(), view=view, ephemeral=True)
         # タイムアウト時に UI を取り除けるよう、送信したパネルメッセージを View に持たせる
         view.message = await interaction.original_response()
 

@@ -15,5 +15,5 @@ async def remove_guild_state(
         print(f"サーバー退出時の配信停止に失敗しました: {type(error).__name__}")
     finally:
         voice_guard.release(guild_id)
-        state.guild_settings.pop(guild_id, None)
+        state.forget_guild(guild_id)
         state.welcomed_guild_ids.discard(guild_id)

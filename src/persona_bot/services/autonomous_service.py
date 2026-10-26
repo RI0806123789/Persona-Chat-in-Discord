@@ -176,7 +176,9 @@ class AutonomousService:
         if guild_id is None:
             return
 
-        guild_settings = self._state.get_guild(guild_id)
+        guild_settings = self._state.get_guild_if_ready(guild_id)
+        if guild_settings is None:
+            return
         now = datetime.now(timezone.utc)
         guild_settings.autonomous_last_activity = now
 
@@ -200,7 +202,8 @@ class AutonomousService:
         """
         if guild_id is None:
             return False
-        session = self._state.get_guild(guild_id).autonomous_session
+        guild_settings = self._state.get_guild_if_ready(guild_id)
+        session = guild_settings.autonomous_session if guild_settings is not None else None
         return session is not None and session.channel_id == channel_id
 
     def claim_comment_slot(self, channel_id: int, guild_id: int | None) -> AutonomousSession | None:
@@ -210,7 +213,8 @@ class AutonomousService:
         """
         if guild_id is None:
             return None
-        session = self._state.get_guild(guild_id).autonomous_session
+        guild_settings = self._state.get_guild_if_ready(guild_id)
+        session = guild_settings.autonomous_session if guild_settings is not None else None
         if session is None or session.channel_id != channel_id:
             return None
         return session if self._claim_comment_slot(session) else None
@@ -511,7 +515,8 @@ class AutonomousService:
         """
         if guild.id in self._starting:
             return
-        session = self._state.get_guild(guild.id).autonomous_session
+        guild_settings = self._state.guild_settings.get(guild.id)
+        session = guild_settings.autonomous_session if guild_settings is not None else None
         if session is None:
             return
         await self._stop_if_moved(guild, session)
@@ -728,7 +733,9 @@ class AutonomousService:
                 await wait_for_task(stopping.task)
             return True
 
-        guild_settings = self._state.get_guild(guild_id)
+        guild_settings = self._state.guild_settings.get(guild_id)
+        if guild_settings is None:
+            return False
         starting = self._starting.get(guild_id)
         if starting is not None:
             # connect()がまだ戻っていない場合にも、後着するセッションの登録を止める。

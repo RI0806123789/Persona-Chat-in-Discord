@@ -159,7 +159,7 @@ class MessageHandler:
         is_dm = isinstance(message.channel, discord.DMChannel)
         # DM はギルドに属さないため guild_id=None として「全DM共有」の設定スロットへ収束させる。
         guild_id = message.guild.id if message.guild is not None else None
-        guild_settings = self.state.get_guild(guild_id)
+        guild_settings = await self.state.get_guild_async(guild_id)
         self.auto_topic.mark_activity(message.channel.id, guild_id)
         # 自律行動の「話したいゲージ」も、ボット宛てでない発言を含めて観測する
         # （このサーバーで会話が行われているかどうかがゲージの材料のため）。
@@ -430,7 +430,7 @@ class MessageHandler:
             image_objects: 読込済み画像の借用。配信終了後の通常経路でも再読込せず、呼出元が閉じる。
         """
         guild_id = message.guild.id if message.guild is not None else None
-        guild_settings = self.state.get_guild(guild_id)
+        guild_settings = await self.state.get_guild_async(guild_id)
         # typing() の開始も待機を伴うため、その前に今回の値を確定する。
         if response_settings is None:
             response_settings = guild_settings.snapshot_response()

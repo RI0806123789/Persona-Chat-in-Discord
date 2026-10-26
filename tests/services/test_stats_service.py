@@ -233,7 +233,8 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data[f"new-{i}"]["total_count"], 10)
 
     async def test_database_failures_are_reported_for_record_and_privacy_operations(self) -> None:
-        other = deepcopy(self.db.stats_load_all()["user-1"])
+        before = deepcopy(self.db.stats_load_all())
+        versions = deepcopy(self.service._analysis_versions)
         with self.db._lock, self.db._conn:
             self.db._conn.execute(
                 "CREATE TRIGGER fail_test_stats BEFORE INSERT ON user_stats "
@@ -242,7 +243,206 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.service.record("user-0", "架空", "追加", self.when))
         self.assertFalse(await self.service.set_opt_out("user-0", "架空", True))
         self.assertFalse(await self.service.clear_user_data("user-0"))
-        self.assertEqual(self.db.stats_load_all()["user-1"], other)
+        self.assertEqual(self.db.stats_load_all(), before)
+        self.assertEqual(self.service.cache, before)
+        self.assertEqual(self.service._analysis_versions, versions)
+
+    def operation(self, action: str, user_id: str = "user-0"):
+        if action == "record":
+            return self.service.record(user_id, "変更した架空の名前", "追加の架空の発言", self.when)
+        if action in ("opt_out", "resume"):
+            return self.service.set_opt_out(user_id, "変更した架空の名前", action == "opt_out")
+        if action == "clear":
+            return self.service.clear_user_data(user_id)
+        return self.service.ensure_analysis(user_id, force=True)
+
+    async def test_failed_candidates_keep_history_for_the_next_successful_record(self) -> None:
+        for action in ("record", "opt_out", "clear", "analysis"):
+            for failure in ("returned_false", "database_exception"):
+                with self.subTest(action=action, failure=failure):
+                    self.seed(2)
+                    self.service.cache["user-0"]["analysis"] = deepcopy(self.generated_analysis)
+                    await self.service.save_background("user-0")
+                    self.service._analysis_versions["user-0"] = 7
+                    before = deepcopy(self.service.cache)
+                    versions = deepcopy(self.service._analysis_versions)
+                    failing = (
+                        patch.object(self.service, "_save_user_locked", new=AsyncMock(return_value=False))
+                        if failure == "returned_false" else
+                        patch.object(self.db, "stats_save_user", side_effect=OSError("架空の保存失敗"))
+                    )
+                    with failing:
+                        result = await self.operation(action)
+                    self.assertEqual(result, before["user-0"]["analysis"] if action == "analysis" else False)
+                    self.assertEqual(self.service.cache, before)
+                    self.assertEqual(self.service._analysis_versions, versions)
+                    self.assertEqual(self.db.stats_load_all(), before)
+                    self.assertTrue(await self.service.record("user-0", "架空", "成功した架空の発言", self.when))
+                    saved = self.db.stats_load_all()["user-0"]
+                    self.assertEqual(saved["total_count"], before["user-0"]["total_count"] + 1)
+                    self.assertEqual(saved["hourly"][9], before["user-0"]["hourly"][9] + 1)
+                    self.assertEqual(saved["recent_samples"], before["user-0"]["recent_samples"] + ["成功した架空の発言"])
+                    self.assertEqual(saved["analysis"], before["user-0"]["analysis"])
+                    self.assertEqual(saved, self.service.cache["user-0"])
+
+    async def test_failed_new_user_candidates_leave_no_cache_or_database_row(self) -> None:
+        for action in ("record", "opt_out"):
+            for failure in ("returned_false", "database_exception"):
+                with self.subTest(action=action, failure=failure):
+                    before = deepcopy(self.service.cache)
+                    failing = (
+                        patch.object(self.service, "_save_user_locked", new=AsyncMock(return_value=False))
+                        if failure == "returned_false" else
+                        patch.object(self.db, "stats_save_user", side_effect=OSError("架空の保存失敗"))
+                    )
+                    with failing:
+                        self.assertFalse(await self.operation(action, "new-user"))
+                    self.assertEqual(self.service.cache, before)
+                    self.assertEqual(self.db.stats_load_all(), before)
+                    self.assertNotIn("new-user", self.service._analysis_versions)
+
+    async def test_failed_resume_keeps_collection_stopped_and_does_not_invalidate_analysis(self) -> None:
+        self.service._analysis_versions["user-1"] = 4
+        before = deepcopy(self.service.cache)
+        with patch.object(self.db, "stats_save_user", side_effect=OSError("架空の再開保存失敗")):
+            self.assertFalse(await self.operation("resume", "user-1"))
+        self.assertTrue(self.service.is_opted_out("user-1"))
+        self.assertTrue(await self.service.record("user-1", "架空", "記録しない架空の発言", self.when))
+        self.assertEqual(self.service.cache, before)
+        self.assertEqual(self.db.stats_load_all(), before)
+        self.assertEqual(self.service._analysis_versions, {"user-1": 4})
+
+    async def test_candidates_are_not_visible_while_database_save_is_pending(self) -> None:
+        for action in ("record", "opt_out", "clear", "analysis"):
+            with self.subTest(action=action):
+                self.seed(2)
+                before = deepcopy(self.service.cache)
+                versions = deepcopy(self.service._analysis_versions)
+                entered, release = asyncio.Event(), threading.Event()
+                loop = asyncio.get_running_loop()
+                original_save = self.db.stats_save_user
+
+                def save(user_id, entry):
+                    loop.call_soon_threadsafe(entered.set)
+                    if not release.wait(5):
+                        raise AssertionError("架空の保存待機が解除されませんでした")
+                    original_save(user_id, entry)
+
+                with patch.object(self.db, "stats_save_user", side_effect=save):
+                    task = spawn(self.operation(action), label="保存待機中の統計公開を検証")
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        self.assertEqual(self.service.cache, before)
+                        self.assertEqual(self.service._analysis_versions, versions)
+                        self.assertFalse(task.done())
+                    finally:
+                        release.set()
+                        await asyncio.gather(task, return_exceptions=True)
+                self.assertFalse(task.cancelled())
+                self.assertIsNone(task.exception())
+                self.assertEqual(self.service.cache, self.db.stats_load_all())
+                self.assertNotEqual(self.service.cache["user-0"], before["user-0"])
+
+    async def test_repeated_cancellation_restores_existing_and_new_rows_before_unlocking(self) -> None:
+        for action, user_id in (
+            ("record", "user-0"), ("opt_out", "user-0"), ("clear", "user-0"),
+            ("analysis", "user-0"), ("resume", "user-1"),
+            ("record", "new-user"), ("opt_out", "new-user"),
+        ):
+            with self.subTest(action=action, user_id=user_id):
+                self.seed(2)
+                self.service._analysis_versions["user-0"] = 7
+                before = deepcopy(self.service.cache)
+                versions = deepcopy(self.service._analysis_versions)
+                entered, restoring = asyncio.Event(), asyncio.Event()
+                release, release_restore = threading.Event(), threading.Event()
+                loop = asyncio.get_running_loop()
+                original_save, original_delete = self.db.stats_save_user, self.db.stats_delete_user
+                writes = 0
+
+                def wait_for_restore():
+                    loop.call_soon_threadsafe(restoring.set)
+                    if not release_restore.wait(5):
+                        raise AssertionError("架空の復元待機が解除されませんでした")
+
+                def save(saved_user_id, entry):
+                    nonlocal writes
+                    writes += 1
+                    if writes == 1:
+                        loop.call_soon_threadsafe(entered.set)
+                        if not release.wait(5):
+                            raise AssertionError("架空の保存待機が解除されませんでした")
+                    else:
+                        wait_for_restore()
+                    original_save(saved_user_id, entry)
+
+                def delete(saved_user_id):
+                    wait_for_restore()
+                    original_delete(saved_user_id)
+
+                with patch.object(self.db, "stats_save_user", side_effect=save), patch.object(
+                    self.db, "stats_delete_user", side_effect=delete,
+                ):
+                    task = spawn(self.operation(action, user_id), label="統計保存中の中断と復元を検証")
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        task.cancel()
+                        await asyncio.sleep(0)
+                        task.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(task.done())
+                        self.assertTrue(self.service._save_lock.locked())
+                        self.assertEqual(self.service.cache, before)
+                        release.set()
+                        await asyncio.wait_for(restoring.wait(), 2)
+                        task.cancel()
+                        await asyncio.sleep(0)
+                        task.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(task.done())
+                        self.assertTrue(self.service._save_lock.locked())
+                        self.assertEqual(self.service.cache, before)
+                        self.assertEqual(self.service._analysis_versions, versions)
+                    finally:
+                        release.set()
+                        release_restore.set()
+                        await asyncio.gather(task, return_exceptions=True)
+                self.assertTrue(task.cancelled())
+                self.assertEqual(self.service.cache, before)
+                self.assertEqual(self.service._analysis_versions, versions)
+                self.assertEqual(self.db.stats_load_all(), before)
+                self.assertFalse(self.service._save_lock.locked())
+                self.assertEqual(self.service._analysis_tasks, {})
+
+    async def test_failed_cancellation_compensation_is_logged_and_keeps_original_cancellation(self) -> None:
+        before = deepcopy(self.service.cache)
+        entered, release = asyncio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        original_save = self.db.stats_save_user
+        writes = 0
+
+        def save(user_id, entry):
+            nonlocal writes
+            writes += 1
+            if writes > 1:
+                raise OSError("架空の復元失敗")
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(5):
+                raise AssertionError("架空の保存待機が解除されませんでした")
+            original_save(user_id, entry)
+
+        with patch.object(self.db, "stats_save_user", side_effect=save), patch("builtins.print") as log:
+            task = spawn(self.operation("clear"), label="統計復元失敗時の中断を検証")
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                task.cancel()
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+            self.assertTrue(task.cancelled())
+            self.assertTrue(any("会話統計の中断後の復元に失敗" in str(call) for call in log.call_args_list))
+        self.assertEqual(self.service.cache, before)
+        self.assertEqual(self.service._analysis_versions, {})
 
     async def check_analysis_overlap(self, action: str) -> None:
         started, resume = asyncio.Event(), asyncio.Event()
@@ -384,10 +584,10 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
         original_save = self.service._save_user_locked
 
-        async def save(user_id):
+        async def save(user_id, entry=None):
             entered.set()
             await release.wait()
-            return await original_save(user_id)
+            return await original_save(user_id, entry)
 
         with patch.object(self.service, "_save_user_locked", side_effect=save):
             first = self.start_analysis(force=True)
