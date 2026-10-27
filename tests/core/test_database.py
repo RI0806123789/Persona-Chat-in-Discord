@@ -197,6 +197,9 @@ class GuildSettingsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 "auto_topic_enabled": index == 1,
                 "auto_topic_interval_hours": AUTO_TOPIC_INTERVAL_CHOICES[index].value,
                 "autonomous_enabled": index != 2,
+                # 配信先の指定（#266）。DM は指定なしのまま往復させる
+                "autonomous_stage_channel_id": 201 + index if index != 2 else None,
+                "autonomous_voice_channel_id": 301 + index if index == 0 else None,
             }
             for name, value in values.items():
                 setattr(settings, name, value)

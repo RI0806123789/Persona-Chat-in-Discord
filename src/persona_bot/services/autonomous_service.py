@@ -544,7 +544,12 @@ class AutonomousService:
 
         接続異常では再試行を抑止する。利用者の停止・無効化による中断は失敗にしない。
         """
-        channel = autonomous_stage.pick_channel(guild)
+        # 配信先の指定はサービスが BotState を読まずに済むよう、設定の値を渡す。
+        channel = autonomous_stage.pick_channel(
+            guild,
+            stage_channel_id=guild_settings.autonomous_stage_channel_id,
+            voice_channel_id=guild_settings.autonomous_voice_channel_id,
+        )
         if channel is None:
             # 出ていける先が無いサーバー（権限不足・ボイスチャンネルが無いなど）。
             # ここは API を1回も叩かず、チャンネル一覧の権限を見るだけなので

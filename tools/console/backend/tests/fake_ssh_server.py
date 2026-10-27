@@ -429,9 +429,9 @@ def insights_output(bot: FakeBot) -> str:
 # 本当に実行する（件数と中身が食い違わず、スクリプトそのものも SSH 越しに確かめられるように）。
 # 人・サーバー・チャンネル・メッセージの ID と名前、会話の文はすべて架空のもの。
 
-# ボットの bot.db（スキーマ バージョン13）と同じ形。src/persona_bot/core/database.py の初版の定義に
+# ボットの bot.db（スキーマ バージョン15）と同じ形。src/persona_bot/core/database.py の初版の定義に
 # 移行をすべて適用した後の形を書き写したもの（ボットのコードは import しない）。
-FAKE_DB_SCHEMA_VERSION = 13
+FAKE_DB_SCHEMA_VERSION = 15
 FAKE_DB_TABLES = (
     "CREATE TABLE affinity (user_id TEXT PRIMARY KEY, affinity INTEGER NOT NULL DEFAULT 50, "
     "valence INTEGER NOT NULL DEFAULT 50, arousal INTEGER NOT NULL DEFAULT 50, last_interaction REAL NOT NULL DEFAULT 0)",
@@ -451,7 +451,8 @@ FAKE_DB_TABLES = (
     "CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, prompt_file TEXT NOT NULL DEFAULT '', "
     "model_name TEXT NOT NULL DEFAULT '', respond_mode TEXT NOT NULL DEFAULT '', grounding_enabled INTEGER NOT NULL DEFAULT 1, "
     "auto_topic_enabled INTEGER NOT NULL DEFAULT 0, auto_topic_interval_hours INTEGER NOT NULL DEFAULT 6, "
-    "autonomous_enabled INTEGER NOT NULL DEFAULT 0)",
+    "autonomous_enabled INTEGER NOT NULL DEFAULT 0, autonomous_stage_channel_id INTEGER NOT NULL DEFAULT 0, "
+    "autonomous_voice_channel_id INTEGER NOT NULL DEFAULT 0)",
     "CREATE TABLE anniversary_posts (guild_id INTEGER NOT NULL, user_id TEXT NOT NULL, label TEXT NOT NULL, "
     "posted_date TEXT NOT NULL, PRIMARY KEY (guild_id, user_id, label))",
     "CREATE TABLE reminders (reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, "
@@ -463,6 +464,7 @@ FAKE_DB_TABLES = (
     "prompt_file TEXT NOT NULL DEFAULT '', rating INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (message_id, user_id))",
     "CREATE INDEX idx_feedback_created_message ON feedback (created_at DESC, message_id DESC)",
     "CREATE INDEX idx_pending_log_user_id ON pending_log (user_id, id)",
+    "CREATE INDEX idx_profile_key_user ON profile (key, user_id)",
 )
 # 架空の利用者（ID, 表示名）。最後の人は会話統計の収集を止めている
 FAKE_USERS = [
@@ -570,14 +572,14 @@ def make_fake_database(directory: Path) -> tuple[Path, Path]:
             con.execute("INSERT INTO profile VALUES (?, ?, ?)", (user_id, key, json.dumps(value, ensure_ascii=False)))
 
         con.execute(
-            "INSERT INTO guild_settings VALUES (0, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'all', 0, 0, 6, 0)"
+            "INSERT INTO guild_settings VALUES (0, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'all', 0, 0, 6, 0, 0, 0)"
         )
         con.execute(
-            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_tsun.txt', 'gemini-3-flash', 'mention', 1, 1, 3, 1)",
+            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_tsun.txt', 'gemini-3-flash', 'mention', 1, 1, 3, 1, 0, 0)",
             (FAKE_GUILD_IDS[0],),
         )
         con.execute(
-            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'mention', 1, 0, 12, 0)",
+            "INSERT INTO guild_settings VALUES (?, '../prompts/prompt_default.txt', 'gemini-3.1-flash-lite', 'mention', 1, 0, 12, 0, 0, 0)",
             (FAKE_GUILD_IDS[1],),
         )
 

@@ -46,6 +46,8 @@ class OpenSettingsButton(ui.Button):
             ng_count=hub.ng_filter.word_count,
             blacklist_status=blacklist_status,
             make_hub=hub.clone,
+            # 押した時点の権限で、管理者専用の 🎙️ 配信先 を出すかを決める
+            is_admin=is_administrator(interaction.user),
         )
         # 同じ（エフェメラルな）メッセージをキャラ設定パネルに差し替える
         await swap_panel(interaction, hub, settings_view, settings_view.build_preview())

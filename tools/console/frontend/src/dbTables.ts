@@ -174,7 +174,7 @@ export const DB_TABLE_SPECS: Record<string, TableSpec> = {
   guild_settings: {
     label: "サーバー設定",
     icon: "guilds",
-    description: "サーバーごとのペルソナ・モデル・応答のしかたと、自発会話・自律行動の設定。DM は全員で1つの設定を共有します。",
+    description: "サーバーごとのペルソナ・モデル・応答のしかたと、自発会話・自律行動（配信先を含む）の設定。DM は全員で1つの設定を共有します。",
     order: "サーバー ID の順（DM が先頭）",
     columns: [
       { key: "guild_id", label: "サーバー", kind: "guild", list: true },
@@ -185,6 +185,9 @@ export const DB_TABLE_SPECS: Record<string, TableSpec> = {
       { key: "auto_topic_enabled", label: "自発会話", kind: "flag", list: true },
       { key: "auto_topic_interval_hours", label: "しきい値", kind: "hours", list: true },
       { key: "autonomous_enabled", label: "自律行動", kind: "flag", list: true },
+      // 0 は「指定なし（自動）」
+      { key: "autonomous_stage_channel_id", label: "配信先のステージ", kind: "id" },
+      { key: "autonomous_voice_channel_id", label: "配信先のボイス", kind: "id" },
     ],
   },
   anniversary_posts: {
