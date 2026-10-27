@@ -48,6 +48,7 @@ class PanelNavigationTests(unittest.IsolatedAsyncioTestCase):
         panel.add_item(button)
         interaction, webhook_message = self.make_interaction()
         await button.callback(interaction)
+        panel.make_hub.assert_called_once_with(interaction)
         self.assertTrue(panel.is_finished())
         self.assertIs(hub.message, webhook_message)
         interaction.response.edit_message.assert_awaited_once_with(content="機能パネル", view=hub)

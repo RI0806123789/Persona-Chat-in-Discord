@@ -28,11 +28,12 @@ from persona_bot.views.auto_topic_view import (
 from persona_bot.views.settings_view import ConfirmButton, ModelSelect, PersonaSelect, RespondModeSelect, SettingsView
 from persona_bot.views.unblock_view import UnblockSelect, UnblockView
 from tests.helpers.persona_helpers import install_persona_catalog
+from tests.helpers.member_helpers import make_member
 
 
 def make_interaction(*, admin: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
-        user=Mock(spec=discord.Member, guild_permissions=SimpleNamespace(administrator=admin)),
+        user=make_member(admin=admin),
         response=SimpleNamespace(
             defer=AsyncMock(), edit_message=AsyncMock(), send_message=AsyncMock(), is_done=Mock(return_value=False),
         ),
@@ -177,7 +178,7 @@ class UnblockPanelTests(unittest.IsolatedAsyncioTestCase):
                 view, blacklist = self.make_view(users, unblocked=unblocked)
                 interaction = await press(view, UnblockSelect, values=["22"])
                 blacklist.unblock.assert_awaited_once_with(22)
-                interaction.response.defer.assert_awaited_once()
+                interaction.response.defer.assert_awaited_once_with(ephemeral=True)
                 self.assertEqual(interaction.edit_original_response.await_args.kwargs,
                                  {"content": expected, "view": None})
 

@@ -14,7 +14,7 @@ from persona_bot.utils.discord_helpers import reject_blocked_interaction
 # ハブ（機能パネル）を再生成する呼び出し可能オブジェクトの型。
 # functions_view を直接 import すると循環参照になるため、呼び出し側から
 # FunctionsView.clone のような生成関数を受け取る形にする。
-HubFactory = Callable[[], Any]
+HubFactory = Callable[[discord.Interaction], Any]
 
 
 class _PanelState:
@@ -280,7 +280,7 @@ class BackButton(ui.Button):
                 view.stop()
             return
 
-        hub = make_hub()
+        hub = make_hub(interaction)
         hub.blocked_user_check = getattr(view, "blocked_user_check", None)
         if not await edit_panel_message(interaction, content=hub.build_preview(), view=hub, source=view):
             return
