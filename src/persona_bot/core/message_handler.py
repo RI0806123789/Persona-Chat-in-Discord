@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING
 
 import discord
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
     from persona_bot.services.reminder_service import ReminderService
     from persona_bot.services.stats_service import StatsService
     from persona_bot.utils.usage_graph import UsageTracker
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -466,8 +470,8 @@ class MessageHandler:
                 try:
                     prompt = await load_persona_template(response_settings.prompt_file)
                 except FileNotFoundError:
-                    print(f"エラー: {response_settings.prompt_file} が見つかりません。")
-                    await message.reply(f"エラー: プロンプトファイル({response_settings.prompt_file})が見つかりませんでした。")
+                    logger.warning("プロンプトファイルが見つかりません: %s", response_settings.prompt_file, exc_info=True)
+                    await message.reply("会話設定のファイルが見つかりません。管理者に設定の確認を依頼してください。")
                     return None
 
                 full_prompt = build_full_prompt(
@@ -498,7 +502,7 @@ class MessageHandler:
                     question, f"画像添付: {len(image_objects)}枚", full_prompt, response_text, usage_info,
                 )
 
-                # タグの抽出だけ先に行い、親密度の更新はモデレーション通過後に行う。
+                # タグの抽出だけ先に行い、親密度の更新はモデレーション通過・送信成功後に行う。
                 response_text, emotion_changes = extract_affinity_changes(response_text)
 
                 # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
@@ -511,11 +515,6 @@ class MessageHandler:
                 response_text, accepted = await screen_bot_response_with_status(
                     response_text, self.ng_filter, self.moderator, log_label="Bot応答",
                 )
-                if accepted and emotion_changes is not None:
-                    v_change, a_change = emotion_changes
-                    self.affinity.update_emotion(user_id, v_change, a_change)
-                    spawn(self.affinity.save_background(user_id), label="親密度の保存")
-
                 # 参考リンクは送信用テキストにのみ追記する
                 # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
                 reply_text = response_text
@@ -526,6 +525,13 @@ class MessageHandler:
                 sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
                 # ★ ここから先は送信済みの返信に付随する処理。どれが失敗しても、送った本文は
                 # 呼出元の読み上げへ返す（#157）。再生成・再送はしない（二重返信になるため）。
+                if accepted and emotion_changes is not None:
+                    try:
+                        v_change, a_change = emotion_changes
+                        self.affinity.update_emotion(user_id, v_change, a_change)
+                        spawn(self.affinity.save_background(user_id), label="親密度の保存")
+                    except Exception:
+                        logger.warning("親密度の更新に失敗しました（返信は送信済み）。", exc_info=True)
                 if accepted:
                     self._track_reply_for_feedback(sent, user_id, response_settings, generated_model)
                 if accepted and await self._remember_reply(user_id, question, response_text):

@@ -1,5 +1,6 @@
 import asyncio
 from functools import wraps
+import logging
 from typing import Callable
 
 import discord
@@ -22,6 +23,33 @@ from persona_bot.services.reminder_service import ReminderService
 from persona_bot.services.stats_service import StatsService
 from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
+
+
+logger = logging.getLogger(__name__)
+
+
+async def _cleanup_failed_voice_join(
+    guild: discord.Guild | None, voice_client: discord.VoiceClient | None,
+    voice_guard: VoiceGuard | None,
+) -> None:
+    """今回の試行が残した未接続のVoiceClientだけを切断し、SDKの登録も回収する。"""
+    if (guild is None or voice_client is None or guild.voice_client is not voice_client
+            or voice_client.is_connected()):
+        return
+    if voice_guard is not None:
+        voice_guard.release(guild.id)
+    try:
+        await voice_client.disconnect(force=True)
+    except Exception:
+        logger.warning("接続失敗後のボイス切断に失敗しました。", exc_info=True)
+    finally:
+        # 切断自体が失敗しても、半接続の登録を残して次回の参加を妨げない。
+        # 待つ間に差し替わった接続や、正常につながった接続は解除しない。
+        if guild.voice_client is voice_client and not voice_client.is_connected():
+            try:
+                voice_client.cleanup()
+            except Exception:
+                logger.warning("接続失敗後のボイス登録の解除に失敗しました。", exc_info=True)
 
 
 async def handle_command_error(
@@ -220,8 +248,8 @@ def register_commands(
                     await wait_for_cleanup(
                         voice_client.disconnect(force=True), label="参加前のボイス切断",
                     )
-                except Exception as error:
-                    print(f"接続切替エラー（既存接続の切断）: {type(error).__name__}")
+                except Exception:
+                    logger.warning("接続切替時に既存のボイス接続を切断できませんでした。", exc_info=True)
                     await interaction.followup.send(
                         "⚠️ 既存のボイス接続を切断できなかったため、接続先を切り替えられませんでした。"
                         "しばらく待ってからもう一度お試しください。"
@@ -232,32 +260,51 @@ def register_commands(
             return
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。
+        attempted_voice_client = None
+
+        def create_voice_client(client, channel):
+            # SDKの登録直前に参照を控え、接続失敗時もこの試行の接続だけを回収する。
+            nonlocal attempted_voice_client
+            attempted_voice_client = discord.VoiceClient(client, channel)
+            return attempted_voice_client
+
         try:
-            await wait_for_cleanup(
-                voice_channel.connect(timeout=VOICE_CONNECT_TIMEOUT_SECONDS), label="ボイス参加の接続完了",
-            )
+            try:
+                await wait_for_cleanup(
+                    voice_channel.connect(timeout=VOICE_CONNECT_TIMEOUT_SECONDS, cls=create_voice_client),
+                    label="ボイス参加の接続完了",
+                )
+            except (Exception, asyncio.CancelledError):
+                await wait_for_cleanup(
+                    _cleanup_failed_voice_join(guild, attempted_voice_client, voice_guard),
+                    label="ボイス参加失敗の後片付け",
+                )
+                raise
         except discord.Forbidden:
-            print(f"接続エラー (権限不足): {voice_channel.name}")
+            logger.warning("ボイス接続が権限不足で拒否されました。", exc_info=True)
             await interaction.followup.send(
                 f"⚠️ {voice_channel.name} への接続を拒否されました（権限不足）。"
                 "チャンネルの権限設定でボットに「接続」を許可してください。"
             )
         except asyncio.TimeoutError:
-            print(f"接続エラー (タイムアウト): {voice_channel.name}")
+            logger.warning("ボイス接続がタイムアウトしました。", exc_info=True)
             await interaction.followup.send(
                 "⚠️ 接続がタイムアウトしました。ボイス通信に必要な UDP が"
                 "ネットワーク側（ファイアウォール・学内ネットワークなど）で遮断されている可能性があります。"
             )
-        except discord.ClientException as error:
+        except discord.ClientException:
             # 例: 直前の接続が残っている（Already connected to a voice channel.）
-            print(f"接続エラー (状態不整合): {error}")
+            logger.warning("ボイス接続の状態が一致しませんでした。", exc_info=True)
             await interaction.followup.send(
-                f"⚠️ 接続できませんでした（{error}）。"
+                "⚠️ ボイス接続の状態を確認できず、接続できませんでした。"
                 "しばらく待つか、ボットを再起動してからもう一度お試しください。"
             )
-        except Exception as error:
-            print(f"接続エラー ({type(error).__name__}): {error}")
-            await interaction.followup.send(f"⚠️ 接続に失敗しました（{type(error).__name__}: {error}）。")
+        except Exception:
+            logger.error("ボイス接続に失敗しました。", exc_info=True)
+            await interaction.followup.send(
+                "⚠️ ボイス接続に失敗しました。しばらく待ってからもう一度お試しください。"
+                "解消しない場合は管理者にログの確認を依頼してください。"
+            )
         else:
             # 接続イベントでも登録されるが、人が選んだ接続先を明示的に意図した接続先にする。
             if voice_guard is not None and guild is not None:
