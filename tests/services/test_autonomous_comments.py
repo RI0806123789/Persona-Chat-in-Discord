@@ -17,8 +17,12 @@ from persona_bot.core.app_state import AutonomousSession, BotState
 from persona_bot.core import message_handler
 from persona_bot.services import autonomous_service
 from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.core.background import spawn
-from persona_bot.config.constants import AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, MAX_DOCUMENT_SIZE_BYTES, MAX_IMAGE_SIZE_BYTES
+from persona_bot.config.constants import (
+    AUTONOMOUS_COMMENT_COOLDOWN_SECONDS, CHAT_MAX_CONCURRENT_PER_GUILD,
+    MAX_DOCUMENT_SIZE_BYTES, MAX_IMAGE_SIZE_BYTES,
+)
 from persona_bot.utils import discord_helpers
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, is_supported_document_attachment,
@@ -370,6 +374,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         await self.on_message(self.message)
         self.normal_reply.assert_awaited_once()
         self.gemini.generate.assert_not_awaited()
+        self.topic.watch_channel.assert_called_once_with(10, 1)
 
     async def test_session_end_without_normal_acceptance_is_not_answered(self) -> None:
         self.moderator.check_and_route.side_effect = self.end_session_during_input
@@ -397,6 +402,147 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.session.last_comment_reply_at)
         with self.assertRaises(ValueError):
             image.getpixel((0, 0))
+        self.topic.watch_channel.assert_called_once_with(10, 1)
+
+    async def test_ending_before_admission_uses_normal_agent_routing_and_channel_watch(self) -> None:
+        self.message.content = "<@99> サブエージェントで架空の調べ物をしてください"
+        self.message.mentions = [self.client.user]
+
+        async def end_before_admission(*args):
+            self.settings.autonomous_session = None
+            return False
+
+        self.handler._reject_ng_input = AsyncMock(side_effect=end_before_admission)
+        self.handler._handle_agent_request = AsyncMock(return_value=None)
+        for delegate in (False, True):
+            with self.subTest(delegate=delegate):
+                self.settings.autonomous_session = self.session
+                self.topic.watch_channel.reset_mock()
+                self.normal_reply.reset_mock()
+                self.handler._handle_agent_request.reset_mock()
+                plan = AgentPlan(delegate=delegate, task="架空の調べ物")
+                self.moderator.check_route_and_plan = AsyncMock(return_value=(True, "", "none", None, plan))
+                with patch.object(message_handler, "fetch_channel_history_text", AsyncMock(return_value="架空の履歴")) as history:
+                    await self.on_message(self.message)
+                self.moderator.check_route_and_plan.assert_awaited_once_with(
+                    "サブエージェントで架空の調べ物をしてください", "架空の履歴",
+                )
+                history.assert_awaited_once()
+                self.moderator.check_and_route.assert_not_awaited()
+                self.topic.watch_channel.assert_called_once_with(10, 1)
+                self.assertIsNone(self.session.last_comment_reply_at)
+                self.assertEqual(self.handler._chat_admission._running, 0)
+                if delegate:
+                    self.handler._handle_agent_request.assert_awaited_once()
+                    self.assertIs(self.handler._handle_agent_request.await_args.args[3], plan)
+                    self.normal_reply.assert_not_awaited()
+                else:
+                    self.handler._handle_agent_request.assert_not_awaited()
+                    self.normal_reply.assert_awaited_once()
+                    self.assertTrue(self.normal_reply.await_args.kwargs["delegation_section"])
+
+    async def test_ending_before_admission_does_not_accept_an_unmentioned_comment(self) -> None:
+        async def end_before_admission(*args):
+            self.settings.autonomous_session = None
+            return False
+
+        self.handler._reject_ng_input = AsyncMock(side_effect=end_before_admission)
+        await self.on_message(self.message)
+        self.moderator.check_and_route.assert_not_awaited()
+        self.topic.watch_channel.assert_not_called()
+        self.normal_reply.assert_not_awaited()
+        self.assertEqual(self.handler._chat_admission._running, 0)
+
+    async def test_empty_image_validation_after_stream_end_uses_normal_attachment_routing(self) -> None:
+        self.message.content = "<@99>"
+        self.message.mentions = [self.client.user]
+        enqueue = self.handler.documents.enqueue_from_message = AsyncMock(return_value="fictional-task")
+
+        async def load(*args):
+            self.settings.autonomous_session = None
+            return []
+
+        for index, (filename, content_type, notice) in enumerate((
+            ("fictional.pdf", "application/pdf", "受付が完了"),
+            ("fictional.txt", "text/plain", "受付が完了"),
+            ("broken.png", "image/png", "画像を読み込めませんでした"),
+            ("fictional.zip", "application/zip", "未対応の添付ファイル"),
+        )):
+            with self.subTest(filename=filename):
+                self.settings.autonomous_session = self.session
+                self.message.author.id = 11 + index
+                self.message.attachments = [SimpleNamespace(filename=filename, content_type=content_type, size=10)]
+                self.message.reply.reset_mock()
+                self.topic.watch_channel.reset_mock()
+                enqueue.reset_mock()
+                # 画像の失敗案内まで、実際の通常会話ハンドラーを通す。
+                self.handler.handle_chat_message = message_handler.MessageHandler.handle_chat_message.__get__(self.handler)
+                with patch.object(message_handler, "load_image_attachments", AsyncMock(side_effect=load)) as loader:
+                    await self.on_message(self.message)
+                loader.assert_awaited_once()
+                self.message.reply.assert_awaited_once()
+                self.assertIn(notice, self.message.reply.await_args.args[0])
+                if filename.endswith((".pdf", ".txt")):
+                    enqueue.assert_awaited_once_with(self.message, "", self.message.attachments)
+                else:
+                    enqueue.assert_not_awaited()
+                self.topic.watch_channel.assert_called_once_with(10, 1)
+                self.moderator.check_and_route.assert_not_awaited()
+                self.gemini.generate.assert_not_awaited()
+                self.assertIsNone(self.session.last_comment_reply_at)
+                self.assertEqual(self.handler._chat_admission._running, 0)
+
+    async def test_empty_image_validation_keeps_live_stream_comments_out_of_document_queue(self) -> None:
+        self.message.content = "<@99>"
+        self.message.mentions = [self.client.user]
+        self.message.attachments = [SimpleNamespace(filename="fictional.pdf", content_type="application/pdf", size=10)]
+        self.handler.documents.enqueue_from_message = AsyncMock()
+        with patch.object(message_handler, "load_image_attachments", AsyncMock(return_value=[])):
+            await self.on_message(self.message)
+        self.handler.documents.enqueue_from_message.assert_not_awaited()
+        self.message.reply.assert_not_awaited()
+        self.topic.watch_channel.assert_not_called()
+        self.assertIsNone(self.session.last_comment_reply_at)
+        self.assertEqual(self.handler._chat_admission._running, 0)
+
+    async def test_empty_image_validation_drops_unmentioned_comments_after_stream_end(self) -> None:
+        self.message.content = ""
+        self.message.attachments = [SimpleNamespace(filename="fictional.pdf", content_type="application/pdf", size=10)]
+        self.handler.documents.enqueue_from_message = AsyncMock()
+
+        async def load(*args):
+            self.settings.autonomous_session = None
+            return []
+
+        with patch.object(message_handler, "load_image_attachments", AsyncMock(side_effect=load)):
+            await self.on_message(self.message)
+        self.handler.documents.enqueue_from_message.assert_not_awaited()
+        self.message.reply.assert_not_awaited()
+        self.topic.watch_channel.assert_not_called()
+        self.assertEqual(self.handler._chat_admission._running, 0)
+
+    async def test_empty_image_fallback_respects_full_normal_admission(self) -> None:
+        self.message.content = "<@99>"
+        self.message.mentions = [self.client.user]
+        self.message.attachments = [SimpleNamespace(filename="fictional.pdf", content_type="application/pdf", size=10)]
+        self.handler.documents.enqueue_from_message = AsyncMock()
+        for index in range(CHAT_MAX_CONCURRENT_PER_GUILD):
+            self.assertIsNone(self.handler._chat_admission.try_acquire(100 + index, 1))
+
+        async def load(*args):
+            self.settings.autonomous_session = None
+            return []
+
+        try:
+            with patch.object(message_handler, "load_image_attachments", AsyncMock(side_effect=load)):
+                await self.on_message(self.message)
+            self.message.reply.assert_awaited_once()
+            self.handler.documents.enqueue_from_message.assert_not_awaited()
+            self.moderator.check_and_route.assert_not_awaited()
+        finally:
+            for _ in range(CHAT_MAX_CONCURRENT_PER_GUILD):
+                self.handler._chat_admission.release(1)
+        self.assertEqual(self.handler._chat_admission._running, 0)
 
     async def test_replaced_session_does_not_reuse_old_admission(self) -> None:
         replacement = self.new_session()

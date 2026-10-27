@@ -171,6 +171,7 @@ class AutoTopicService:
         あるまで再実行されない（投稿できた場合と、モデレーション見送りのように
         リトライしても同じ結果になる場合）。False は一時的な失敗で、次回の
         見回りでリトライされる。設定・活動の変更による中止も False を返して記録しない。
+        生成前の権限不足は False、生成後の権限不足は True として再生成を抑える。
         """
         last_activity = guild_settings.auto_topic_channels.get(channel.id)
         if not self._topic_is_due(guild_settings, channel.id) or not self._can_send(channel):
@@ -199,7 +200,8 @@ class AutoTopicService:
             history_text,
         )
 
-        if not self._topic_is_due(guild_settings, channel.id, last_activity=last_activity):
+        if (not self._topic_is_due(guild_settings, channel.id, last_activity=last_activity)
+                or not self._can_send(channel)):
             return False
 
         # 話題提供に Google 検索は不要なためグラウンディングは無効で呼び出す
@@ -218,6 +220,10 @@ class AutoTopicService:
         screened, done = await self._screen_auto_post(response_text, "自発的な会話")
         if not self._topic_is_due(guild_settings, channel.id, last_activity=last_activity):
             return False
+        if not self._can_send(channel):
+            # 既に生成した後なので、送信時の Forbidden と同じく再生成を抑える。
+            print(f"自発的な会話: 生成後に送信権限がなくなったため話題提供を見送ります (channel={channel.id})。")
+            return True
         if screened is None:
             return done
         response_text = screened
@@ -476,7 +482,7 @@ class AutoTopicService:
         full_prompt = build_anniversary_prompt(persona_prompt, member.display_name, label, history_text)
 
         if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
-                or not channel.permissions_for(member).view_channel):
+                or not self._can_send(channel) or not channel.permissions_for(member).view_channel):
             return False
 
         response_text, usage_info, _sources = await self._gemini.generate(
@@ -495,6 +501,10 @@ class AutoTopicService:
         if (not guild_settings.auto_topic_enabled or channel.id not in guild_settings.auto_topic_channels
                 or not channel.permissions_for(member).view_channel):
             return False
+        if not self._can_send(channel):
+            # 当日中の再生成を止める。生成文は別チャンネルへ流用しない。
+            print(f"記念日: 生成後に送信権限がなくなったため今日のお祝いを見送ります (channel={channel.id})。")
+            return True
         if screened is None:
             return done
         response_text = screened

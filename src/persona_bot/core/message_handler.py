@@ -202,7 +202,9 @@ class MessageHandler:
             image_objects = await load_image_attachments(message.attachments)
         try:
             if image_objects is not None and not image_objects:
-                return
+                # 画像確認中に配信が終わったら、通常の文書受付・画像失敗案内へ進める。
+                if not accepts_normally or self.autonomous.is_comment_channel(message.channel.id, guild_id):
+                    return
             await self._process_accepted_message(
                 message, question, guild_settings, accepts_normally=accepts_normally,
                 is_autonomous_comment=is_autonomous_comment, image_objects=image_objects,
@@ -227,6 +229,8 @@ class MessageHandler:
 
         normal_slot_acquired = False
         if claimed_comment_session is None:
+            # 入口ではコメントでも、受付前に配信が終わった場合は通常の委任判定を使う。
+            is_autonomous_comment = False
             if not accepts_normally:
                 return
             normal_slot_acquired = await self._try_acquire_chat_slot(message, guild_id)
@@ -259,13 +263,6 @@ class MessageHandler:
 
             self.state.touch()
 
-            # （DM は「テキストチャンネルへの話題提供」の対象外とする）。
-            # 配信中のコメント欄も対象外にする。ここで登録してしまうと、配信が終わった後も
-            # そのボイスチャンネルのチャットが自発的な話題提供の監視対象として残り続け、
-            # 「配信のコメント欄」だった場所へ延々とテキストの話題が投稿される。
-            if not is_dm and not is_autonomous_comment:
-                self.auto_topic.watch_channel(message.channel.id, guild_id)
-
             # モデレーション後の配信状態を取り直し、通常チャットの副作用より先に振り分ける。
             if self.autonomous.is_comment_channel(message.channel.id, guild_id):
                 comment_session = guild_settings.autonomous_session
@@ -289,6 +286,11 @@ class MessageHandler:
                 normal_slot_acquired = await self._try_acquire_chat_slot(message, guild_id)
                 if not normal_slot_acquired:
                     return
+
+            # 配信の再確認と通常枠の確保が済んだ発言だけ、話題提供の監視へ登録する。
+            # 入力判定中に配信が終わった場合も対象にし、配信中のコメントとDMは登録しない。
+            if not is_dm:
+                self.auto_topic.watch_channel(message.channel.id, guild_id)
 
             document_attachments = [
                 attachment

@@ -203,6 +203,65 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.service.run_pending_checks()
         self.gemini.generate.assert_not_awaited()
 
+    def prepare_topic_permission_case(self, permission):
+        """通常チャンネルとスレッドの、変更可能なボット権限を用意する。"""
+        self.permissions = SimpleNamespace(view_channel=True, send_messages=True, send_messages_in_threads=True)
+        self.channel = Mock(spec=discord.Thread) if permission == "send_messages_in_threads" else SimpleNamespace()
+        self.channel.id, self.channel.name = 10, "架空のチャンネル"
+        self.channel.guild = SimpleNamespace(me=object())
+        self.channel.permissions_for = Mock(return_value=self.permissions)
+        self.channel.send = AsyncMock()
+        self.client.get_channel.return_value = self.channel
+        self.settings.auto_topic_posted_at.clear()
+        self.gemini.generate.reset_mock()
+        self.moderator.check.reset_mock()
+
+    async def test_topic_permission_loss_before_generation_skips_api_and_allows_retry(self):
+        for stage in ("prompt", "history"):
+            for permission in ("view_channel", "send_messages", "send_messages_in_threads"):
+                with self.subTest(stage=stage, permission=permission):
+                    self.prepare_topic_permission_case(permission)
+
+                    async def revoke(*args, **kwargs):
+                        setattr(self.permissions, permission, False)
+                        return "架空のペルソナまたは履歴"
+
+                    name = "load_persona_template" if stage == "prompt" else "fetch_channel_history_text"
+                    with patch.object(auto_topic_service, name, new=AsyncMock(side_effect=revoke)):
+                        await self.service.run_pending_checks()
+                    self.gemini.generate.assert_not_awaited()
+                    self.moderator.check.assert_not_awaited()
+                    self.channel.send.assert_not_awaited()
+                    self.assertNotIn(10, self.settings.auto_topic_posted_at)
+
+                    setattr(self.permissions, permission, True)
+                    await self.service.run_pending_checks()
+                    await self.service.run_pending_checks()
+                    self.gemini.generate.assert_awaited_once()
+                    self.channel.send.assert_awaited_once()
+                    self.assertIn(10, self.settings.auto_topic_posted_at)
+
+    async def test_topic_permission_loss_after_generation_skips_send_without_regeneration(self):
+        for stage in ("generation", "moderation"):
+            for permission in ("view_channel", "send_messages", "send_messages_in_threads"):
+                with self.subTest(stage=stage, permission=permission):
+                    self.prepare_topic_permission_case(permission)
+
+                    async def revoke(*args, **kwargs):
+                        setattr(self.permissions, permission, False)
+                        return ("架空の話題", None, []) if stage == "generation" else (True, "")
+
+                    target, name = (self.gemini, "generate") if stage == "generation" else (self.moderator, "check")
+                    with patch.object(target, name, new=AsyncMock(side_effect=revoke)):
+                        await self.service.run_pending_checks()
+                        self.channel.send.assert_not_awaited()
+                        self.assertIn(10, self.settings.auto_topic_posted_at)
+                        setattr(self.permissions, permission, True)
+                        await self.service.run_pending_checks()
+                        self.gemini.generate.assert_awaited_once()
+                        self.moderator.check.assert_awaited_once()
+                        self.channel.send.assert_not_awaited()
+
     async def test_topic_rechecks_conditions_after_each_wait_without_recording_cancellation(self):
         for stage in ("prompt", "history", "generation", "moderation"):
             for change in ("disabled", "activity", "session", "interval", "unwatched"):
@@ -382,6 +441,69 @@ class AnniversaryChannelTests(unittest.IsolatedAsyncioTestCase):
         await self.celebrate()
         self.channels[10].send.assert_not_awaited()
         self.assert_recorded(False)
+
+    def reset_bot_permissions(self):
+        """対象者の閲覧権限を保ったまま、ボット側の権限だけを変更できるようにする。"""
+        self.settings.anniversary_posted_dates.clear()
+        self.gemini.generate.reset_mock()
+        self.service._moderator.check.reset_mock()
+        for channel in self.channels.values():
+            channel.send.reset_mock()
+            channel.permissions.view_channel = True
+            channel.permissions.send_messages = True
+        channel = self.channels[10]
+        visible = SimpleNamespace(view_channel=True)
+        channel.permissions_for.side_effect = lambda member: channel.permissions if member is channel.guild.me else visible
+        return channel
+
+    async def test_anniversary_bot_permission_loss_before_generation_can_retry_another_channel(self):
+        for stage in ("prompt", "history"):
+            for permission in ("view_channel", "send_messages"):
+                with self.subTest(stage=stage, permission=permission):
+                    channel = self.reset_bot_permissions()
+
+                    async def revoke(*args, **kwargs):
+                        setattr(channel.permissions, permission, False)
+                        return "架空のペルソナまたは履歴"
+
+                    name = "load_persona_template" if stage == "prompt" else "fetch_channel_history_text"
+                    with patch.object(auto_topic_service, name, new=AsyncMock(side_effect=revoke)):
+                        await self.celebrate()
+                    self.gemini.generate.assert_not_awaited()
+                    self.service._moderator.check.assert_not_awaited()
+                    for candidate in self.channels.values():
+                        candidate.send.assert_not_awaited()
+                    self.assert_recorded(False)
+
+                    # 次の巡回では送れない最新チャンネルを避け、別の閲覧可能な場所でお祝いする。
+                    await self.celebrate()
+                    await self.celebrate()
+                    self.channels[20].send.assert_awaited_once()
+                    self.channels[10].send.assert_not_awaited()
+                    self.gemini.generate.assert_awaited_once()
+                    self.assert_recorded(True)
+
+    async def test_anniversary_bot_permission_loss_after_generation_prevents_send_and_regeneration(self):
+        for stage in ("generation", "moderation"):
+            for permission in ("view_channel", "send_messages"):
+                with self.subTest(stage=stage, permission=permission):
+                    channel = self.reset_bot_permissions()
+
+                    async def revoke(*args, **kwargs):
+                        setattr(channel.permissions, permission, False)
+                        return ("架空のお祝い", None, []) if stage == "generation" else (True, "")
+
+                    target, name = ((self.gemini, "generate") if stage == "generation"
+                                    else (self.service._moderator, "check"))
+                    with patch.object(target, name, new=AsyncMock(side_effect=revoke)):
+                        await self.celebrate()
+                        self.assert_recorded(True)
+                        setattr(channel.permissions, permission, True)
+                        await self.celebrate()
+                        self.gemini.generate.assert_awaited_once()
+                        self.service._moderator.check.assert_awaited_once()
+                        for candidate in self.channels.values():
+                            candidate.send.assert_not_awaited()
 
     async def test_disabled_auto_topic_keeps_watched_channels_but_posts_no_anniversary(self):
         self.settings.auto_topic_enabled = False
