@@ -22,6 +22,7 @@ CPU 1コア / メモリ 1GB 級の小さなサーバーでも動かせるよう�
 """
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 import io
 import re
@@ -322,10 +323,10 @@ class _SpeechRequest:
         )
 
 
-_speech_queues: dict[int, asyncio.Queue[_SpeechRequest]] = {}
+_speech_queues: dict[int, deque[_SpeechRequest]] = {}
 
 
-def _discard_speech_queue(guild_id: int, queue: asyncio.Queue[_SpeechRequest]) -> None:
+def _discard_speech_queue(guild_id: int, queue: deque[_SpeechRequest]) -> None:
     if _speech_queues.get(guild_id) is queue:
         _speech_queues.pop(guild_id, None)
 
@@ -335,13 +336,12 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
     queue = _speech_queues[guild.id]
     try:
         while True:
-            try:
-                request = queue.get_nowait()
-            except asyncio.QueueEmpty:
+            if not queue:
                 # ここから return までに await を挟まないこと。挟むと、キューが空だと
                 # 判断した後・登録を消す前に新しい依頼が積まれ、その分が
                 # 誰にも処理されないまま取り残される。
                 return
+            request = queue.popleft()
 
             # 読み上げている間に /leave された場合に備え、毎回その時点の接続を見る。
             if not request.matches_connection(guild):
@@ -440,9 +440,8 @@ async def speak_text(
 
     queue = _speech_queues.get(guild.id)
     if queue is None:
-        queue = asyncio.Queue(maxsize=TTS_QUEUE_MAX)
+        queue = deque([request])
         _speech_queues[guild.id] = queue
-        queue.put_nowait(request)
         worker = spawn(_run_speech_worker(guild), label="ボイス読み上げ")
         if worker is not None:
             # 終了と競合して開始前にキャンセルされた場合は finally が走らない。
@@ -450,16 +449,13 @@ async def speak_text(
         return
 
     # 接続切替前の待機要素が上限を埋めていても、新しい接続の返信を受け付ける。
-    pending = []
-    while not queue.empty():
-        queued = queue.get_nowait()
-        if queued.matches_connection(guild):
-            pending.append(queued)
-    for queued in pending:
-        queue.put_nowait(queued)
-    try:
-        queue.put_nowait(request)
-    except asyncio.QueueFull:
+    pending = [queued for queued in queue if queued.matches_connection(guild)]
+    # ワーカーも同じdequeを参照するため、登録を差し替えず中身だけ整理する。
+    queue.clear()
+    queue.extend(pending)
+    if len(queue) >= TTS_QUEUE_MAX:
         # 読み上げが追いつかないほど返信が続いた場合。古い返信を延々と喋り続けるより、
         # 遅れた分は捨てて会話の現在地に追従する方が自然なため、この返信は見送る。
         print("TTS: 読み上げの待ち行列が上限に達したため、この返信の読み上げを見送ります。")
+        return
+    queue.append(request)

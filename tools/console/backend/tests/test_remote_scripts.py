@@ -42,6 +42,11 @@ RESPOND_MODE_CHOICES = [
     app_commands.Choice(name="すべての発言に反応", value="all"),
     app_commands.Choice(name="メンションのみに反応", value=DEFAULT_RESPOND_MODE),
 ]
+AUTO_TOPIC_INTERVAL_CHOICES = [
+    app_commands.Choice(name="1時間", value=1),
+    app_commands.Choice(name="3時間", value=3),
+    app_commands.Choice(name="6時間", value=6),
+]
 '''
 
 
@@ -127,7 +132,8 @@ class InsightsScriptTests(unittest.TestCase):
         self.temp.cleanup()
 
     def insights(self, env: dict | None = None, *, responses=None, journal=None, journal_code=0,
-                 journal_grep_code=None, journal_stderr="private journal detail", sudo=False) -> dict:
+                 journal_grep_code=None, journal_stderr="private journal detail", sudo=False,
+                 journal_error=None, settings_cases=None, journal_recent=None) -> dict:
         # 子プロセス内で外部境界だけを差し替え、スクリプト全体を実行する
         prelude = ""
         if responses is not None or journal is not None:
@@ -135,6 +141,7 @@ class InsightsScriptTests(unittest.TestCase):
 import io, json, subprocess, urllib.request, urllib.error, urllib.parse
 _responses = {responses!r}
 _journal = {journal!r}
+_journal_calls = []
 def _fake_urlopen(request, **kwargs):
     parsed = urllib.parse.urlsplit(request.full_url)
     path = parsed.path.removeprefix('/api/v10')
@@ -145,8 +152,13 @@ def _fake_urlopen(request, **kwargs):
     return io.BytesIO(json.dumps(value).encode())
 def _fake_run(command, **kwargs):
     if 'journalctl' in command:
+        _journal_calls.append(command)
         assert ('sudo' in command) == {sudo!r}
-        values = _journal or []
+        if {journal_error!r} == 'os':
+            raise OSError('架空の実行失敗')
+        if {journal_error!r} == 'timeout':
+            raise subprocess.TimeoutExpired(command, 1)
+        values = (_journal if '-g' in command or {journal_recent!r} is None else {journal_recent!r}) or []
         if '-g' in command:
             values = [row for row in values if isinstance(row, dict) and str(row.get('MESSAGE', '')).startswith('User (')][-1:]
         output = '\\n'.join(json.dumps(row) for row in values)
@@ -159,10 +171,75 @@ urllib.request.urlopen = _fake_urlopen
 subprocess.run = _fake_run
 '''
         args = ["--insights", str(self.root), "bot"] + (["--journal-sudo"] if sudo else [])
-        completed = run_script(prelude + rc.INSIGHTS_SCRIPT, args, env={**self.offline_env, **(env or {})})
+        # SQLiteではboolが整数へ変換されるため、型検証用の行は関数へ直接渡す。
+        postlude = ""
+        if settings_cases is not None:
+            postlude += f'\nresult["settings_cases"] = [describe_settings(row) for row in {settings_cases!r}]\n'
+        if prelude:
+            postlude += '\nresult["journal_calls"] = _journal_calls\n'
+        postlude += '\nprint(json.dumps(result))\n'
+        completed = run_script(prelude + rc.INSIGHTS_SCRIPT + postlude, args, env={**self.offline_env, **(env or {})})
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.stdout = completed.stdout
-        return json.loads(completed.stdout.strip().splitlines()[-1])
+        data = json.loads(completed.stdout.strip().splitlines()[-1])
+        self.journal_calls = data.pop("journal_calls", [])
+        return data
+
+    def test_settings_validate_choices_and_types_in_both_layouts(self):
+        for layout in ("index", "src"):
+            with self.subTest(layout=layout):
+                self.root = Path(self.temp.name) / layout
+                make_fake_bot(self.root, layout=layout, with_autonomous_column=layout == "src")
+                invalid = (None, "", "廃止された設定", False, True, 0, 99, "3", 3.0, [], {})
+                cases = [{"model_name": value, "respond_mode": value, "auto_topic_interval_hours": value}
+                         for value in invalid]
+                cases += [{"model_name": "gemini-3.1-flash-lite", "respond_mode": "all",
+                           "auto_topic_interval_hours": value} for value in (1, 3, 6)]
+                before = (self.root / "memory/bot.db").read_bytes()
+                views = self.insights(journal=[], settings_cases=cases)["settings_cases"]
+                for view in views[:len(invalid)]:
+                    self.assertEqual((view["model"], view["respond_mode"], view["auto_topic_interval_hours"]),
+                                     ("Gemini 3.1 Flash Lite", "メンションのみに反応", 6))
+                for interval, view in zip((1, 3, 6), views[len(invalid):]):
+                    self.assertEqual((view["model"], view["respond_mode"], view["auto_topic_interval_hours"]),
+                                     ("Gemini 3.1 Flash Lite", "すべての発言に反応", interval))
+                self.assertEqual((self.root / "memory/bot.db").read_bytes(), before)
+
+    def test_initial_journal_failure_skips_fallback_and_records_one_error(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        for options in ({"journal_code": 1}, {"journal_code": 2, "journal_stderr": ""},
+                        {"journal_error": "os"}, {"journal_error": "timeout"}):
+            with self.subTest(options=options):
+                data = self.insights(journal=[], **options)
+                self.assertEqual(len(self.journal_calls), 1)
+                self.assertEqual(len(data["errors"]), 1)
+                self.assertIsNone(data["activity"]["last_conversation_at"])
+
+    def test_successful_empty_journal_still_searches_older_conversation(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        data = self.insights(journal=[{"MESSAGE": "User (架空の利用者): 架空の会話", "__REALTIME_TIMESTAMP": "42000000"}],
+                             journal_recent=[], journal_stderr="")
+        self.assertEqual(len(self.journal_calls), 2)
+        self.assertIn("-g", self.journal_calls[1])
+        self.assertEqual(data["activity"]["conversations"], 0)
+        self.assertEqual(data["activity"]["last_conversation_at"], 42)
+        self.assertNotIn("架空の会話", self.stdout)
+
+    def test_repeated_voice_errors_are_deduplicated_but_distinct_errors_remain(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        responses = {
+            "/users/@me": {"username": "架空のボット"},
+            "/users/@me/guilds": [{"id": str(index), "name": "架空のサーバー"} for index in (11, 12, 13)],
+            "/guilds/11/voice-states/@me": 403,
+            "/guilds/12/voice-states/@me": 403,
+            "/guilds/13/voice-states/@me": 500,
+        }
+        data = self.insights({"TOKEN_DISCORD": FAKE_TOKEN}, responses=responses, journal=[])
+        self.assertEqual(len(data["discord"]["guilds"]), 3)
+        self.assertEqual(len(data["errors"]), 2)
+        self.assertIn("403", data["errors"][0])
+        self.assertIn("500", data["errors"][1])
+        self.assertTrue(all(guild["voice_error"] for guild in data["discord"]["guilds"]))
 
     def test_old_layout_reads_display_names_and_marks_autonomous_unsupported(self) -> None:
         make_fake_bot(self.root, layout="index", with_autonomous_column=False)

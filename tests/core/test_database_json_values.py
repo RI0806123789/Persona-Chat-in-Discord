@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -68,6 +69,74 @@ class NullableJsonValuesTests(unittest.TestCase):
                 self.db.stats_save_user("22", entry)
                 self.assert_stats_defaults("11")
                 self.assert_stats_defaults("22")
+
+    def test_statistics_import_and_save_preserve_all_fields_and_opt_out_aliases(self) -> None:
+        cases = ({"opt_out": True}, {"stats_opt_out": True}, {"opt_out": False},
+                 {"stats_opt_out": False}, {"opt_out": False, "stats_opt_out": True})
+        entries = {
+            str(index): {
+                "user_name": "架空の利用者", "total_count": "7", "hourly": [1] * STATS_HOURLY_BUCKETS,
+                "first_seen": "2026-01-01", "last_seen": "2026-01-02",
+                "recent_samples": ["架空の発言"], "analysis": {"topic": "架空の工作"}, **flags,
+            } for index, flags in enumerate(cases)
+        }
+        path = self.root / "user_stats.json"
+        path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8-sig")
+        self.db.initialize()
+        imported = self.db.stats_load_all()
+        for index, flags in enumerate(cases):
+            expected = {**entries[str(index)], "total_count": 7,
+                        "opt_out": flags.get("opt_out", flags.get("stats_opt_out"))}
+            expected.pop("stats_opt_out", None)
+            self.assertEqual(imported[str(index)], expected)
+        self.assertFalse(path.exists())
+        self.assertTrue(path.with_name("user_stats.json.imported.bak").exists())
+        # 同じ入力を通常保存・全件置換にも通し、9列すべてが一致することを確かめる。
+        for user_id, entry in entries.items():
+            self.db.stats_save_user(user_id, entry)
+        self.assertEqual(self.db.stats_load_all(), imported)
+        self.db.stats_save_all(entries)
+        self.assertEqual(self.db.stats_load_all(), imported)
+        self.db.close()
+        self.db = Database(self.root / "bot.db", legacy_dir=self.root)
+        self.addCleanup(self.db.close)
+        self.db.initialize()
+        self.assertEqual(self.db.stats_load_all(), imported)
+        self.db.stats_save_all(imported)
+        self.assertEqual(self.db.stats_load_all(), imported)
+
+    def test_statistics_missing_opt_out_uses_same_default_for_import_and_saves(self) -> None:
+        for default in (False, True):
+            with self.subTest(default=default), patch("persona_bot.core.database.STATS_OPT_OUT_DEFAULT", default):
+                path = self.root / "user_stats.json"
+                path.write_text(json.dumps({f"legacy-{default}": {}}), encoding="utf-8")
+                self.db.initialize()
+                expected = self.db.stats_load_all()[f"legacy-{default}"]
+                self.assertIs(expected["opt_out"], default)
+                self.db.stats_save_user("saved-user", {})
+                self.assertEqual(self.db.stats_load_all()["saved-user"], expected)
+                self.db.stats_save_all({"replaced-user": {}})
+                self.assertEqual(self.db.stats_load_all()["replaced-user"], expected)
+
+    def test_legacy_statistics_do_not_overwrite_existing_opt_out(self) -> None:
+        self.db.initialize()
+        self.db.stats_save_user("11", {"opt_out": True, "total_count": 5})
+        expected = self.db.stats_load_all()["11"]
+        path = self.root / "user_stats.json"
+        path.write_text(json.dumps({"11": {"opt_out": False}, "22": {"stats_opt_out": True}}), encoding="utf-8")
+        self.db.initialize()
+        self.assertEqual(self.db.stats_load_all()["11"], expected)
+        self.assertIs(self.db.stats_load_all()["22"]["opt_out"], True)
+        self.assertFalse(path.exists())
+
+    def test_failed_statistics_import_rolls_back_and_keeps_source_for_retry(self) -> None:
+        path = self.root / "user_stats.json"
+        path.write_text(json.dumps({"11": {"opt_out": True}, "22": {"total_count": "架空の不正値"}}),
+                        encoding="utf-8")
+        self.db.initialize()
+        self.assertEqual(self.db.stats_load_all(), {})
+        self.assertTrue(path.exists())
+        self.assertFalse(path.with_name("user_stats.json.imported.bak").exists())
 
     def test_legacy_null_queue_values_are_imported_and_backed_up(self) -> None:
         path = self.root / "queue.json"
