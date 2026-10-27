@@ -1,6 +1,7 @@
 """音声の整形、合成エンジンの退避、PCM変換、読み上げキューを外部通信なしで検証する。"""
 
 import asyncio
+from collections import deque
 from pathlib import Path
 import sys
 import threading
@@ -253,7 +254,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             worker = asyncio.create_task(self.workers[0])
             try:
                 await asyncio.wait_for(entered.wait(), 2)
-                replacement = asyncio.Queue()
+                replacement = deque()
                 voice._speech_queues[self.guild.id] = replacement
                 worker.cancel()
                 with self.assertRaises(asyncio.CancelledError):
@@ -276,6 +277,49 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
             await self.workers[0]
         self.assertEqual([call.args for call in synthesize.call_args_list], [("最初", first), ("次", second)])
         self.assertEqual(play.await_count, 2)
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_enqueues_during_playback_keep_waiting_order_and_drop_only_overflow(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def play(*args, **kwargs):
+            entered.set()
+            await release.wait()
+
+        with patch.object(voice, "TTS_QUEUE_MAX", 2), patch.object(
+            voice, "_synthesize_pcm", AsyncMock(return_value=b"pcm"),
+        ) as synthesize, patch.object(voice, "_play_pcm", AsyncMock(side_effect=play)), patch("builtins.print"):
+            await voice.speak_text(self.guild, "再生中")
+            worker = asyncio.create_task(self.workers[0])
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                await voice.speak_text(self.guild, "待機一件目")
+                await voice.speak_text(self.guild, "待機二件目")
+                for _ in range(20):
+                    await voice.speak_text(self.guild, "上限超過分")
+                self.assertEqual(len(self.workers), 1)
+                release.set()
+                await asyncio.wait_for(worker, 2)
+            finally:
+                release.set()
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+        self.assertEqual([call.args[0] for call in synthesize.await_args_list],
+                         ["再生中", "待機一件目", "待機二件目"])
+        self.assertEqual(voice._speech_queues, {})
+
+    async def test_request_after_worker_drains_starts_new_worker(self):
+        with patch.object(voice, "_synthesize_pcm", AsyncMock(return_value=b"pcm")) as synthesize, patch.object(
+            voice, "_play_pcm", AsyncMock(),
+        ):
+            await voice.speak_text(self.guild, "最初の返信")
+            await self.workers[0]
+            self.assertEqual(voice._speech_queues, {})
+            await voice.speak_text(self.guild, "空になった後の返信")
+            self.assertEqual(len(self.workers), 2)
+            await self.workers[1]
+        self.assertEqual([call.args[0] for call in synthesize.await_args_list],
+                         ["最初の返信", "空になった後の返信"])
         self.assertEqual(voice._speech_queues, {})
 
     async def test_synthesis_error_and_timeout_skip_to_next_request(self):

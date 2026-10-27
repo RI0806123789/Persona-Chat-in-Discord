@@ -1,6 +1,7 @@
 """discord.pyの実AudioPlayerで、停止・完了通知・ストリーム解放の順序を検証する。"""
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import io
 from pathlib import Path
@@ -238,8 +239,7 @@ class PlaybackLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         joining.set()
                     return await run_in_thread(func, *args)
 
-                queue = asyncio.Queue()
-                queue.put_nowait(voice._SpeechRequest("架空の音声", {}, self.client, 10, lambda: valid))
+                queue = deque([voice._SpeechRequest("架空の音声", {}, self.client, 10, lambda: valid)])
                 with patch.object(voice, "_speech_queues", {1: queue}), patch.object(
                     voice, "_synthesize_pcm", AsyncMock(return_value=b"\0" * 16),
                 ), patch.object(voice, "run_in_thread", join_in_thread), patch.object(

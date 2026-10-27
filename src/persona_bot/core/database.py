@@ -288,6 +288,27 @@ def _json_loads_or(text: Any, default: Any) -> Any:
         return default
 
 
+def _user_stats_row_params(user_id: Any, entry: dict[str, Any]) -> tuple[Any, ...]:
+    """user_stats の9列を旧JSON取り込み・通常保存・全件置換で同じ値へ変換する。
+
+    列順は user_id, user_name, total_count, hourly, first_seen, last_seen,
+    recent_samples, analysis, stats_opt_out。列追加時はこの関数と両方のINSERT文を揃える。
+    収集停止は通常の opt_out を優先し、旧JSONの stats_opt_out も引き継ぐ。
+    """
+    analysis = entry.get("analysis")
+    return (
+        str(user_id),
+        str(entry.get("user_name") or ""),
+        int(entry.get("total_count") or 0),
+        json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
+        str(entry.get("first_seen") or ""),
+        str(entry.get("last_seen") or ""),
+        json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
+        json.dumps(analysis, ensure_ascii=False) if analysis else None,
+        int(bool(entry.get("opt_out", entry.get("stats_opt_out", STATS_OPT_OUT_DEFAULT)))),
+    )
+
+
 def _load_legacy_json_object(path: Path) -> dict[str, Any]:
     """旧 JSON ファイルを読み、最上位が object でなければ例外にする。
 
@@ -476,22 +497,12 @@ class Database:
             for user_id, entry in data.items():
                 if not isinstance(entry, dict):
                     continue
-                analysis = entry.get("analysis")
                 self._conn.execute(
                     "INSERT OR IGNORE INTO user_stats"
                     " (user_id, user_name, total_count, hourly, first_seen, last_seen,"
-                    "  recent_samples, analysis)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        str(user_id),
-                        str(entry.get("user_name") or ""),
-                        int(entry.get("total_count") or 0),
-                        json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
-                        str(entry.get("first_seen") or ""),
-                        str(entry.get("last_seen") or ""),
-                        json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
-                        json.dumps(analysis, ensure_ascii=False) if analysis else None,
-                    ),
+                    "  recent_samples, analysis, stats_opt_out)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    _user_stats_row_params(user_id, entry),
                 )
 
     def _import_queue_json(self, path: Path) -> None:
@@ -1194,7 +1205,6 @@ class Database:
 
     def _stats_upsert_user(self, user_id: str, entry: dict[str, Any]) -> None:
         """呼び出し側がDBロックとトランザクションを保持した状態で使う。"""
-        analysis = entry.get("analysis")
         self._conn.execute(
             "INSERT INTO user_stats"
             " (user_id, user_name, total_count, hourly, first_seen, last_seen,"
@@ -1205,17 +1215,7 @@ class Database:
             " hourly = excluded.hourly, first_seen = excluded.first_seen,"
             " last_seen = excluded.last_seen, recent_samples = excluded.recent_samples,"
             " analysis = excluded.analysis, stats_opt_out = excluded.stats_opt_out",
-            (
-                str(user_id),
-                str(entry.get("user_name") or ""),
-                int(entry.get("total_count") or 0),
-                json.dumps(entry.get("hourly") or [0] * STATS_HOURLY_BUCKETS, ensure_ascii=False),
-                str(entry.get("first_seen") or ""),
-                str(entry.get("last_seen") or ""),
-                json.dumps(entry.get("recent_samples") or [], ensure_ascii=False),
-                json.dumps(analysis, ensure_ascii=False) if analysis else None,
-                int(bool(entry.get("opt_out", STATS_OPT_OUT_DEFAULT))),
-            ),
+            _user_stats_row_params(user_id, entry),
         )
 
     # ---- queue_tasks（文書処理キュー） ----------------------------------------
