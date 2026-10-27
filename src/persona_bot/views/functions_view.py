@@ -353,8 +353,8 @@ class FunctionsView(PanelView):
         # row4: 統計プライバシー（本人の統計収集停止・データ削除）
         self.add_item(StatsPrivacyButton())
 
-    def clone(self) -> "FunctionsView":
-        """各サブパネルの「戻る」用に、同じ依存関係で新しいハブパネルを作る。"""
+    def clone(self, interaction: discord.Interaction) -> "FunctionsView":
+        """同じ依存関係と、戻る操作時の管理者権限で新しいハブを作る。"""
         return FunctionsView(
             self.guild_settings,
             self.usage,
@@ -364,7 +364,7 @@ class FunctionsView(PanelView):
             self.moderator,
             self.stats,
             self.reminders,
-            is_admin=self.is_admin,
+            is_admin=is_administrator(interaction.user),
         )
 
     def build_preview(self) -> str:

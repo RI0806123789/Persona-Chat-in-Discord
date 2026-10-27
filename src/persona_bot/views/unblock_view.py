@@ -11,7 +11,7 @@ from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.services.blacklist_service import BlacklistService
-from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.utils.discord_helpers import is_administrator, is_current_administrator
 from persona_bot.views.view_parts import (
     BackButton, HubFactory, PanelView, begin_panel_operation, edit_panel_message, select_option_text,
 )
@@ -45,7 +45,14 @@ class UnblockSelect(ui.Select):
         user_id = int(self.values[0])
         # 選択肢のラベルから表示名を拾う（通知メッセージ用）
         name = next((o.label for o in self.options if o.value == self.values[0]), str(user_id))
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
+        # 待機中に権限が外されても、操作時の写しだけで解除しない。
+        if not await is_current_administrator(interaction):
+            await edit_panel_message(
+                interaction, deferred=True,
+                content="この機能はサーバー管理者のみ利用できます。", view=None,
+            )
+            return
         if await view.blacklist.unblock(user_id):
             await edit_panel_message(interaction, deferred=True, content=f"✅ {name} のブロックを解除しました。", view=None)
         else:

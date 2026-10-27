@@ -42,7 +42,7 @@ class PanelConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.hub = self.make_hub()
         self.current = self.hub
 
-    def make_hub(self):
+    def make_hub(self, _interaction=None):
         hub = FunctionsView(self.settings, Mock(), Mock(), self.blacklist, Mock(), Mock(), Mock(), self.reminders)
         return self.track(hub)
 

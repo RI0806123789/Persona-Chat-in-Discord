@@ -98,8 +98,10 @@ class StatsDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.interaction.user.guild_permissions.administrator = False
         await select.callback(self.interaction)
         self.assertEqual(self.view.temp_target_id, "11")
-        self.interaction.response.edit_message.assert_not_awaited()
-        self.interaction.response.send_message.assert_awaited_once()
+        self.assertFalse(self.view.is_admin)
+        self.interaction.response.edit_message.assert_awaited_once()
+        self.assertIn("あなた自身", self.interaction.response.edit_message.await_args.kwargs["content"])
+        self.interaction.response.send_message.assert_not_awaited()
 
     async def test_permission_revoked_during_generation_does_not_send_other_users_graph(self) -> None:
         self.view.temp_target_id = "22"
@@ -238,7 +240,7 @@ class UnblockPermissionTests(unittest.IsolatedAsyncioTestCase):
                 select = next(item for item in view.children if isinstance(item, UnblockSelect))
                 select._values = ["22"]
                 interaction = SimpleNamespace(
-                    user=Mock(spec=discord.Member, guild_permissions=SimpleNamespace(administrator=admin)),
+                    user=make_member(admin=admin),
                     response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
                     edit_original_response=AsyncMock(),
                 )

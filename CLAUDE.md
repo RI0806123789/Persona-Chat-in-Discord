@@ -405,6 +405,8 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 ### 機能ハブ / 会話要約 (`functions_view.py`, `summary_view.py`, `stats_view.py`)
 
+統計の項目・対象セレクトは操作時の `interaction.user` で管理者権限を更新し、権限が無ければ対象を本人へ戻して管理者用の候補・ボタンを取り除く。`BackButton` は操作の `Interaction` を `make_hub(interaction)` へ渡し、`FunctionsView.clone(interaction)` は初回の `is_admin` を引き継がず操作時の権限でハブを生成する。`HubFactory` はこの引数を受け取る契約に揃える。ブロック解除は `defer(ephemeral=True)` の後、`is_current_administrator` で最新の Member を取得してから実行し、確認できなければ解除しない（#255）。
+
 設定パネルの確定は`defer(ephemeral=True)`で応答する。リマインダー選択肢の空説明は`None`で省略し、会話要約の全体公開は`AllowedMentions.none()`を分割投稿にも引き継ぐ。
 
 `PanelView`は同じメッセージを共有するパネルの表示先・操作世代・編集ロックを引き継ぐ。DB等の待機前に`begin_panel_operation`で世代を確保し、画面更新は`edit_panel_message`を使う（保留後の確定更新は`deferred=True`）。古い操作の画面更新を破棄しても、受付済みの保存は最後まで待つ。遷移では実際に表示していたViewと不採用の遷移先を停止し、旧タイマーが最新画面へ触れないようにする。長時間処理の結果も同じ操作世代で確認する。

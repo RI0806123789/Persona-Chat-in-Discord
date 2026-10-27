@@ -33,6 +33,7 @@ class StatsItemSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsView" = self.view  # type: ignore[assignment]
         begin_panel_operation(view, interaction)
+        view.refresh_permissions(interaction.user)
         view.temp_item = self.values[0]
         view.refresh_items()
         await edit_panel_message(interaction, content=view.build_preview(), view=view)
@@ -61,11 +62,10 @@ class StatsUserSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "StatsView" = self.view  # type: ignore[assignment]
-        if not is_administrator(interaction.user):
-            await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
-            return
         begin_panel_operation(view, interaction)
-        view.temp_target_id = self.values[0]
+        view.refresh_permissions(interaction.user)
+        if view.is_admin:
+            view.temp_target_id = self.values[0]
         view.refresh_items()
         await edit_panel_message(interaction, content=view.build_preview(), view=view)
 
@@ -271,6 +271,12 @@ class StatsView(PanelView):
         self.temp_target_id: str = viewer_id
 
         self._add_all_items()
+
+    def refresh_permissions(self, user: discord.Member | discord.User) -> None:
+        """操作時の権限に合わせ、管理者でなくなったら対象を本人へ戻す。"""
+        self.is_admin = is_administrator(user)
+        if not self.is_admin:
+            self.temp_target_id = self.viewer_id
 
     def _add_all_items(self) -> None:
         """UI パーツを View に追加する。選択更新時にも呼び出す。"""
