@@ -47,7 +47,8 @@ result = {"errors": []}
 
 
 def note(message):
-    result["errors"].append(message)
+    if message not in result["errors"]:
+        result["errors"].append(message)
 
 
 # ---------------------------------------------------------------- ボットのソースの場所と表示名
@@ -236,6 +237,7 @@ PERSONA_CATALOG = load_persona_catalog() if PERSONAS_SOURCE else None
 LEGACY_PERSONAS = choice_names("PERSONA_CHOICES")
 MODELS = choice_names("MODEL_CHOICES")
 MODES = choice_names("RESPOND_MODE_CHOICES")
+AUTO_TOPIC_INTERVALS = choice_names("AUTO_TOPIC_INTERVAL_CHOICES")
 
 
 def deployed_version():
@@ -313,9 +315,17 @@ def describe_persona(row):
 
 
 def describe_settings(row):
-    """DB の行（無ければ空）を、既定値を補った表示用の設定にする。"""
-    model = row.get("model_name") or CONSTANTS.get("DEFAULT_MODEL_NAME") or ""
-    mode = row.get("respond_mode") or CONSTANTS.get("DEFAULT_RESPOND_MODE") or ""
+    """DB の行（無ければ空）を、ボットと同じ選択肢・型の検証で実効の設定にする。"""
+    model = row.get("model_name")
+    if not isinstance(model, str) or model not in MODELS:
+        model = CONSTANTS.get("DEFAULT_MODEL_NAME") or ""
+    mode = row.get("respond_mode")
+    if not isinstance(mode, str) or mode not in MODES:
+        mode = CONSTANTS.get("DEFAULT_RESPOND_MODE") or ""
+    interval = row.get("auto_topic_interval_hours")
+    if (not isinstance(interval, int) or isinstance(interval, bool)
+            or interval not in AUTO_TOPIC_INTERVALS):
+        interval = CONSTANTS.get("DEFAULT_AUTO_TOPIC_INTERVAL_HOURS")
 
     def flag(key, default):
         value = row.get(key)
@@ -331,8 +341,7 @@ def describe_settings(row):
         "respond_mode": MODES.get(mode, mode or None),
         "grounding": flag("grounding_enabled", True),
         "auto_topic_enabled": flag("auto_topic_enabled", False),
-        "auto_topic_interval_hours": row.get("auto_topic_interval_hours")
-        or CONSTANTS.get("DEFAULT_AUTO_TOPIC_INTERVAL_HOURS"),
+        "auto_topic_interval_hours": interval,
         "autonomous_enabled": autonomous,
         "saved": bool(row),
     }
@@ -532,6 +541,7 @@ AUTONOMOUS_LINE = re.compile(r"^自律行動: .*(配信を開始しました|配
 
 
 def journal(arguments):
+    """取得成功なら行の一覧（0件を含む）、実行・権限・期限の失敗なら None を返す。"""
     command = ["journalctl", "-u", SERVICE, "--no-pager", "-o", "json"] + arguments
     if JOURNAL_SUDO:
         command = ["sudo", "-n"] + command
@@ -539,15 +549,16 @@ def journal(arguments):
         remaining = INSIGHTS_DEADLINE - time.monotonic()
         if remaining <= 0:
             note("インサイトの取得時間の上限に達したため、ログの追加取得を省略しました。")
-            return []
+            return None
         completed = subprocess.run(command, capture_output=True, text=True, timeout=min(30, remaining), errors="replace")
     except (OSError, subprocess.SubprocessError):
         note("journalctl を実行できませんでした。ログの読み取り権限を確認してください。")
-        return []
+        return None
     # -g の該当行なしは終了コード1。stderr があるときは権限・sudo 等の失敗として残す。
     no_matches = completed.returncode == 1 and "-g" in arguments and not completed.stderr.strip()
     if completed.returncode != 0 and not no_matches:
         note("ログを取得できませんでした。adm / systemd-journal グループ、または journal_sudo の設定を確認してください。")
+        return None
     entries = []
     for line in completed.stdout.splitlines():
         try:
@@ -584,7 +595,8 @@ def collect_activity():
         "exceptions": 0,
         "autonomous_events": [],
     }
-    for timestamp, message in journal(["--since", "-24h"]):
+    entries = journal(["--since", "-24h"])
+    for timestamp, message in entries or []:
         if match := TOKEN_LINE.match(message):
             try:
                 count = int(match.group(1))
@@ -610,7 +622,7 @@ def collect_activity():
             # 元の行にはサーバー ID・チャンネル名・終了理由があるため、イベントの種類だけ返す
             activity["autonomous_events"].append({"at": timestamp, "text": match.group(1)})
 
-    if activity["last_conversation_at"] is None:
+    if entries is not None and activity["last_conversation_at"] is None:
         # 24時間より前の最後の会話（-g は本文の検索。時刻だけを使う）
         latest = journal(["-r", "-n", "1", "-g", r"^User \("])
         if latest:

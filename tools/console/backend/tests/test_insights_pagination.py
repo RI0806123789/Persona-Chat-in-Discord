@@ -205,7 +205,7 @@ class InsightsPaginationTests(unittest.TestCase):
             self.assertEqual(self.env["journal"]([]), [])
         self.assertEqual(run.call_args.kwargs["timeout"], 5)
         with patch("time.monotonic", return_value=15), patch("subprocess.run") as run:
-            self.assertEqual(self.env["journal"]([]), [])
+            self.assertIsNone(self.env["journal"]([]))
         run.assert_not_called()
         self.assertIn("取得時間の上限", self.env["result"]["errors"][-1])
 
