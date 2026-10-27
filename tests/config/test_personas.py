@@ -352,6 +352,8 @@ class SettingsPanelTests(unittest.IsolatedAsyncioTestCase):
 
             response = SimpleNamespace(is_done=Mock(return_value=False), defer=AsyncMock(side_effect=defer))
             interaction = SimpleNamespace(
+                # 管理者でない利用者（Member でないため 🎙️ 配信先 は出ない）
+                user=SimpleNamespace(),
                 response=response, edit_original_response=AsyncMock(side_effect=edit),
                 original_response=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())), extras={},
             )

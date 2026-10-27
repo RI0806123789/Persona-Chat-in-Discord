@@ -346,8 +346,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         status, body = await request("/api/db")
         self.assertEqual(status, 200)
         summary = json.loads(body)
-        self.assertEqual(summary["schema_version"], 13)
-        self.assertEqual(summary["latest_schema_version"], 14)
+        self.assertEqual(summary["schema_version"], 15)
+        self.assertEqual(summary["latest_schema_version"], 15)
 
     async def test_db_table_rows_are_read_through_api_with_paging(self):
         status, body = await request("/api/db/tables/feedback?offset=100&limit=50")

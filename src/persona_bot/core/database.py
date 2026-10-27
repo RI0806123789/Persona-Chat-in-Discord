@@ -59,7 +59,7 @@ from persona_bot.config.constants import (
 from persona_bot.utils.storage import write_json_file
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # バージョン番号 → そのバージョンへ上げるための SQL 文リスト。
 # 例) user_stats に列を追加したくなったら:
@@ -208,6 +208,13 @@ _MIGRATIONS: dict[int, list[str]] = {
     #   ユーザー別の取得・更新には従来の (user_id, key) 主キーを引き続き使う。
     14: [
         "CREATE INDEX IF NOT EXISTS idx_profile_key_user ON profile (key, user_id)",
+    ],
+    # バージョン15: 自律行動の配信先を管理者が指定する（#266）。
+    #   ステージ・ボイスそれぞれのチャンネルID。0 = 指定なし（従来どおり自動で選ぶ）。
+    #   既存行はすべて 0 になるため挙動は後方互換。
+    15: [
+        "ALTER TABLE guild_settings ADD COLUMN autonomous_stage_channel_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE guild_settings ADD COLUMN autonomous_voice_channel_id INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
@@ -705,6 +712,9 @@ class Database:
             "auto_topic_enabled": bool(row["auto_topic_enabled"]),
             "auto_topic_interval_hours": row["auto_topic_interval_hours"],
             "autonomous_enabled": bool(row["autonomous_enabled"]),
+            # 0 は「指定なし」。値の検証は GuildSettings.apply_persisted が行う。
+            "autonomous_stage_channel_id": row["autonomous_stage_channel_id"],
+            "autonomous_voice_channel_id": row["autonomous_voice_channel_id"],
         }
 
     def guild_state_load(self, guild_id: int) -> tuple[dict[str, Any], dict[str, str]]:
@@ -737,6 +747,8 @@ class Database:
         auto_topic_enabled: bool,
         auto_topic_interval_hours: int,
         autonomous_enabled: bool,
+        autonomous_stage_channel_id: int | None,
+        autonomous_voice_channel_id: int | None,
     ) -> None:
         """1サーバー分の設定を丸ごと保存する（既存行があれば置き換える）。
 
@@ -752,8 +764,9 @@ class Database:
             self._conn.execute(
                 "INSERT OR REPLACE INTO guild_settings"
                 " (guild_id, prompt_file, model_name, respond_mode, grounding_enabled,"
-                "  auto_topic_enabled, auto_topic_interval_hours, autonomous_enabled)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "  auto_topic_enabled, auto_topic_interval_hours, autonomous_enabled,"
+                "  autonomous_stage_channel_id, autonomous_voice_channel_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     int(guild_id),
                     str(prompt_file),
@@ -763,6 +776,9 @@ class Database:
                     int(bool(auto_topic_enabled)),
                     int(auto_topic_interval_hours),
                     int(bool(autonomous_enabled)),
+                    # 指定なし（None）は 0 で保存する
+                    int(autonomous_stage_channel_id or 0),
+                    int(autonomous_voice_channel_id or 0),
                 ),
             )
 

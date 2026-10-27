@@ -112,6 +112,10 @@ class GuildSettings:
     # 「話したいゲージ」が満タンになるまでの時間は auto_topic_interval_hours を共用する
     # （設定項目を増やさず /functions → 💬 自発会話 パネル1枚で完結させるため）。
     autonomous_enabled: bool = False
+    # 管理者が指定した配信先（⚙️ キャラ設定 → 🎙️ 配信先）。None は「指定なし（自動で選ぶ）」。
+    # 使えない指定（削除済み・権限不足）は autonomous_stage.pick_channel が自動選択へ戻す。
+    autonomous_stage_channel_id: int | None = None
+    autonomous_voice_channel_id: int | None = None
     # 以下3つは実行時状態。会話が続けば自然に再構築されるため永続化しない。
     # 進行中の配信（無いときは None）。
     autonomous_session: AutonomousSession | None = None
@@ -186,6 +190,9 @@ class GuildSettings:
         elif interval is not None:
             print("サーバー設定: 保存済みの auto_topic_interval_hours が無効なため既定値へ戻します。")
             self.auto_topic_interval_hours = DEFAULT_AUTO_TOPIC_INTERVAL_HOURS
+        for key in ("autonomous_stage_channel_id", "autonomous_voice_channel_id"):
+            if key in values:
+                setattr(self, key, _persisted_channel_id(key, values[key]))
 
     def _apply_persisted_prompt_file(self, value: Any) -> None:
         """保存済みのペルソナを復元する。
@@ -235,6 +242,8 @@ class GuildSettings:
                     auto_topic_enabled=self.auto_topic_enabled,
                     auto_topic_interval_hours=self.auto_topic_interval_hours,
                     autonomous_enabled=self.autonomous_enabled,
+                    autonomous_stage_channel_id=self.autonomous_stage_channel_id,
+                    autonomous_voice_channel_id=self.autonomous_voice_channel_id,
                 )
             except Exception as error:
                 print(f"ギルド設定の保存に失敗しました (guild_id={self.guild_id}): {error}")
@@ -255,6 +264,20 @@ class GuildSettings:
             )
         except Exception as error:
             print(f"記念日の投稿記録の保存に失敗しました (guild_id={self.guild_id}): {error}")
+
+
+def _persisted_channel_id(key: str, value: Any) -> int | None:
+    """保存済みの配信先のチャンネルIDを復元する。0・未設定は「指定なし」。
+
+    bool や負の数など、チャンネルIDになりえない値は警告して「指定なし」に戻す
+    （指定なしなら従来どおり自動で選ぶため、起動は止めない）。
+    """
+    if value is None or (type(value) is int and value == 0):
+        return None
+    if type(value) is int and value > 0:
+        return value
+    print(f"サーバー設定: 保存済みの {key} が無効なため「指定なし」へ戻します。")
+    return None
 
 
 @dataclass

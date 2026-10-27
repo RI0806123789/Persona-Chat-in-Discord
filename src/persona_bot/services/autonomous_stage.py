@@ -6,6 +6,7 @@
 
 import asyncio
 import random
+from collections.abc import Iterable
 from typing import Any
 
 import discord
@@ -21,10 +22,17 @@ from persona_bot.config.constants import (
 VocalChannel = discord.VoiceChannel | discord.StageChannel
 
 
-def pick_channel(guild: discord.Guild) -> VocalChannel | None:
+def pick_channel(
+    guild: discord.Guild, *,
+    stage_channel_id: int | None = None, voice_channel_id: int | None = None,
+) -> VocalChannel | None:
     """出ていく先のチャンネルを1つ選ぶ。ステージを優先し、無ければボイスから選ぶ。
 
-    候補が複数あればランダムに選ぶ（毎回同じ場所へ出ると単調になるため）。
+    管理者が配信先を指定していれば（`GuildSettings.autonomous_*_channel_id` を
+    呼び出し側が渡す）、ステージの指定 → ボイスの指定の順に使う。指定したチャンネルが
+    削除済み・権限不足などで使えなければ、次の指定、最後に従来の自動選択へ戻す（#266）。
+
+    自動選択では、候補が複数あればランダムに選ぶ（毎回同じ場所へ出ると単調になるため）。
 
     権限は必ず `permissions_for(guild.me)` で**チャンネル単位に**確認する。
     サーバー全体のロールで許可されていても、チャンネル個別の設定で拒否
@@ -37,6 +45,14 @@ def pick_channel(guild: discord.Guild) -> VocalChannel | None:
         # キャッシュ未取得などで自分自身の Member が引けないときは権限を判定できない。
         return None
 
+    # 指定先は種別ごとの一覧から探す（ID の取り違えで別種のチャンネルを選ばないため）。
+    stage = find_channel(guild.stage_channels, stage_channel_id)
+    if stage is not None and can_use_stage(stage, bot_member):
+        return stage
+    voice = find_channel(guild.voice_channels, voice_channel_id)
+    if voice is not None and can_use_voice(voice, bot_member):
+        return voice
+
     stages = [c for c in guild.stage_channels if can_use_stage(c, bot_member)]
     if stages:
         return random.choice(stages)
@@ -44,6 +60,13 @@ def pick_channel(guild: discord.Guild) -> VocalChannel | None:
     if voices:
         return random.choice(voices)
     return None
+
+
+def find_channel(channels: Iterable[Any], channel_id: int | None) -> Any | None:
+    """指定のIDのチャンネルを一覧から返す。指定なし・見つからない（削除済み）は None。"""
+    if not channel_id:
+        return None
+    return next((channel for channel in channels if channel.id == channel_id), None)
 
 
 def can_use_voice(channel: discord.VoiceChannel, bot_member: discord.Member) -> bool:

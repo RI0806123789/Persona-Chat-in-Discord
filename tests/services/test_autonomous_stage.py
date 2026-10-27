@@ -23,11 +23,15 @@ class AutonomousChannelSelectionTests(unittest.TestCase):
 
     @staticmethod
     def make_channel():
+        return AutonomousChannelSelectionTests.make_channel_with_id(None)
+
+    @staticmethod
+    def make_channel_with_id(channel_id):
         permissions = SimpleNamespace(
             view_channel=True, connect=True, speak=True, send_messages=True,
             mute_members=True, manage_channels=True, move_members=True,
         )
-        return SimpleNamespace(instance=None, permissions_for=Mock(return_value=permissions))
+        return SimpleNamespace(id=channel_id, instance=None, permissions_for=Mock(return_value=permissions))
 
     def test_stage_is_preferred_and_permissions_are_checked_for_bot_member(self) -> None:
         self.assertIs(pick_channel(self.guild), self.stage)
@@ -53,6 +57,61 @@ class AutonomousChannelSelectionTests(unittest.TestCase):
         self.assertIsNone(pick_channel(self.guild))
         self.stage.permissions_for.assert_not_called()
         self.voice.permissions_for.assert_not_called()
+
+
+class DesignatedChannelSelectionTests(unittest.TestCase):
+    """管理者が指定した配信先の選び方（#266）。使えない指定は自動選択へ戻す。"""
+
+    def setUp(self) -> None:
+        self.member = object()
+        self.stages = [self.make_channel(201), self.make_channel(202)]
+        self.voices = [self.make_channel(301), self.make_channel(302)]
+        self.guild = SimpleNamespace(me=self.member, stage_channels=self.stages, voice_channels=self.voices)
+
+    @staticmethod
+    def make_channel(channel_id: int):
+        return AutonomousChannelSelectionTests.make_channel_with_id(channel_id)
+
+    def pick(self, *, stage=None, voice=None):
+        # 自動選択の random.choice は先頭を返すよう固定し、指定の効果だけを見る
+        with patch.object(autonomous_stage.random, "choice", side_effect=lambda items: items[0]):
+            return pick_channel(self.guild, stage_channel_id=stage, voice_channel_id=voice)
+
+    def test_unset_designation_keeps_automatic_selection(self) -> None:
+        self.assertIs(self.pick(), self.stages[0])
+
+    def test_usable_designated_stage_is_used(self) -> None:
+        self.assertIs(self.pick(stage=202), self.stages[1])
+
+    def test_designated_voice_wins_over_automatic_stage(self) -> None:
+        # ステージの指定が無ければ、使えるステージがあってもボイスの指定を使う
+        self.assertIs(self.pick(voice=302), self.voices[1])
+
+    def test_designated_stage_takes_priority_over_designated_voice(self) -> None:
+        self.assertIs(self.pick(stage=202, voice=302), self.stages[1])
+
+    def test_unusable_designated_stage_falls_back_to_designated_voice(self) -> None:
+        self.stages[1].permissions_for.return_value.mute_members = False
+        self.assertIs(self.pick(stage=202, voice=302), self.voices[1])
+
+    def test_unusable_designations_fall_back_to_automatic_selection(self) -> None:
+        self.stages[1].permissions_for.return_value.mute_members = False
+        self.voices[1].permissions_for.return_value.speak = False
+        self.assertIs(self.pick(stage=202, voice=302), self.stages[0])
+
+    def test_deleted_designations_fall_back_to_automatic_selection(self) -> None:
+        self.assertIs(self.pick(stage=999, voice=998), self.stages[0])
+
+    def test_designation_is_looked_up_only_in_its_own_kind(self) -> None:
+        # ボイスのIDをステージの指定として渡しても、種別の違うチャンネルは選ばない
+        # （見つからない指定と同じく自動選択へ戻る）
+        self.assertIs(self.pick(stage=302), self.stages[0])
+        self.assertIs(self.pick(voice=202), self.stages[0])
+
+    def test_automatic_fallback_uses_voice_when_no_stage_is_usable(self) -> None:
+        for stage in self.stages:
+            stage.permissions_for.return_value.mute_members = False
+        self.assertIs(self.pick(stage=202, voice=999), self.voices[0])
 
 
 class AutonomousStagePreparationTests(unittest.IsolatedAsyncioTestCase):
@@ -132,3 +191,21 @@ class AutonomousStagePreparationTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesignationWiringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_passes_saved_designation_from_guild_settings(self) -> None:
+        from persona_bot.core.app_state import BotState
+        from persona_bot.services.autonomous_service import AutonomousService
+
+        settings = BotState().get_guild(1)
+        settings.autonomous_stage_channel_id = 202
+        settings.autonomous_voice_channel_id = 302
+        guild = SimpleNamespace(id=1, voice_client=None, me=object())
+        service = AutonomousService(None, None, None, None, None, None)
+        # 行き先が無ければ接続を試みずに戻る（待ち時間も記録しない）
+        with patch.object(autonomous_stage, "pick_channel", return_value=None) as picker:
+            await service._start_session(guild, settings)
+        picker.assert_called_once_with(guild, stage_channel_id=202, voice_channel_id=302)
+        self.assertEqual(settings.autonomous_start_failures, 0)
+        self.assertIsNone(settings.autonomous_start_retry_at)

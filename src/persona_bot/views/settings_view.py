@@ -17,9 +17,11 @@ from persona_bot.config.constants import (
 from persona_bot.config.personas import (
     FOLLOW_DEFAULT_PERSONA, PersonaCatalog, current_persona_catalog, is_selectable_persona,
 )
+from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.views.autonomous_channel_view import AutonomousChannelView
 from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, BackButton,
-    HubFactory, PanelView, select_option_text,
+    HubFactory, PanelView, select_option_text, swap_panel,
 )
 
 
@@ -237,11 +239,39 @@ class ResetButton(ui.Button):
         )
 
 
+class OpenAutonomousChannelButton(ui.Button):
+    """自律行動の配信先パネル（AutonomousChannelView）を開くボタン（管理者専用）。
+
+    キャラ設定パネルはセレクト3つで row 0〜2 を使っていて、配信先のセレクトを
+    足す余地が無いため、同じメッセージを専用パネルへ差し替える。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(label="配信先", style=discord.ButtonStyle.primary, emoji="🎙️", row=4)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: SettingsView = self.view  # type: ignore[assignment]
+
+        # ボタンは管理者にしか出さないが、押した時点の権限でも確かめる（DM には配信先が無い）。
+        guild = interaction.guild
+        if guild is None or not is_administrator(interaction.user):
+            await interaction.response.send_message(
+                "この機能はサーバー管理者のみ利用できます。", ephemeral=True
+            )
+            return
+
+        begin_panel_operation(view, interaction)
+        channel_view = AutonomousChannelView(view.guild_settings, guild, make_hub=view.make_hub)
+        # 同じ（エフェメラルな）メッセージを配信先パネルに差し替える
+        await swap_panel(interaction, view, channel_view, channel_view.build_preview())
+
+
 class SettingsView(PanelView):
     """キャラ設定パネル全体を表す View。
 
     3つのセレクトメニューと確定/戻るボタンを保持し、一時選択値を管理する。
-    Google検索トグルは機能パネル（ハブ）側にある。
+    Google検索トグルは機能パネル（ハブ）側にある。管理者には、自律行動の
+    配信先パネルを開く 🎙️ 配信先 も出す。
     """
 
     def __init__(
@@ -251,6 +281,7 @@ class SettingsView(PanelView):
         blacklist_status: str,
         *,
         make_hub: HubFactory | None = None,
+        is_admin: bool = False,
     ) -> None:
         super().__init__(
             timeout_notice=(
@@ -263,6 +294,8 @@ class SettingsView(PanelView):
         self.blacklist_status = blacklist_status
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
+        # 開いた時点で管理者か。管理者以外には 🎙️ 配信先 のボタン自体を出さない。
+        self.is_admin = is_admin
 
         # パネルを開いた時点のペルソナ一覧。選択肢と表示をこの一覧にそろえる
         # （開いている間に別のパネルが一覧を読み直しても、選択肢が入れ替わらないように）。
@@ -279,9 +312,9 @@ class SettingsView(PanelView):
     def _add_all_items(self) -> None:
         """UIパーツを View に追加する。セレクト更新時にも使用する。
 
-        セレクト類（row0〜2）、確定/戻る（row3）、会話リセット（row4）の順に並べる。
-        ペルソナが1つも無いときはペルソナのセレクトを出さない（選択肢0件のセレクトは
-        Discord に拒否され、パネルごと開けなくなるため）。
+        セレクト類（row0〜2）、確定/戻る（row3）、会話リセットと管理者用の配信先（row4）の
+        順に並べる。ペルソナが1つも無いときはペルソナのセレクトを出さない（選択肢0件の
+        セレクトは Discord に拒否され、パネルごと開けなくなるため）。
         """
         if self.catalog.personas:
             self.add_item(PersonaSelect(self.temp_persona, self.catalog))
@@ -290,10 +323,12 @@ class SettingsView(PanelView):
         self.add_item(ConfirmButton())
         self.add_item(BackButton(row=3))
         self.add_item(ResetButton())
+        if self.is_admin:
+            self.add_item(OpenAutonomousChannelButton())
 
     def build_preview(self) -> str:
         """現在の一時選択値からプレビュー用テキストを組み立てる。"""
-        return _build_status_text(
+        text = _build_status_text(
             self.temp_persona,
             self.temp_model,
             self.temp_respond_mode,
@@ -301,3 +336,6 @@ class SettingsView(PanelView):
             self.blacklist_status,
             catalog=self.catalog,
         )
+        if self.is_admin:
+            text += "\n\n🎙️ **配信先**（管理者のみ）… 自律行動でボットが出ていくボイス／ステージチャンネルを指定します。"
+        return text
