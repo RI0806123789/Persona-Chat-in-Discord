@@ -343,6 +343,67 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         await self.on_message(self.message)
         affinity.update_emotion.assert_called_once_with("11", 1, 2)
 
+    async def test_affinity_changes_only_after_reply_send_completes(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        affinity = self.namespace["affinity"]
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def send(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(id=500)
+
+        self.namespace["send_long_reply"].side_effect = send
+        task = asyncio.create_task(self.on_message(self.message))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            affinity.update_emotion.assert_not_called()
+            affinity.save_background.assert_not_awaited()
+            release.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*self.tasks)
+        affinity.update_emotion.assert_called_once_with("11", 1, 2)
+        affinity.save_background.assert_awaited_once_with("11")
+
+    async def test_failed_or_canceled_reply_does_not_change_affinity(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        affinity = self.namespace["affinity"]
+        for error in (discord.Forbidden(Mock(status=403), "架空の拒否"),
+                      OSError("架空の通信失敗"), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                self.namespace["send_long_reply"].side_effect = error
+                with self.assertRaises(type(error)):
+                    await self.handler.handle_chat_message(self.message, "架空の質問")
+                affinity.update_emotion.assert_not_called()
+                affinity.save_background.assert_not_awaited()
+                self.feedback.track_reply.assert_not_called()
+                self.namespace["memory"].append_pending_log.assert_not_awaited()
+
+    async def test_affinity_failure_after_send_keeps_memory_feedback_and_voice(self) -> None:
+        self.response = "架空の応答です。[V:1, A:2]"
+        self.namespace["affinity"].update_emotion.side_effect = RuntimeError("架空の更新失敗")
+        with self.assertLogs("persona_bot.core.message_handler", level="WARNING"):
+            await self.on_message(self.message)
+        self.voice.assert_awaited_once_with(self.message, "架空の応答です。", "../prompts/prompt_default.txt")
+        self.feedback.track_reply.assert_called_once()
+        self.namespace["memory"].append_pending_log.assert_awaited_once()
+        self.namespace["send_long_reply"].assert_awaited_once()
+
+    async def test_missing_persona_is_logged_but_its_file_name_is_not_sent(self) -> None:
+        self.loader.side_effect = FileNotFoundError("架空の内部ファイル詳細")
+        with self.assertLogs("persona_bot.core.message_handler", level="WARNING") as logs:
+            await self.on_message(self.message)
+        reply = self.message.reply.await_args.args[0]
+        self.assertNotIn(self.settings.current_prompt_file, reply)
+        self.assertNotIn("架空の内部ファイル詳細", reply)
+        self.assertIn("管理者", reply)
+        self.assertIn(self.settings.current_prompt_file, "\n".join(logs.output))
+        self.namespace["gemini"].generate_with_metadata.assert_not_awaited()
+        self.namespace["affinity"].update_emotion.assert_not_called()
+
     async def test_rejected_reply_does_not_update_affinity_memory_or_feedback(self) -> None:
         self.response = "架空の応答です。[V:1, A:2]"
         self.namespace["moderator"].check.side_effect = None

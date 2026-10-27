@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import ANY, AsyncMock, Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -91,7 +91,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                 self.guild.voice_client = voice_client
                 reply = await self.join()
                 voice_client.disconnect.assert_awaited_once_with(force=True)
-                self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
+                self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS, cls=ANY)
                 self.assertIn("に接続しました", reply)
 
     async def test_join_registers_the_chosen_channel_as_the_intended_destination(self) -> None:
@@ -119,6 +119,191 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.join()
         self.voice_guard.adopt.assert_not_called()
 
+    async def test_join_errors_hide_internal_exception_details(self) -> None:
+        for error in (discord.ClientException("架空の内部設定情報"), RuntimeError("架空の内部設定情報")):
+            with self.subTest(error=type(error).__name__):
+                self.interaction.followup.send.reset_mock()
+                self.channel.connect.side_effect = error
+                with self.assertLogs("persona_bot.core.commands", level="WARNING") as logs:
+                    reply = await self.join()
+                self.assertNotIn("架空の内部設定情報", reply)
+                self.assertNotIn(type(error).__name__, reply)
+                self.assertIn("架空の内部設定情報", "\n".join(logs.output))
+
+    def use_sdk_voice_cache(self):
+        """Discord SDKの登録・解除を通し、外部への接続だけを差し替える。"""
+        client = discord.Client(intents=discord.Intents.none())
+        client._connection.loop = asyncio.get_running_loop()
+        state = client._connection
+
+        class CachedGuild:
+            id = 1
+            me = object()
+
+            @property
+            def voice_client(self):
+                return state._get_voice_client(self.id)
+
+        self.guild = CachedGuild()
+        self.interaction.guild = self.guild
+        self.channel.guild = self.guild
+        self.channel._state = state
+        self.channel._get_voice_client_key.return_value = (self.guild.id, "guild_id")
+
+        async def connect(**kwargs):
+            return await discord.abc.Connectable.connect(self.channel, **kwargs)
+
+        async def close():
+            # テスト専用のキャッシュだけを空にし、実接続の切断へ進ませない。
+            state._voice_clients.clear()
+            await client.close()
+
+        self.channel.connect.side_effect = connect
+        self.addAsyncCleanup(close)
+        return state
+
+    async def test_failed_connect_cleans_sdk_cache_even_when_disconnect_fails(self) -> None:
+        self.use_sdk_voice_cache()
+        errors = (asyncio.TimeoutError(), discord.Forbidden(Mock(status=403), "架空の拒否"),
+                  discord.ClientException("架空の状態不整合"), RuntimeError("架空の接続失敗"))
+        for error in errors:
+            for disconnect_fails in (False, True):
+                with self.subTest(error=type(error).__name__, disconnect_fails=disconnect_fails):
+                    created, disconnected = [], []
+
+                    async def fail(voice, **kwargs):
+                        created.append(voice)
+                        raise error
+
+                    async def disconnect(voice, *, force):
+                        self.assertTrue(force)
+                        disconnected.append(voice)
+                        if disconnect_fails:
+                            raise OSError("架空の切断失敗")
+                        voice.cleanup()
+
+                    self.voice_guard.reset_mock()
+                    with patch.object(discord.VoiceClient, "connect", new=fail), patch.object(
+                        discord.VoiceClient, "disconnect", new=disconnect,
+                    ):
+                        await self.join()
+                    self.assertIsNone(self.guild.voice_client)
+                    self.assertTrue(disconnected)
+                    self.assertTrue(all(voice is created[0] for voice in disconnected))
+                    self.voice_guard.adopt.assert_not_called()
+                    # キャッシュが片付いたので、次の接続をSDKに拒否されない。
+                    async def succeed(voice, **kwargs):
+                        return None
+
+                    with patch.object(discord.VoiceClient, "connect", new=succeed):
+                        await self.join()
+                    self.assertIsNotNone(self.guild.voice_client)
+                    self.guild.voice_client.cleanup()
+
+    async def test_failed_connect_does_not_clean_replacement_or_healthy_connection(self) -> None:
+        state = self.use_sdk_voice_cache()
+        for replacement_connected in (False, True, None):
+            with self.subTest(replacement_connected=replacement_connected):
+                replacement = self.make_voice_client(self.channel, connected=bool(replacement_connected))
+
+                async def fail(voice, **kwargs):
+                    if replacement_connected is None:
+                        # 例外時点では、この試行の接続自身が既に正常につながっている。
+                        voice.is_connected = Mock(return_value=True)
+                    else:
+                        state._add_voice_client(self.guild.id, replacement)
+                    raise RuntimeError("架空の接続後のエラー")
+
+                self.voice_guard.reset_mock()
+                with patch.object(discord.VoiceClient, "connect", new=fail), patch.object(
+                    discord.VoiceClient, "disconnect", new=AsyncMock(),
+                ) as disconnect:
+                    await self.join()
+                disconnect.assert_not_awaited()
+                self.voice_guard.release.assert_not_called()
+                if replacement_connected is not None:
+                    self.assertIs(self.guild.voice_client, replacement)
+                self.assertIsNotNone(self.guild.voice_client)
+                state._voice_clients.clear()
+
+    async def test_connect_rejected_before_creation_keeps_existing_connection(self) -> None:
+        state = self.use_sdk_voice_cache()
+        replacement = self.make_voice_client(self.channel)
+
+        async def connect(**kwargs):
+            # 接続開始の直前に別経路の接続が登録された場合、SDKは生成前に拒否する。
+            state._add_voice_client(self.guild.id, replacement)
+            return await discord.abc.Connectable.connect(self.channel, **kwargs)
+
+        self.channel.connect.side_effect = connect
+        with patch.object(discord.VoiceClient, "disconnect", new=AsyncMock()) as disconnect:
+            await self.join()
+        self.assertIs(self.guild.voice_client, replacement)
+        replacement.disconnect.assert_not_awaited()
+        disconnect.assert_not_awaited()
+        self.voice_guard.release.assert_not_called()
+
+    async def test_cleanup_failure_does_not_remove_connection_replaced_during_wait(self) -> None:
+        state = self.use_sdk_voice_cache()
+        entered, release = asyncio.Event(), asyncio.Event()
+        replacement = self.make_voice_client(self.make_channel(30))
+
+        async def fail(voice, **kwargs):
+            raise RuntimeError("架空の接続失敗")
+
+        async def disconnect(voice, *, force):
+            entered.set()
+            await release.wait()
+            raise OSError("架空の切断失敗")
+
+        with patch.object(discord.VoiceClient, "connect", new=fail), patch.object(
+            discord.VoiceClient, "disconnect", new=disconnect,
+        ):
+            task = asyncio.create_task(self.commands["join"](self.interaction))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                state._add_voice_client(self.guild.id, replacement)
+                self.voice_guard.adopt(1, 30)
+                release.set()
+                await asyncio.wait_for(task, 2)
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertIs(self.guild.voice_client, replacement)
+        replacement.disconnect.assert_not_awaited()
+        self.voice_guard.release.assert_called_once_with(1)
+
+    async def test_failed_connect_cleanup_waits_through_repeated_cancellation(self) -> None:
+        self.use_sdk_voice_cache()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def fail(voice, **kwargs):
+            raise RuntimeError("架空の接続失敗")
+
+        async def disconnect(voice, *, force):
+            entered.set()
+            await release.wait()
+            voice.cleanup()
+
+        with patch.object(discord.VoiceClient, "connect", new=fail), patch.object(
+            discord.VoiceClient, "disconnect", new=disconnect,
+        ):
+            task = asyncio.create_task(self.commands["join"](self.interaction))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                for _ in range(2):
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertIsNotNone(self.guild.voice_client)
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                self.assertIsNone(self.guild.voice_client)
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_leave_releases_the_guard_before_disconnecting(self) -> None:
         current = self.make_voice_client(self.channel)
         self.guild.voice_client = current
@@ -131,7 +316,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_first_join_connects_with_timeout(self) -> None:
         reply = await self.join()
-        self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
+        self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS, cls=ANY)
         self.assertIn("に接続しました", reply)
 
     async def test_disconnect_failure_sends_followup_without_connecting(self) -> None:
@@ -333,7 +518,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                     self.voice_guard.release.assert_not_called()
                     self.voice_guard.adopt.assert_called_once_with(1, 20)
                     self.interaction.followup.send.assert_awaited_once()
-                    self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
+                    self.channel.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS, cls=ANY)
                     other_channel.connect.assert_not_awaited()
                     self.autonomous.stop_session.assert_awaited_once()
                     newest.followup.send.assert_not_awaited()
@@ -892,7 +1077,7 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_stage_join_promotes_bot_before_reporting_speaking(self) -> None:
         stage = self.make_stage()
         reply = await self.join()
-        stage.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS)
+        stage.connect.assert_awaited_once_with(timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS, cls=ANY)
         self.guild.me.edit.assert_awaited_once_with(suppress=False)
         self.assertIn("発言者", reply)
 
