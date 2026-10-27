@@ -245,6 +245,36 @@ class AgentLinesTests(PersonaFolderTestCase):
         self.write_settings({"personas": {"a.txt": {"agent": "架空"}}})
         with patch("builtins.print"):
             self.assertEqual(dict(self.load().agent_lines("../prompts/a.txt")), constants.AGENT_DEFAULT_LINES)
+            self.assertIsNone(self.load().agent_avatar_url("../prompts/a.txt"))
+
+    def test_avatar_url_is_read_apart_from_lines(self) -> None:
+        """作業スレッドで子が使うアイコン（#267）。文面としては扱わない。"""
+        self.write("a.txt")
+        url = "https://example.invalid/agent.png"
+        self.write_settings({"personas": {"a.txt": {"agent": {"avatar_url": f" {url} ", "name": "見習い{role}"}}}})
+        with patch("builtins.print") as logging:
+            catalog = self.load()
+        logging.assert_not_called()
+        self.assertEqual(catalog.agent_avatar_url("../prompts/a.txt"), url)
+        lines = catalog.agent_lines("../prompts/a.txt")
+        self.assertNotIn("avatar_url", lines)
+        self.assertEqual(lines["name"], "見習い{role}")
+        # 書いていない・一覧に無いペルソナは既定のアイコン
+        for value in (None, "", "../prompts/無い.txt"):
+            with self.subTest(value=value):
+                self.assertIsNone(catalog.agent_avatar_url(value))
+
+    def test_invalid_avatar_url_is_warned_without_its_value(self) -> None:
+        self.write("a.txt")
+        for value in ("http://example.invalid/秘密.png", "https://example.invalid/秘密 .png", 3, "",
+                      "https://example.invalid/秘密" + "a" * constants.AGENT_AVATAR_URL_MAX_CHARS):
+            with self.subTest(value=value):
+                self.write_settings({"personas": {"a.txt": {"agent": {"avatar_url": value}}}})
+                with patch("builtins.print") as logging:
+                    catalog = self.load()
+                self.assertIsNone(catalog.agent_avatar_url("../prompts/a.txt"))
+                self.assertEqual(logging.call_count, 1)
+                self.assertFalse(any("秘密" in str(call) for call in logging.call_args_list))
 
 
 class SelectablePersonaTests(PersonaFolderTestCase):

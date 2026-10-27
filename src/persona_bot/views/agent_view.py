@@ -1,7 +1,14 @@
 """サブエージェントの進捗メッセージと中止ボタン（#170）。
 
-子が作業している間は、依頼への返信として進捗メッセージを1通出し、手順ごとに書き換える。
-文面はペルソナの定型文（案A。LLM を呼ばない）で、`agent_service.render_agent_line` が組み立てる。
+子が作業している間の進捗は、次の2つの形のどちらかで伝える（文面はどちらもペルソナの定型文で、
+`agent_service.render_agent_line` が組み立てる。案A。LLM を呼ばない）。
+
+- 作業スレッド（`agent_thread.py`。#267）: 依頼メッセージにスレッドを作り、親が委託内容を伝え、
+  子が Webhook で進捗と報告を残す。使える場面ではこちらを優先する。
+- 返信1通の書き換え（このモジュールの `AgentProgress`）: スレッドを使えない場面の切り替え先。
+  依頼への返信として進捗メッセージを1通出し、手順ごとに書き換える。
+
+共通の部分（中止ボタン・全体の期限・子のタスクの回収）は `AgentProgressBase` が持つ。
 
 - 書き換えは `AGENT_PROGRESS_MIN_INTERVAL_SECONDS` より短い間隔では行わない（Discord のレート制限）。
   終了時の書き換えだけは間隔に関わらず必ず行う。
@@ -46,64 +53,38 @@ class AgentCancelView(ui.View):
         await interaction.response.defer()
 
 
-class AgentProgress:
-    """依頼1件分の進捗メッセージ。start → update（手順ごと）→ finish の順に使う。"""
+class AgentProgressBase:
+    """依頼1件分の進捗表示の共通部分。update（手順ごと）→ finish の順に使う。
 
-    def __init__(self, message: discord.Message, lines: Mapping[str, str], plan: AgentPlan) -> None:
-        self._source = message
+    表示の形ごとの部分（送り先と文面の並べ方）は派生クラスが決める。
+    """
+
+    # 子の報告そのものを表示するか（作業スレッドだけが表示する）。
+    shows_report = False
+
+    def __init__(self, requester_id: int, lines: Mapping[str, str], plan: AgentPlan) -> None:
         self._lines = lines
         self._plan = plan
         self._cancel_event = asyncio.Event()
-        self._view = AgentCancelView(message.author.id, self._cancel_event)
-        self._message: discord.Message | None = None
-        self._last_edit = 0.0
-        self._header = render_agent_line(lines, "start", role=plan.role, total=len(plan.steps))
+        self._view = AgentCancelView(requester_id, self._cancel_event)
 
     def _line(self, key: str, *, index: int = 0, step: str = "") -> str:
         return render_agent_line(
             self._lines, key, role=self._plan.role, step=step, current=index + 1, total=len(self._plan.steps),
         )
 
-    async def start(self) -> None:
-        """依頼への返信として進捗メッセージを出す（失敗しても作業は続ける）。"""
-        first_step = self._plan.steps[0]
-        content = f"{self._header}\n{self._line('progress', step=first_step)}"
-        try:
-            self._message = await self._source.reply(
-                content, view=self._view, allowed_mentions=discord.AllowedMentions.none(),
-            )
-            self._last_edit = monotonic()
-        except discord.DiscordException as error:
-            print(f"サブエージェント: 進捗メッセージを送れませんでした: {type(error).__name__}")
-            self._view.stop()
-
     async def update(self, index: int, step: str) -> None:
-        """手順の開始を表示する。最初の手順は start で表示済み。間隔が短ければ見送る。"""
-        if index == 0 or self._message is None:
-            return
-        if monotonic() - self._last_edit < AGENT_PROGRESS_MIN_INTERVAL_SECONDS:
-            return
-        await self._edit(f"{self._header}\n{self._line('progress', index=index, step=step)}", view=self._view)
+        """手順の開始を表示する（手順の番号は 0 始まり）。"""
+        raise NotImplementedError
 
-    async def finish(self, key: str) -> None:
-        """終了の定型文（done / failed / canceled）に書き換え、中止ボタンを外す。"""
-        self._view.stop()
-        if self._message is None:
-            # 進捗メッセージを出せなかった場合も、失敗と中止だけは伝える（完了は人格役の返信で分かる）。
-            if key != "done":
-                try:
-                    await self._source.reply(self._line(key), allowed_mentions=discord.AllowedMentions.none())
-                except discord.DiscordException as error:
-                    print(f"サブエージェント: 終了の案内を送れませんでした: {type(error).__name__}")
-            return
-        await self._edit(f"{self._header}\n{self._line(key)}", view=None)
+    async def finish(self, key: str, report: AgentReport | None = None) -> None:
+        """終了の定型文（done / failed / canceled）を伝え、中止ボタンを外す。
 
-    async def _edit(self, content: str, *, view: ui.View | None) -> None:
-        try:
-            await self._message.edit(content=content, view=view)
-            self._last_edit = monotonic()
-        except discord.DiscordException as error:
-            print(f"サブエージェント: 進捗メッセージを更新できませんでした: {type(error).__name__}")
+        Args:
+            report: 子の報告（done のときだけ）。表示する形（shows_report）では、
+                呼び出し側が NG ワードを伏せてから渡す。
+        """
+        raise NotImplementedError
 
     async def run(self, work: Coroutine[Any, Any, AgentReport | None]) -> tuple[str, AgentReport | None]:
         """子の作業を、全体の期限と中止ボタンを見ながら待つ。
@@ -144,3 +125,58 @@ class AgentProgress:
             return "canceled", None
         print(f"サブエージェント: 期限（{AGENT_TOTAL_TIMEOUT_SECONDS:.0f}秒）に達したため中止しました。")
         return "failed", None
+
+
+class AgentProgress(AgentProgressBase):
+    """依頼への返信1通を書き換える進捗表示。start → update（手順ごと）→ finish の順に使う。
+
+    作業スレッドを使えない場面（DM・スレッドの中・権限不足など）の切り替え先。
+    """
+
+    def __init__(self, message: discord.Message, lines: Mapping[str, str], plan: AgentPlan) -> None:
+        super().__init__(message.author.id, lines, plan)
+        self._source = message
+        self._message: discord.Message | None = None
+        self._last_edit = 0.0
+        self._header = render_agent_line(lines, "start", role=plan.role, total=len(plan.steps))
+
+    async def start(self) -> None:
+        """依頼への返信として進捗メッセージを出す（失敗しても作業は続ける）。"""
+        first_step = self._plan.steps[0]
+        content = f"{self._header}\n{self._line('progress', step=first_step)}"
+        try:
+            self._message = await self._source.reply(
+                content, view=self._view, allowed_mentions=discord.AllowedMentions.none(),
+            )
+            self._last_edit = monotonic()
+        except discord.DiscordException as error:
+            print(f"サブエージェント: 進捗メッセージを送れませんでした: {type(error).__name__}")
+            self._view.stop()
+
+    async def update(self, index: int, step: str) -> None:
+        """手順の開始を表示する。最初の手順は start で表示済み。間隔が短ければ見送る。"""
+        if index == 0 or self._message is None:
+            return
+        if monotonic() - self._last_edit < AGENT_PROGRESS_MIN_INTERVAL_SECONDS:
+            return
+        await self._edit(f"{self._header}\n{self._line('progress', index=index, step=step)}", view=self._view)
+
+    async def finish(self, key: str, report: AgentReport | None = None) -> None:
+        """終了の定型文（done / failed / canceled）に書き換え、中止ボタンを外す（報告は表示しない）。"""
+        self._view.stop()
+        if self._message is None:
+            # 進捗メッセージを出せなかった場合も、失敗と中止だけは伝える（完了は人格役の返信で分かる）。
+            if key != "done":
+                try:
+                    await self._source.reply(self._line(key), allowed_mentions=discord.AllowedMentions.none())
+                except discord.DiscordException as error:
+                    print(f"サブエージェント: 終了の案内を送れませんでした: {type(error).__name__}")
+            return
+        await self._edit(f"{self._header}\n{self._line(key)}", view=None)
+
+    async def _edit(self, content: str, *, view: ui.View | None) -> None:
+        try:
+            await self._message.edit(content=content, view=view)
+            self._last_edit = monotonic()
+        except discord.DiscordException as error:
+            print(f"サブエージェント: 進捗メッセージを更新できませんでした: {type(error).__name__}")

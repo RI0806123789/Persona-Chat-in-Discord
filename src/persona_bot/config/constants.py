@@ -229,11 +229,14 @@ AGENT_PROGRESS_MIN_INTERVAL_SECONDS = 5.0
 #   {role}    : ルーターが決めた子のロール（例: 「地域のカフェのリサーチ担当」）
 #   {step}    : いま進めている手順の名前
 #   {current} : いま進めている手順の番号 / {total}: 手順の数
-AGENT_LINE_KEYS = ("start", "progress", "done", "failed", "canceled", "busy")
+AGENT_LINE_KEYS = (
+    "start", "progress", "done", "failed", "canceled", "busy",
+    "name", "handoff", "child_start", "child_progress", "child_report",
+)
 AGENT_DEFAULT_LINES = {
-    # 委任を始めたとき（進捗メッセージの1行目に残る）
+    # 委任を始めたとき（進捗メッセージの1行目に残る。作業スレッドでは使わない）
     "start": "サブエージェント（{role}）に作業を任せました。少し待っていてください。",
-    # 手順ごとの進捗（2行目を書き換える）
+    # 手順ごとの進捗（2行目を書き換える。作業スレッドでは使わない）
     "progress": "{step}を進めています…（{current}/{total}）",
     # 子の作業が終わったとき（このあと人格役が返信する）
     "done": "サブエージェントの作業が終わりました。",
@@ -243,7 +246,39 @@ AGENT_DEFAULT_LINES = {
     "canceled": "サブエージェントの作業を中止しました。",
     # 同じ人の依頼が進行中、または同時に動かせる上限に達しているとき
     "busy": "いまは別のサブエージェントの作業を進めています。終わってから、もう一度お願いします。",
+    # ── ここから下は作業スレッド（#267）だけで使う ──
+    # 子の表示名（Webhook で投稿するときの名前）
+    "name": "サブエージェント（{role}）",
+    # 親（ボット）がスレッドで子へ作業を頼むときの1行目（このあとに依頼内容・期待する出力・手順が続く）
+    "handoff": "{role}さん、次の作業をお願いします。",
+    # 子が作業を引き受けたとき
+    "child_start": "承知しました。{total}つの手順で進めます。",
+    # 子が手順を始めるとき（書き換えずに1通ずつ残す）
+    "child_progress": "手順{current}/{total}「{step}」を進めています…",
+    # 子の報告の1行目（このあとに報告の本文と参考リンクが続く）
+    "child_report": "作業が終わりました。報告します。",
 }
+# ── サブエージェントの作業スレッド（#267） ──
+# 委任するとき、依頼メッセージに作業用のスレッドを作り、親（ボット）が委託内容を伝え、
+# 子が Webhook で名前とアイコンを変えて進捗と報告を投稿する（同じボット・同じトークンのまま）。
+# スレッドを使えない場面（DM・スレッドの中・ボイスのチャット・権限不足など）では、
+# 依頼への返信1通を書き換える進捗表示へ切り替える。False にすると常にその表示にする。
+AGENT_THREAD_ENABLED = True
+# 作業スレッドの名前。{role} に子のロールを差し込み、Discord の上限で切る。
+AGENT_THREAD_NAME = "🤖 {role}"
+AGENT_THREAD_NAME_MAX_CHARS = 100
+# 作業スレッドが無操作で自動アーカイブされるまでの時間（分）。Discord が受け付ける
+# 60 / 1440 / 4320 / 10080 のどれか。作業後の一覧を散らかさないよう最短にしている。
+AGENT_THREAD_AUTO_ARCHIVE_MINUTES = 60
+# 子の投稿に使う Webhook の名前。チャンネルごとに1つ作り、ボット自身が作ったものを使い回す
+# （依頼のたびに作ると、チャンネルあたりの Webhook の上限に達する）。
+# Discord の制約で "discord" / "clyde" を含む名前は付けられない。
+AGENT_WEBHOOK_NAME = "サブエージェント"
+# 子の表示名の上限（Discord の Webhook 名の上限）と、整えた結果が空になったときの名前。
+AGENT_CHILD_NAME_MAX_CHARS = 80
+AGENT_CHILD_FALLBACK_NAME = "サブエージェント"
+# personas.json の agent.avatar_url（子のアイコンの画像 URL）の長さの上限。
+AGENT_AVATAR_URL_MAX_CHARS = 2048
 
 # UsageTracker が保持するトークン履歴の上限（リングバッファ）
 MAX_USAGE_HISTORY = 500

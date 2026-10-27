@@ -34,6 +34,7 @@ from typing import Any, Mapping
 
 from persona_bot.config import constants
 from persona_bot.config.constants import (
+    AGENT_AVATAR_URL_MAX_CHARS,
     AGENT_DEFAULT_LINES,
     AGENT_LINE_KEYS,
     DISCORD_SELECT_VALUE_MAX_LENGTH,
@@ -57,6 +58,8 @@ _EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
 _VOICE_KEYS = ("voice", "pitch", "rate", "eq")
 # サブエージェントの進捗の定型文（personas.json の "agent"）に書ける差し込み（#170）。
 _AGENT_LINE_FIELDS = frozenset({"role", "step", "current", "total"})
+# personas.json の "agent" のうち、定型文ではない項目（子のアイコン。#267）。
+_AGENT_AVATAR_KEY = "avatar_url"
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,8 @@ class Persona:
     voice: Mapping[str, Any]
     # サブエージェントの進捗の定型文。書いた項目だけを持ち、残りは AGENT_DEFAULT_LINES を使う。
     agent_lines: Mapping[str, str] = field(default_factory=dict)
+    # 作業スレッドで子が投稿するときのアイコンの URL（#267）。None なら Webhook の既定のアイコン。
+    agent_avatar_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,11 @@ class PersonaCatalog:
         if persona is not None:
             lines.update(persona.agent_lines)
         return MappingProxyType(lines)
+
+    def agent_avatar_url(self, value: str | None) -> str | None:
+        """作業スレッドで子が使うアイコンの URL。書いていなければ None（#267）。"""
+        persona = self.get(value)
+        return persona.agent_avatar_url if persona is not None else None
 
 
 _catalog = PersonaCatalog()
@@ -283,6 +293,7 @@ def _build_persona(file_name: str, entry: Any) -> Persona:
         name=display or Path(file_name).stem,
         voice=MappingProxyType(_build_voice(file_name, entry.get("voice"))),
         agent_lines=MappingProxyType(_build_agent_lines(file_name, entry.get("agent"))),
+        agent_avatar_url=_build_agent_avatar_url(file_name, entry.get("agent")),
     )
 
 
@@ -323,8 +334,14 @@ def _build_agent_lines(file_name: str, agent: Any) -> dict[str, str]:
         return {}
     lines: dict[str, str] = {}
     for key, value in agent.items():
+        if key == _AGENT_AVATAR_KEY:
+            # 文面ではないので _build_agent_avatar_url が点検する
+            continue
         if key not in AGENT_LINE_KEYS:
-            print(f"警告: personas.json の「{file_name}」の agent に未対応の項目があります（{key}）。使える項目: {', '.join(AGENT_LINE_KEYS)}")
+            print(
+                f"警告: personas.json の「{file_name}」の agent に未対応の項目があります（{key}）。"
+                f"使える項目: {', '.join((*AGENT_LINE_KEYS, _AGENT_AVATAR_KEY))}"
+            )
             continue
         if not isinstance(value, str) or not value.strip():
             print(f"警告: personas.json の「{file_name}」の agent.{key} は文字列で書いてください。既定の文面を使います。")
@@ -338,6 +355,29 @@ def _build_agent_lines(file_name: str, agent: Any) -> dict[str, str]:
             continue
         lines[key] = value.strip()
     return lines
+
+
+def _build_agent_avatar_url(file_name: str, agent: Any) -> str | None:
+    """作業スレッドで子が使うアイコンの URL を点検する（#267）。
+
+    Discord が画像を取りに行く URL なので https:// で始まる1行だけを受け付ける。
+    誤りは警告して Webhook の既定のアイコンを使う（URL そのものはログに出さない）。
+    """
+    if not isinstance(agent, dict) or _AGENT_AVATAR_KEY not in agent:
+        return None
+    value = agent[_AGENT_AVATAR_KEY]
+    url = value.strip() if isinstance(value, str) else ""
+    if (
+        not url.startswith("https://")
+        or len(url) > AGENT_AVATAR_URL_MAX_CHARS
+        or any(character.isspace() for character in url)
+    ):
+        print(
+            f"警告: personas.json の「{file_name}」の agent.{_AGENT_AVATAR_KEY} は https:// で始まる"
+            f"{AGENT_AVATAR_URL_MAX_CHARS}文字以内の画像の URL で書いてください。既定のアイコンを使います。"
+        )
+        return None
+    return url
 
 
 def _is_valid_agent_line(text: str) -> bool:
