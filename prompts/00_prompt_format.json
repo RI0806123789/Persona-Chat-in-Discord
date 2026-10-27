@@ -9,6 +9,7 @@
     "voice.rate: 話す速さ。+5% のように符号つきの整数と % で書きます。",
     "voice.eq: 音色。flat（加工なし）/ bright（明るい）/ warm（落ち着いた）/ robotic（機械的）。",
     "agent: 会話で「サブエージェントを使って」と頼まれたときの進捗の定型文（AIは使わずにそのまま表示します）。start（任せたとき）/ progress（手順ごと）/ done（終わったとき）/ failed（失敗したとき）/ canceled（中止したとき）/ busy（別の作業中のとき）。{role}（任せた役割）・{step}（手順の名前）・{current}（何番目か）・{total}（手順の数）を差し込めます。書かなかった項目は標準の文面になります。",
+    "agent（作業スレッド）: 依頼メッセージに作業スレッドを作れるときは、次の項目も使います（start と progress は使いません）。name（サブエージェントの表示名）/ avatar_url（サブエージェントのアイコンにする画像の https:// の URL）/ handoff（キャラがサブエージェントに作業を頼む1行目）/ child_start（サブエージェントが引き受けたとき）/ child_progress（サブエージェントが手順を始めるとき）/ child_report（サブエージェントの報告の1行目）。child_ で始まる項目と name はサブエージェント側の言葉です。",
     "省略した項目は既定値（ja-JP-NanamiNeural・+0Hz・+0%・flat）になります。この _説明 は読み込み時に無視されるので、消しても残しても動きます。"
   ],
   "default": "my_character.txt",
@@ -17,6 +18,8 @@
       "name": "わたしのキャラ",
       "voice": { "voice": "ja-JP-NanamiNeural", "pitch": "+10Hz", "rate": "+5%", "eq": "bright" },
       "agent": {
+        "name": "見習いの{role}",
+        "handoff": "{role}さん、これお願いね！",
         "start": "{role}に調べてもらうね。ちょっと待ってて！",
         "progress": "いま{step}をしてるよ…（{current}/{total}）",
         "failed": "ごめんね、うまく調べられなかったみたい。もう一回お願いできる？"

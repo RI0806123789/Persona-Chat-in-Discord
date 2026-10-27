@@ -283,6 +283,59 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
                 self.gemini.generate_with_metadata.reset_mock()
                 await self.delegate_with_blocked_cleanup(trigger, broken=True)
 
+    def enable_work_thread(self) -> None:
+        """作業スレッドを使える状態（権限あり・Webhook 作成可）にする（#267）。"""
+        self.message.guild = SimpleNamespace(id=1, me=SimpleNamespace(id=99))
+        self.message.channel.permissions_for.return_value = SimpleNamespace(
+            view_channel=True, create_public_threads=True, send_messages_in_threads=True, manage_webhooks=True,
+        )
+        self.webhook = SimpleNamespace(send=AsyncMock())
+        self.message.channel.webhooks = AsyncMock(return_value=[])
+        self.message.channel.create_webhook = AsyncMock(return_value=self.webhook)
+        self.handoff = SimpleNamespace(edit=AsyncMock())
+        self.thread = SimpleNamespace(id=700, send=AsyncMock(return_value=self.handoff))
+        self.message.create_thread = AsyncMock(return_value=self.thread)
+
+    async def test_delegation_is_shown_in_work_thread(self) -> None:
+        self.enable_work_thread()
+
+        def mask(text, *, label):
+            # 子の報告だけに架空の NG ワードがある想定で、伏せ方を確かめる
+            return text.replace("出力", "●●") if label == "サブエージェントの報告" else text
+
+        self.handler.ng_filter.mask_with_log.side_effect = mask
+        await self.handler.on_message(self.message)
+
+        # 依頼メッセージに作業スレッドを作り、親が委託内容を伝える（依頼内容も NG ワードの確認を通す）
+        self.message.create_thread.assert_awaited_once()
+        self.assertIn(PLAN.task, self.thread.send.await_args_list[0].args[0])
+        labels = [call.kwargs["label"] for call in self.handler.ng_filter.mask_with_log.call_args_list]
+        self.assertIn("サブエージェントの依頼内容", labels)
+
+        # 子は開始・手順ごとの進捗・報告を Webhook で残す。報告は伏せてから出し、出典も添える
+        posts = [call.args[0] for call in self.webhook.send.await_args_list]
+        self.assertEqual(len(posts), 1 + len(PLAN.steps) + 1)
+        self.assertIn(f"架空の子の●●{len(PLAN.steps)}", posts[-1])
+        self.assertIn(SOURCE["uri"], posts[-1])
+
+        # 人格役には元の報告を渡し、返信は元のチャンネルへ（進捗の返信は出さない）
+        self.assertIn(f"架空の子の出力{len(PLAN.steps)}", self.persona_calls()[0].prompt)
+        self.assertIs(self.send.await_args.args[0], self.message)
+        self.message.reply.assert_not_awaited()
+        self.handoff.edit.assert_awaited_once_with(view=None)
+        self.assertTrue(self.agent.try_acquire("11"))
+
+    async def test_failed_delegation_in_work_thread_is_told_in_channel(self) -> None:
+        self.enable_work_thread()
+        self.gemini.generate_with_metadata.side_effect = lambda *args, **kwargs: GenerationResult(None, None, [], None)
+        await self.handler.on_message(self.message)
+        self.assertIn("うまくいきませんでした", self.thread.send.await_args.args[0])
+        self.assertIn("うまくいきませんでした", self.message.reply.await_args.args[0])
+        self.send.assert_not_awaited()
+        self.tts.assert_not_awaited()
+        # 失敗した子の報告は出さない（開始と手順1の進捗だけ）
+        self.assertEqual(self.webhook.send.await_count, 2)
+
     async def test_child_exception_reports_failure_and_releases_slot(self) -> None:
         self.gemini.generate_with_metadata.side_effect = RuntimeError("架空の子の作業失敗")
         await self.handler.on_message(self.message)

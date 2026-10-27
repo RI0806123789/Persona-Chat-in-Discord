@@ -31,7 +31,7 @@ from persona_bot.services.prompting import (
     build_agent_declined_section, build_agent_report_section, build_full_prompt, build_memory_sections,
 )
 from persona_bot.audio.voice import play_tts_response
-from persona_bot.views.agent_view import AgentProgress
+from persona_bot.views.agent_thread import AgentWebhooks, start_agent_progress
 
 if TYPE_CHECKING:
     from persona_bot.services.affinity_service import AffinityService
@@ -76,6 +76,8 @@ class MessageHandler:
 
     def __post_init__(self) -> None:
         self._chat_admission = ChatAdmission()
+        # サブエージェントの作業スレッドへ子が投稿する Webhook（チャンネルごとに使い回す。#267）
+        self._agent_webhooks = AgentWebhooks()
 
     async def notify_violation(self, message: discord.Message, notice: str) -> None:
         """違反を1回記録し、ブロック状況に応じた警告をユーザーに返信する。
@@ -377,12 +379,14 @@ class MessageHandler:
     ) -> str | None:
         """子（サブエージェント）に作業させ、報告を人格役がペルソナの口調で言い直して返信する（#170）。
 
-        進捗は定型文（案A）で1通のメッセージを書き換えて伝える。子の失敗・期限切れ・中止は
-        定型文で伝えて終える（人格役の生成はしない）。返信の後処理（親密度・モデレーション・
-        評価・記憶）は通常の会話と同じ handle_chat_message に任せる。
+        進捗は定型文（案A）で伝える。使える場面では依頼メッセージに作業スレッドを作り、親が
+        委託内容を伝えて子が Webhook で進捗と報告を残す（#267）。使えなければ1通のメッセージを
+        書き換える。子の失敗・期限切れ・中止は定型文で伝えて終える（人格役の生成はしない）。
+        返信の後処理（親密度・モデレーション・評価・記憶）は通常の会話と同じ handle_chat_message に任せる。
         """
         user_id = str(message.author.id)
-        lines = current_persona_catalog().agent_lines(response_settings.prompt_file)
+        catalog = current_persona_catalog()
+        lines = catalog.agent_lines(response_settings.prompt_file)
         if not self.agent.try_acquire(user_id):
             print(f"サブエージェント: 実行中の依頼があるため受け付けませんでした (user_id={user_id})。")
             try:
@@ -391,21 +395,31 @@ class MessageHandler:
                 print(f"サブエージェント: 受付できない旨を送れませんでした: {type(error).__name__}")
             return None
         try:
-            # ロールと手順名は進捗メッセージへそのまま出るため、NG ワードを伏せておく。
+            # ロール・依頼内容・出力形式・手順名は進捗や作業スレッドへそのまま出るため、NG ワードを伏せておく。
             plan = AgentPlan(
                 delegate=True,
                 role=self.ng_filter.mask_with_log(plan.role, label="サブエージェントのロール"),
-                task=plan.task,
-                expected_output=plan.expected_output,
+                task=self.ng_filter.mask_with_log(plan.task, label="サブエージェントの依頼内容"),
+                expected_output=self.ng_filter.mask_with_log(
+                    plan.expected_output, label="サブエージェントの出力形式",
+                ),
                 steps=tuple(self.ng_filter.mask_with_log(step, label="サブエージェントの手順") for step in plan.steps),
             )
             print(f"サブエージェント: 委任します（ロール: {plan.role}、手順: {len(plan.steps)}）。")
-            progress = AgentProgress(message, lines, plan)
-            await progress.start()
+            progress = await start_agent_progress(
+                message, lines, plan, webhooks=self._agent_webhooks,
+                avatar_url=catalog.agent_avatar_url(response_settings.prompt_file),
+            )
             outcome, report = await progress.run(
                 self.agent.run(plan, response_settings.model_name, progress.update)
             )
-            await progress.finish(outcome)
+            shown_report = None
+            if report is not None and progress.shows_report:
+                # 子の報告は作業スレッドへそのまま出るため伏せる（人格役には元の報告を渡し、返信側で判定する）。
+                shown_report = report._replace(
+                    text=self.ng_filter.mask_with_log(report.text, label="サブエージェントの報告"),
+                )
+            await progress.finish(outcome, shown_report)
             if report is None:
                 return None
             return await self.handle_chat_message(
