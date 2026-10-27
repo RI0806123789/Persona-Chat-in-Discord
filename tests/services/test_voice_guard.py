@@ -27,7 +27,7 @@ MOVED_ID = 20
 def make_channel(channel_id: int, *, spec: type = discord.VoiceChannel, **permissions) -> Mock:
     channel = Mock(spec=spec, id=channel_id)
     channel.name = f"架空の通話{channel_id}"
-    allowed = dict(connect=True, speak=True, mute_members=False)
+    allowed = dict(view_channel=True, connect=True, speak=True, mute_members=False)
     allowed.update(permissions)
     channel.permissions_for.return_value = SimpleNamespace(**allowed)
     return channel
@@ -155,6 +155,114 @@ class VoiceGuardTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(voice_guard_module, "enable_stage_speaker", promote):
             await self.connect_then_move()
         promote.assert_awaited_once_with(self.guild, self.home)
+        self.voice_client.disconnect.assert_not_awaited()
+        self.assertIs(self.guild.voice_client, self.voice_client)
+        self.assertEqual(self.guard.home_channel_id(1), HOME_ID)
+
+    def prepare_stage_return(self) -> None:
+        """各ケースで、ステージへ戻す対象の接続と復帰先を用意する。"""
+        self.guard.release(1)
+        self.home = make_channel(HOME_ID, spec=discord.StageChannel, mute_members=True)
+        self.channels[HOME_ID] = self.home
+        self.voice_client = self.make_voice_client(self.home)
+        self.guild.voice_client = self.voice_client
+
+    async def test_hidden_voice_and_stage_targets_leave_without_attempting_a_return(self) -> None:
+        for channel_type in (discord.VoiceChannel, discord.StageChannel):
+            with self.subTest(channel_type=channel_type.__name__):
+                self.home = make_channel(HOME_ID, spec=channel_type, view_channel=False, mute_members=True)
+                self.channels[HOME_ID] = self.home
+                self.voice_client = self.make_voice_client(self.home)
+                self.guild.voice_client = self.voice_client
+                promote = AsyncMock()
+                with patch.object(voice_guard_module, "enable_stage_speaker", promote), patch("builtins.print") as log:
+                    await self.connect_then_move()
+                self.assert_left_without_return()
+                promote.assert_not_awaited()
+                self.home.permissions_for.assert_called_once_with(self.guild.me)
+                self.assertTrue(any("チャンネルを見る" in str(call) for call in log.call_args_list))
+
+    async def test_failed_stage_promotion_leaves_and_releases_protection(self) -> None:
+        errors = (
+            discord.Forbidden(SimpleNamespace(status=403, reason="架空の拒否"), "架空の権限変更"),
+            discord.HTTPException(SimpleNamespace(status=500, reason="架空の障害"), "架空のAPI失敗"),
+            RuntimeError("架空のボイス状態取得失敗"),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                self.prepare_stage_return()
+                promote = AsyncMock(side_effect=error)
+                with patch.object(voice_guard_module, "enable_stage_speaker", promote):
+                    await self.connect_then_move()
+                self.voice_client.move_to.assert_awaited_once_with(
+                    self.home, timeout=constants.VOICE_CONNECT_TIMEOUT_SECONDS,
+                )
+                promote.assert_awaited_once_with(self.guild, self.home)
+                self.voice_client.disconnect.assert_awaited_once_with(force=True)
+                self.assertIsNone(self.guild.voice_client)
+                self.assertIsNone(self.guard.home_channel_id(1))
+                # 退出後に同じ保護処理が走っても、入り直しや再昇格はしない。
+                await self.guard._protect(1)
+                promote.assert_awaited_once()
+                self.voice_client.disconnect.assert_awaited_once()
+
+    async def test_stage_promotion_failure_keeps_later_connection_and_home_changes(self) -> None:
+        for change in ("replacement", "adopt_moved", "release", "readopt_home"):
+            with self.subTest(change=change):
+                self.prepare_stage_return()
+                entered, finish = asyncio.Event(), asyncio.Event()
+
+                async def promote(*args):
+                    entered.set()
+                    await finish.wait()
+                    raise RuntimeError("架空の昇格失敗")
+
+                with patch.object(voice_guard_module, "enable_stage_speaker", AsyncMock(side_effect=promote)):
+                    operation = asyncio.create_task(self.connect_then_move())
+                    current = self.voice_client
+                    expected_home = HOME_ID
+                    try:
+                        await asyncio.wait_for(entered.wait(), timeout=2)
+                        if change == "replacement":
+                            # 保護先が同じままでも、接続自体が差し替われば触らない。
+                            current = self.make_voice_client(self.home)
+                            self.guild.voice_client = current
+                        elif change == "adopt_moved":
+                            current.channel = self.moved
+                            self.guard.adopt(1, MOVED_ID)
+                            expected_home = MOVED_ID
+                        elif change == "release":
+                            self.guard.release(1)
+                            expected_home = None
+                        else:
+                            # チャンネルIDが同じでも、再登録された保護情報は別の所有者。
+                            self.guard.release(1)
+                            self.guard.adopt(1, HOME_ID)
+                    finally:
+                        finish.set()
+                        await asyncio.wait_for(operation, timeout=2)
+                self.voice_client.disconnect.assert_not_awaited()
+                current.disconnect.assert_not_awaited()
+                self.assertIs(self.guild.voice_client, current)
+                self.assertEqual(self.guard.home_channel_id(1), expected_home)
+
+    async def test_stage_promotion_cancellation_is_propagated(self) -> None:
+        self.prepare_stage_return()
+        with patch.object(voice_guard_module, "enable_stage_speaker", AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.connect_then_move()
+        self.voice_client.disconnect.assert_not_awaited()
+        self.assertEqual(self.guard.home_channel_id(1), HOME_ID)
+
+    async def test_failed_stage_exit_is_logged_after_releasing_protection(self) -> None:
+        self.prepare_stage_return()
+        self.voice_client.disconnect.side_effect = RuntimeError("架空の切断失敗")
+        with patch.object(voice_guard_module, "enable_stage_speaker", AsyncMock(side_effect=RuntimeError("架空の昇格失敗"))), \
+                patch("builtins.print") as log:
+            await self.connect_then_move()
+        self.voice_client.disconnect.assert_awaited_once_with(force=True)
+        self.assertIsNone(self.guard.home_channel_id(1))
+        self.assertTrue(any("退出に失敗" in str(call) for call in log.call_args_list))
 
     # ---- 戻れない場合は退出し、無限に再試行しない ------------------------------
 

@@ -7,8 +7,8 @@
 次の保護動作を行う（一瞬の移動も起きない「完全な禁止」ではない）。
 
     ・`/join` で人が呼んだ接続 … 元のチャンネルへ戻る。戻れない場合（元のチャンネルが
-      消えた・接続/発言の権限が無い・移動に失敗した）や、短い間に何度も移された場合は、
-      移動先から退出する（戻っては移されるの往復を無限に続けない）。
+      消えた・閲覧/接続/発言の権限が無い・移動やステージの発言者への復帰に失敗した）や、
+      短い間に何度も移された場合は退出する（戻っては移されるの往復を無限に続けない）。
     ・自律行動の配信 …………… 配信を畳んで移動先から退出する（既存の「移されたら終了」を、
       毎分の見回りを待たずに行う。開いたステージ枠を channel_id で覚えているため追従しない）。
 
@@ -222,6 +222,9 @@ class VoiceGuard:
                         f"ボイス接続の保護: ステージの発言者へ戻れませんでした"
                         f"（guild={guild_id}）: {type(error).__name__}: {error}"
                     )
+                    await self._leave(
+                        guild, voice_client, "ステージの発言者へ戻れなかった", expected_home=home,
+                    )
 
     async def _settled_voice_client(self, guild_id: int) -> discord.VoiceClient | None:
         """移動直後の張り直しが終わるのを待ち、接続中の VoiceClient を返す。
@@ -268,7 +271,10 @@ class VoiceGuard:
             # /join と同じ基準で、チャンネル単位の権限を確かめる。
             permissions = channel.permissions_for(bot_member)
             missing = [
-                name for name, allowed in (("接続", permissions.connect), ("発言", permissions.speak))
+                name for name, allowed in (
+                    ("チャンネルを見る", permissions.view_channel),
+                    ("接続", permissions.connect), ("発言", permissions.speak),
+                )
                 if not allowed
             ]
             if isinstance(channel, discord.StageChannel) and not permissions.mute_members:
