@@ -232,6 +232,7 @@ export interface LogStream {
   entries: LogEntry[];
   status: StreamStatus;
   message: string | null;
+  messageSafe: string | null;
   paused: boolean;
   pendingCount: number;
   setPaused: (paused: boolean) => void;
@@ -241,8 +242,8 @@ export interface LogStream {
 
 type StreamMessage =
   | { type: "entry"; entry: LogEntry }
-  | { type: "error"; message: string }
-  | { type: "end"; message: string };
+  | { type: "error"; message: string; message_safe?: string | null }
+  | { type: "end"; message: string; message_safe?: string | null };
 
 /**
  * journalctl -f をバックエンド経由（WebSocket）で受け取り続ける。
@@ -252,6 +253,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<StreamStatus>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [messageSafe, setMessageSafe] = useState<string | null>(null);
   const [paused, setPausedState] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [reconnectToken, setReconnectToken] = useState(0);
@@ -275,12 +277,14 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
     setPendingCount(0);
     setStatus("connecting");
     setMessage(null);
+    setMessageSafe(null);
 
     const fail = (reason: string) => {
       if (disposed || terminalMessage) return;
       terminalMessage = true;
       setStatus("error");
       setMessage(reason);
+      setMessageSafe(null);
     };
     let socket: WebSocket;
     try {
@@ -323,6 +327,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
         terminalMessage = true;
         setStatus(data.type === "error" ? "error" : "ended");
         setMessage(data.message);
+        setMessageSafe(typeof data.message_safe === "string" ? data.message_safe : null);
       }
     };
     socket.onerror = () => {
@@ -336,6 +341,7 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
         terminalMessage = true;
         setStatus("ended");
         setMessage("ログの受信が終了しました。再開するには再試行してください。");
+        setMessageSafe(null);
       }
     };
 
@@ -381,5 +387,5 @@ export function useLogStream(enabled: boolean, initialLines = 300, connectionKey
 
   const retry = useCallback(() => setReconnectToken((n) => n + 1), []);
 
-  return { entries, status, message, paused, pendingCount, setPaused, clear, retry };
+  return { entries, status, message, messageSafe, paused, pendingCount, setPaused, clear, retry };
 }

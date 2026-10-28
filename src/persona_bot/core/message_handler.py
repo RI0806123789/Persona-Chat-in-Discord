@@ -22,7 +22,7 @@ from persona_bot.services.agent_service import render_agent_line
 from persona_bot.services.content_moderator import screen_bot_response_with_status
 from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
-    fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
+    fetch_channel_history_text, format_grounding_sources, mask_grounding_sources, is_supported_document_attachment,
     close_image_attachments, is_connected_voice_chat, is_supported_message_channel,
     load_image_attachments, REPLY_ALLOWED_MENTIONS, send_long_reply,
 )
@@ -202,22 +202,10 @@ class MessageHandler:
         if await self._reject_ng_input(message, question, "NGワードが含まれているため、メッセージを処理できません。"):
             return
 
-        # 本文の無いコメントはデコードまで確認し、使えない添付で受付枠を消費しない。
-        image_objects = None
-        if is_autonomous_comment and not question:
-            image_objects = await load_image_attachments(message.attachments)
-        try:
-            if image_objects is not None and not image_objects:
-                # 画像確認中に配信が終わったら、通常の文書受付・画像失敗案内へ進める。
-                if not accepts_normally or self.autonomous.is_comment_channel(message.channel.id, guild_id):
-                    return
-            await self._process_accepted_message(
-                message, question, guild_settings, accepts_normally=accepts_normally,
-                is_autonomous_comment=is_autonomous_comment, image_objects=image_objects,
-            )
-        finally:
-            if image_objects is not None:
-                close_image_attachments(image_objects)
+        await self._process_accepted_message(
+            message, question, guild_settings, accepts_normally=accepts_normally,
+            is_autonomous_comment=is_autonomous_comment, image_objects=None,
+        )
 
     async def _process_accepted_message(
         self, message: discord.Message, question: str, guild_settings: GuildSettings, *,
@@ -225,12 +213,12 @@ class MessageHandler:
     ) -> None:
         guild_id = message.guild.id if message.guild is not None else None
         is_dm = isinstance(message.channel, discord.DMChannel)
-        # コメントの受付枠はGeminiを呼ぶ前に、同期的に確保する。
+        # コメントの受付枠は画像のダウンロード・デコードとGeminiを呼ぶ前に確保する。
         # 見送る分も活動観測は上の mark_activity で済ませている。
         claimed_comment_session = None
         if is_autonomous_comment and self.autonomous.is_comment_channel(message.channel.id, guild_id):
             claimed_comment_session = self.autonomous.claim_comment_slot(message.channel.id, guild_id)
-            if claimed_comment_session is None:
+            if claimed_comment_session is None and self.autonomous.is_comment_channel(message.channel.id, guild_id):
                 return
 
         normal_slot_acquired = False
@@ -242,7 +230,15 @@ class MessageHandler:
             normal_slot_acquired = await self._try_acquire_chat_slot(message, guild_id)
             if not normal_slot_acquired:
                 return
+        owns_images = False
         try:
+            if is_autonomous_comment and not question and image_objects is None:
+                image_objects = await load_image_attachments(message.attachments)
+                owns_images = True
+                if not image_objects:
+                    # 画像確認中に配信が終わったら、通常の文書受付・画像失敗案内へ進める。
+                    if not accepts_normally or self.autonomous.is_comment_channel(message.channel.id, guild_id):
+                        return
             # 安全判定・記憶カテゴリ・リマインダー依頼を1回のAPI呼び出しで取得する。
             # memory_categoryは通常チャットの記憶参照へ、reminder_requestは添付の振り分け後の登録へ渡す。
             memory_category = "none"
@@ -376,6 +372,8 @@ class MessageHandler:
         finally:
             if normal_slot_acquired:
                 self._chat_admission.release(guild_id)
+            if owns_images:
+                close_image_attachments(image_objects)
 
     async def _handle_agent_request(
         self,
@@ -421,13 +419,20 @@ class MessageHandler:
             outcome, report = await progress.run(
                 self.agent.run(plan, response_settings.model_name, progress.update)
             )
-            shown_report = None
-            if report is not None and progress.shows_report:
-                # 子の報告は作業スレッドへそのまま出るため伏せる（人格役には元の報告を渡し、返信側で判定する）。
-                shown_report = report._replace(
+            if report is not None:
+                # 親の返信とは独立して公開されるため、出典も含めて投稿前に安全を確認する。
+                report = report._replace(
                     text=self.ng_filter.mask_with_log(report.text, label="サブエージェントの報告"),
+                    sources=mask_grounding_sources(report.sources, self.ng_filter),
                 )
-            await progress.finish(outcome, shown_report)
+                _, accepted = await screen_bot_response_with_status(
+                    report.text + format_grounding_sources(report.sources), None, self.moderator,
+                    log_label="サブエージェントの報告",
+                )
+                if not accepted:
+                    await progress.finish("failed")
+                    return None
+            await progress.finish(outcome, report if progress.shows_report else None)
             if report is None:
                 return None
             return await self.handle_chat_message(
@@ -552,7 +557,7 @@ class MessageHandler:
                 # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
                 reply_text = response_text
                 if accepted and grounding_sources:
-                    reply_text += format_grounding_sources(grounding_sources)
+                    reply_text += format_grounding_sources(grounding_sources, self.ng_filter)
 
                 # 送信の失敗は呼出元へ伝える（送れていない返信を読み上げない）。
                 sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))

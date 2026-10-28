@@ -222,8 +222,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.handler.stats.record.assert_not_awaited()
         self.sent.assert_awaited_once()
 
-    async def test_unusable_attachment_only_comments_do_not_consume_timers(self) -> None:
-        last_spoke_at = self.session.last_spoke_at
+    async def test_unusable_attachment_only_comments_are_limited_before_decoding(self) -> None:
         self.message.content = ""
         attachments = [
             SimpleNamespace(filename="fictional.zip", content_type="application/zip", size=10),
@@ -235,14 +234,16 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         ]
         for attachment in attachments:
             with self.subTest(filename=attachment.filename):
+                self.session.last_comment_reply_at = None
                 self.message.attachments = [attachment]
                 await self.on_message(self.message)
-                self.assertIsNone(self.session.last_comment_reply_at)
-                self.assertEqual(self.session.last_spoke_at, last_spoke_at)
+                self.assertEqual(self.session.last_comment_reply_at, self.now)
+                self.assertEqual(self.session.last_spoke_at, self.now)
         self.message.attachments = []
         await self.on_message(self.message)  # スタンプのみ等、本文・添付の両方が無い場合。
         self.moderator.check_and_route.assert_not_awaited()
         self.message.reply.assert_not_awaited()
+        self.now += timedelta(seconds=AUTONOMOUS_COMMENT_COOLDOWN_SECONDS)
         self.message.content = "直後の架空のコメント"
         await self.on_message(self.message)
         self.sent.assert_awaited_once()
@@ -252,9 +253,9 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.message.content = ""
         self.message.attachments = [SimpleNamespace(filename="fictional.png")]
-        for case in ("success", "cooldown", "cancel", "typing_failure"):
+        for case in ("success", "cancel", "typing_failure"):
             with self.subTest(case=case):
-                self.session.last_comment_reply_at = self.now if case == "cooldown" else None
+                self.session.last_comment_reply_at = None
                 image = Image.new("RGB", (2, 2))
                 self.sent.reset_mock()
                 self.gemini.generate.reset_mock()
@@ -273,8 +274,58 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 if case == "success":
                     self.sent.assert_awaited_once()
                     self.assertEqual(self.gemini.generate.await_args.kwargs["images"], [image])
-                elif case == "cooldown":
-                    self.gemini.generate.assert_not_awaited()
+
+    async def test_image_only_cooldown_rejects_before_download_or_decode(self) -> None:
+        self.session.last_comment_reply_at = self.now
+        self.message.content = ""
+        attachment = SimpleNamespace(filename="fictional.png", content_type="image/png", size=10,
+                                     read=AsyncMock(return_value=b"fictional image"))
+        self.message.attachments = [attachment]
+        with patch.object(message_handler, "load_image_attachments", AsyncMock()) as loader:
+            await asyncio.gather(*(self.on_message(self.message) for _ in range(5)))
+        loader.assert_not_awaited()
+        attachment.read.assert_not_awaited()
+        self.moderator.check_and_route.assert_not_awaited()
+        self.gemini.generate.assert_not_awaited()
+        self.normal_reply.assert_not_awaited()
+        self.assertEqual(self.handler._chat_admission._running, 0)
+
+    async def test_concurrent_image_only_comments_decode_once_after_admission(self) -> None:
+        from PIL import Image
+
+        self.message.content = ""
+        self.message.attachments = [SimpleNamespace(filename="fictional.png", content_type="image/png", size=10)]
+        image = Image.new("RGB", (2, 2))
+        self.addCleanup(image.close)
+
+        async def load(*args):
+            self.assertEqual(self.session.last_comment_reply_at, self.now)
+            await asyncio.sleep(0)
+            return [image]
+
+        with patch.object(message_handler, "load_image_attachments", AsyncMock(side_effect=load)) as loader:
+            await asyncio.gather(*(self.on_message(self.message) for _ in range(5)))
+        loader.assert_awaited_once()
+        self.gemini.generate.assert_awaited_once()
+        with self.assertRaises(ValueError):
+            image.getpixel((0, 0))
+
+    async def test_ended_stream_before_image_admission_uses_normal_slot(self) -> None:
+        self.message.content = "<@99>"
+        self.message.mentions = [self.client.user]
+        self.message.attachments = [SimpleNamespace(filename="fictional.png", content_type="image/png", size=10)]
+
+        async def end_before_admission(*args):
+            self.settings.autonomous_session = None
+            return False
+
+        self.handler._reject_ng_input = AsyncMock(side_effect=end_before_admission)
+        with patch.object(self.service, "claim_comment_slot", wraps=self.service.claim_comment_slot) as claim:
+            await self.on_message(self.message)
+        claim.assert_not_called()
+        self.assertIsNone(self.session.last_comment_reply_at)
+        self.normal_reply.assert_awaited_once()
+        self.assertEqual(self.handler._chat_admission._running, 0)
 
     async def test_concurrent_comments_share_one_admission_slot(self) -> None:
         async def check(*args):
@@ -399,7 +450,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
             await self.on_message(self.message)
         self.normal_reply.assert_awaited_once()
         self.gemini.generate.assert_not_awaited()
-        self.assertIsNone(self.session.last_comment_reply_at)
+        self.assertEqual(self.session.last_comment_reply_at, self.now)
         with self.assertRaises(ValueError):
             image.getpixel((0, 0))
         self.topic.watch_channel.assert_called_once_with(10, 1)
@@ -470,6 +521,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         )):
             with self.subTest(filename=filename):
                 self.settings.autonomous_session = self.session
+                self.session.last_comment_reply_at = None
                 self.message.author.id = 11 + index
                 self.message.attachments = [SimpleNamespace(filename=filename, content_type=content_type, size=10)]
                 self.message.reply.reset_mock()
@@ -489,7 +541,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 self.topic.watch_channel.assert_called_once_with(10, 1)
                 self.moderator.check_and_route.assert_not_awaited()
                 self.gemini.generate.assert_not_awaited()
-                self.assertIsNone(self.session.last_comment_reply_at)
+                self.assertEqual(self.session.last_comment_reply_at, self.now)
                 self.assertEqual(self.handler._chat_admission._running, 0)
 
     async def test_empty_image_validation_keeps_live_stream_comments_out_of_document_queue(self) -> None:
@@ -502,7 +554,7 @@ class AutonomousCommentAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.handler.documents.enqueue_from_message.assert_not_awaited()
         self.message.reply.assert_not_awaited()
         self.topic.watch_channel.assert_not_called()
-        self.assertIsNone(self.session.last_comment_reply_at)
+        self.assertEqual(self.session.last_comment_reply_at, self.now)
         self.assertEqual(self.handler._chat_admission._running, 0)
 
     async def test_empty_image_validation_drops_unmentioned_comments_after_stream_end(self) -> None:

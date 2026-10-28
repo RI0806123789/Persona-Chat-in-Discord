@@ -379,9 +379,10 @@ test("#217 保持した再試行通知は切替後も最新の選択先を使う
 
 test("ログが途切れたときのツールチップにも伏せ字を適用する", async () => {
   const privacy = { redact: (text) => text.replaceAll("FICTIONAL_HOST", "MASKED") };
+  const privacyModule = compile(await source("privacy.ts"), {react: {createContext: (value) => value}});
   const sourceText = (await source("pages/LogsPage.tsx")).replace("function StreamIndicator(", "export function StreamIndicator(");
   const jsx = (type, props) => ({ type, props });
-  const component = compile(sourceText, { "../privacy": { usePrivacy: () => privacy },
+  const component = compile(sourceText, { "../privacy": {...privacyModule, usePrivacy: () => privacy },
     "react/jsx-runtime": { jsx, jsxs: jsx }, "../logs": { LEVEL_LABELS: {} } }).StreamIndicator;
   for (const status of ["error", "ended"]) {
     const node = component({ stream: { status, paused: false, message: "FICTIONAL_HOST の接続が切れました" } });

@@ -334,11 +334,15 @@ def build_document_summary_prompt(document_name: str) -> str:
     Gemini へ渡し、`summary` / `key_points` / `warnings` / `usage_notes` の各キーを
     読み出す。キー名を変えるとその読み出しが黙って空になる。
     """
+    # ファイル名は識別用の1行データ。改行・制御文字・区切り表記を命令の構造にしない。
+    safe_name = " ".join(
+        "".join(character if character.isprintable() else " " for character in document_name).split()
+    ).replace("---", "－－－").replace("#", "＃")
     return (
         "このドキュメントの核となる要点とルールを、日本語で構造化して抽出してください。"
         "出力は必ずJSONのみで、次の形式にしてください: "
         '{"summary":"...","key_points":["..."],"warnings":["..."],"usage_notes":["..."]}'
-        f"\nファイル名: {sanitize_prompt_data(document_name)}"
+        f"\nファイル名: {safe_name}"
     )
 
 

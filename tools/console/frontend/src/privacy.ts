@@ -63,6 +63,7 @@ export function collectSecrets(parts: {
 
 // ボットの通常出力と対応させる。ログ書式を追加・変更したら、この一覧と描画回帰を確認する。
 // autonomous_service.py: 配信開始、接続失敗、ステージ準備失敗。
+// autonomous_stage.py: 中止時のステージ枠の終了失敗。
 // voice_guard.py: 元のチャンネルへの復帰。識別子は両モジュールの共通キーで処理する。
 // 名前の括弧・改行を途中で切らないため、最後の対応する接尾辞まで保守的に隠す。
 // 同じ書式の複数行をまとめた場合は、間の診断文も隠すことがある。
@@ -73,9 +74,10 @@ const CHANNEL_FIELDS = [
   new RegExp(`(?=(自律行動: (?:ボイス(?:チャンネル)?|ステージ)「)(${NAME_SPAN})(」で配信を開始しました))`, "g"),
   new RegExp(`(?=(自律行動: )(${NAME_SPAN})( への接続(?:を拒否されました|がタイムアウトしました|に失敗しました)))`, "g"),
   new RegExp(`(?=(自律行動: ステージ\\()(${NAME_SPAN})(\\)の準備に失敗しました))`, "g"),
+  new RegExp(`(?=(自律行動: 中止時のステージ枠の終了に失敗しました（)(${NAME_SPAN})(）:))`, "g"),
   new RegExp(`(?=(ボイス接続の保護: 元のチャンネル「)(${NAME_SPAN})(」へ戻(?:ります|りました)))`, "g"),
 ];
-const IDENTIFIER_FIELD = /(^|[^A-Za-z0-9_])(guild(?:_id)?|channel(?:_id)?|移動前|移動後)(\s*=\s*)(?:[0-9]+|<[^>\r\n]+>)/g;
+const IDENTIFIER_FIELD = /(^|[^A-Za-z0-9_])(guild(?:_id)?|channel(?:_id)?|user_id|移動前|移動後)(\s*=\s*)(?:[0-9]+|<[^>\r\n]+>)/g;
 
 /** 既知の現在名に依存せず、運用ログの名前・識別子を隠す。 */
 function redactOperationalLog(text: string, mask: string): string {

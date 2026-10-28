@@ -46,6 +46,48 @@ def local_path(style):
 
 
 class SshErrorPrivacyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_log_stream_carries_raw_and_safe_ssh_error_messages(self):
+        raw = "秘密鍵が見つかりません: " + local_path("posix")
+        safe = "秘密鍵が見つかりません: <LOCAL_PATH>（key_path を確認してください）"
+        for safe_message in (safe, None):
+            with self.subTest(safe_message=safe_message):
+                websocket = SimpleNamespace(
+                    headers={"origin": "http://127.0.0.1:5173"}, accept=AsyncMock(),
+                    send_json=AsyncMock(), close=AsyncMock(),
+                )
+                session = SimpleNamespace(
+                    require_profile=profile,
+                    open_process=AsyncMock(side_effect=SshError(raw, safe_message=safe_message)),
+                )
+                with patch.object(app, "session", session):
+                    await app.stream_logs(websocket)
+                websocket.send_json.assert_awaited_once_with({
+                    "type": "error", "message": raw, "message_safe": safe_message or (
+                        "ログの接続を開始できませんでした。SSHの接続設定と接続状態を確認してから再試行してください。"
+                    ),
+                })
+                websocket.close.assert_awaited_once()
+
+    async def test_log_stream_hides_uncollected_host_from_process_start_error(self):
+        session = SshSession()
+        session.profile = profile()
+        resolved_host = "uncollected-resolved.fixture.invalid"
+        session._conn = SimpleNamespace(create_process=AsyncMock(side_effect=OSError(resolved_host)))
+        websocket = SimpleNamespace(
+            headers={"origin": "http://127.0.0.1:5173"}, accept=AsyncMock(),
+            send_json=AsyncMock(), close=AsyncMock(),
+        )
+        with patch.object(app, "session", session):
+            await app.stream_logs(websocket)
+        frame = websocket.send_json.await_args.args[0]
+        self.assertEqual(frame["type"], "error")
+        self.assertIn(resolved_host, frame["message"])
+        self.assertIsInstance(frame["message_safe"], str)
+        self.assertNotIn(resolved_host, frame["message_safe"])
+        self.assertIn("再試行", frame["message_safe"])
+        self.assertIn(resolved_host, session.history_list()[0]["error"])
+        websocket.close.assert_awaited_once()
+
     async def failure(self, selected, path):
         session = SshSession()
         with patch("ssh_session.resolve_local_path", return_value=MissingPath(path)), patch(

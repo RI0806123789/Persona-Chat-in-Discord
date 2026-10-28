@@ -17,7 +17,7 @@ from persona_bot.config.constants import (
 from persona_bot.config.personas import (
     FOLLOW_DEFAULT_PERSONA, PersonaCatalog, current_persona_catalog, is_selectable_persona,
 )
-from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.utils.discord_helpers import is_administrator, is_current_administrator
 from persona_bot.views.autonomous_channel_view import AutonomousChannelView
 from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, BackButton,
@@ -261,6 +261,13 @@ class OpenAutonomousChannelButton(ui.Button):
             return
 
         begin_panel_operation(view, interaction)
+        await interaction.response.defer(ephemeral=True)
+        if not await is_current_administrator(interaction):
+            await edit_panel_message(
+                interaction, deferred=True,
+                content="この機能はサーバー管理者のみ利用できます。", view=None,
+            )
+            return
         channel_view = AutonomousChannelView(view.guild_settings, guild, make_hub=view.make_hub)
         # 同じ（エフェメラルな）メッセージを配信先パネルに差し替える
         await swap_panel(interaction, view, channel_view, channel_view.build_preview())

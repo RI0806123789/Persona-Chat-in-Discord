@@ -267,7 +267,11 @@ async def stream_logs(websocket: WebSocket, lines: int = 100) -> None:
         process = await session.open_process(command, label="ログ追跡（ライブ）")
     except SshError as error:
         with suppress(WebSocketDisconnect, RuntimeError):
-            await websocket.send_json({"type": "error", "message": str(error)})
+            # 接続処理の生エラーには、画面が未収集の解決済みホスト名なども入りうる。
+            safe_message = error.safe_message or (
+                "ログの接続を開始できませんでした。SSHの接続設定と接続状態を確認してから再試行してください。"
+            )
+            await websocket.send_json({"type": "error", "message": str(error), "message_safe": safe_message})
             await websocket.close()
         return
 

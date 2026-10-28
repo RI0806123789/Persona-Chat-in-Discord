@@ -59,6 +59,18 @@ class ProfileAbsorptionTests(unittest.TestCase):
         self.assertEqual(self.db.profile_load("11"), {"趣味": "架空の工作"})
         self.assertEqual(json.loads(self.profile_path.read_text(encoding="utf-8")), {})
 
+    def test_absorption_log_contains_only_counts_without_user_ids_or_profile_keys(self) -> None:
+        user_id = "".join(("81", "0000", "0000", "0000", "000", "1"))
+        self.write_profile({user_id: {"架空の非公開項目": "架空の値", "架空の別項目": "架空の値"}})
+        with patch("builtins.print") as log:
+            self.db.initialize()
+        messages = "\n".join(str(call.args[0]) for call in log.call_args_list)
+        self.assertIn("profile.json から 1 人分・2 項目", messages)
+        self.assertNotIn(user_id, messages)
+        self.assertNotIn("架空の非公開項目", messages)
+        self.assertNotIn("架空の別項目", messages)
+        self.assertEqual(len(self.db.profile_load(user_id)), 2)
+
     def test_shared_profile_with_owner_is_still_imported(self) -> None:
         self.db._legacy_owner_id = "legacy-user"
         self.write_profile({"趣味": "架空の工作"})

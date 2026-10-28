@@ -572,9 +572,13 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent_text.startswith(answer))
         for marker in ("tool_code", "google_search", "thought", "I should answer", "架空の天気"):
             self.assertNotIn(marker, sent_text)
-        # NGワードのマスクとモデレーションにも、検証後の本文だけが渡る。
-        masked = [call.args[0] for call in self.namespace["ng_filter"].mask_with_log.call_args_list]
+        # 本文のマスクには検証後の回答だけを渡し、参考リンクは別にマスクする。
+        calls = self.namespace["ng_filter"].mask_with_log.call_args_list
+        masked = [call.args[0] for call in calls if call.kwargs.get("label") == "Bot応答"]
         self.assertEqual(masked, [answer])
+        for call in calls:
+            self.assertNotIn("tool_code", call.args[0])
+            self.assertNotIn("https://example.com/discarded", call.args[0])
         self.assertEqual(self.namespace["memory"].append_pending_log.await_args.args[2], answer)
         self.assertEqual(self.namespace["usage"].log_snapshot.call_args.args[4], answer)
         self.voice.assert_awaited_once_with(self.message, answer, "../prompts/prompt_default.txt")
