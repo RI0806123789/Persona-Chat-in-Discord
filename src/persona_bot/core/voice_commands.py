@@ -73,8 +73,6 @@ class VoiceCommandCoordinator:
                         operations.tokens[:] = [token]
                         operations.notify_changed()
                         await change(is_current)
-                        if notice_error is not None:
-                            raise notice_error
                         return
                     newer = (
                         operations.tokens[operations.tokens.index(token) + 1:]
@@ -83,11 +81,11 @@ class VoiceCommandCoordinator:
                     can_notify = not any(item in operations.deferring for item in newer)
 
                 if can_notify and not notice_sent:
-                    notice_sent = True
                     try:
-                        await skip_superseded_voice_operation(interaction, is_current)
+                        notice_sent = await skip_superseded_voice_operation(interaction, is_current)
                     except Exception as error:
                         # 通知の失敗でも、後続が実行を始めるまでは元の要求を残す。
+                        notice_sent = True
                         notice_error = error
                 if superseded:
                     if notice_error is not None:

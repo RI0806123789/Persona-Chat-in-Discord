@@ -5,6 +5,7 @@ Discord には接続せず、ボイス状態の更新イベントと VoiceClient
 """
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -16,7 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import discord
 
 from persona_bot.config import constants
+from persona_bot.core.app_state import AutonomousSession, BotState
+from persona_bot.services import autonomous_service
 from persona_bot.services import voice_guard as voice_guard_module
+from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.voice_guard import VoiceGuard
 
 BOT_ID = 99
@@ -335,6 +339,95 @@ class VoiceGuardTests(unittest.IsolatedAsyncioTestCase):
         self.voice_client.is_connected.return_value = False
         await self.connect_then_move()
         self.assert_left_without_return()
+
+    async def test_unsettled_autonomous_connection_is_closed_by_the_autonomous_service(self) -> None:
+        """移動後に接続が戻らなくても、切断の前に配信側の終了処理を通す。"""
+        self.voice_client.is_connected.return_value = False
+        self.autonomous.manages_connection.return_value = True
+
+        async def finish_session(guild):
+            self.assertIs(guild.voice_client, self.voice_client)
+            self.voice_client.disconnect.assert_not_awaited()
+            self.guard.release(guild.id)
+            await self.voice_client.disconnect(force=True)
+
+        self.autonomous.handle_external_move.side_effect = finish_session
+        await self.connect_then_move()
+        self.autonomous.handle_external_move.assert_awaited_once_with(self.guild)
+        self.assert_left_without_return()
+
+    async def test_unsettled_starting_connection_is_disconnected_after_external_move_handler(self) -> None:
+        """開始待機中など配信側が終了を引き受けない場合も、未接続のまま残さない。"""
+        self.voice_client.is_connected.return_value = False
+        self.autonomous.manages_connection.return_value = True
+        await self.connect_then_move()
+        self.autonomous.handle_external_move.assert_awaited_once_with(self.guild)
+        self.assert_left_without_return()
+
+    async def test_unsettled_external_move_finishes_notice_session_and_owned_stage(self) -> None:
+        """実サービスを通し、移動先の未接続状態でも締め・所有枠・配信記録を回収する。"""
+        state = BotState()
+        settings = state.get_guild(self.guild.id)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        settings.autonomous_session = AutonomousSession(
+            channel_id=HOME_ID, is_stage=True, started_at=now,
+            last_human_at=now, last_spoke_at=now,
+            stage_started_by_bot=True, stage_instance_id=101,
+        )
+        self.home = make_channel(HOME_ID, spec=discord.StageChannel)
+        self.home.instance = SimpleNamespace(id=101, delete=AsyncMock())
+        self.channels[HOME_ID] = self.home
+        self.client.get_channel = Mock(return_value=self.home)
+        service = AutonomousService(self.client, state, None, None, None, None)
+        self.guard = VoiceGuard(self.client, service)
+        self.voice_client.is_connected.return_value = False
+        original_disconnect = self.voice_client.disconnect.side_effect
+
+        async def disconnect(*, force):
+            await original_disconnect(force=force)
+            self.event(self.moved, None)
+
+        self.voice_client.disconnect.side_effect = disconnect
+        notice = AsyncMock()
+        with patch.object(autonomous_service, "send_long_message", notice):
+            await self.connect_then_move()
+        self.assertIsNone(settings.autonomous_session)
+        notice.assert_awaited_once()
+        self.assertEqual(notice.call_args.args, (self.home, constants.AUTONOMOUS_CLOSING_NOTICE_MOVED))
+        self.assertFalse(notice.call_args.kwargs["allowed_mentions"].everyone)
+        self.home.instance.delete.assert_awaited_once()
+        self.assert_left_without_return()
+
+    async def test_unsettled_old_snapshot_does_not_stop_a_new_connection_or_registration(self) -> None:
+        """安定待ちの最終確認で接続・保護情報が交代したら、新しい配信も止めない。"""
+        for change in ("replacement", "readopt"):
+            with self.subTest(change=change):
+                self.guard = VoiceGuard(self.client, self.autonomous)
+                self.autonomous.manages_connection.return_value = True
+                self.autonomous.handle_external_move.reset_mock()
+                self.voice_client = self.make_voice_client(self.home)
+                self.guild.voice_client = self.voice_client
+                current = self.voice_client
+                checks = 0
+
+                def is_connected():
+                    nonlocal checks, current
+                    checks += 1
+                    if checks == 2:
+                        if change == "replacement":
+                            current = self.make_voice_client(self.moved)
+                            self.guild.voice_client = current
+                        else:
+                            self.guard.release(1)
+                            self.guard.adopt(1, HOME_ID)
+                    return False
+
+                self.voice_client.is_connected.side_effect = is_connected
+                await self.connect_then_move()
+                self.autonomous.handle_external_move.assert_not_awaited()
+                self.voice_client.disconnect.assert_not_awaited()
+                current.disconnect.assert_not_awaited()
+                self.assertEqual(self.guard.home_channel_id(1), HOME_ID)
 
     # ---- 自律行動と人の操作との競合 --------------------------------------------
 

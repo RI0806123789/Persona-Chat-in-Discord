@@ -42,6 +42,7 @@ from persona_bot.config.constants import (
     PCM_INT16_MAX,
     PCM_INT16_MIN,
     TTS_CHANNELS,
+    TTS_EDGE_TIMEOUT_SECONDS,
     TTS_GTTS_CONNECT_TIMEOUT_SECONDS,
     TTS_GTTS_READ_TIMEOUT_SECONDS,
     TTS_LANG,
@@ -60,7 +61,8 @@ from persona_bot.services.affinity_service import strip_speech_tags
 # 音声エンジンは URL を1文字ずつ読み上げてしまい非常に長くなるため必ず除去する。
 _CODE_BLOCK_PATTERN = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 _INLINE_CODE_PATTERN = re.compile(r"`[^`]*`")
-_URL_PATTERN = re.compile(r"https?://\S+")
+# URL の直後に空白なしで続く日本語や全角句読点を巻き込まない。
+_URL_PATTERN = re.compile(r"https?://[\x21-\x7e]+")
 # Discord のカスタム絵文字 <:name:123> / アニメ絵文字 <a:name:123>
 _CUSTOM_EMOJI_PATTERN = re.compile(r"<a?:\w+:\d+>")
 # メンション <@123> / <@!123> / <@&123>（ロール） / <#123>（チャンネル）
@@ -133,7 +135,9 @@ async def _fetch_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
     global _edge_tts_failing
 
     try:
-        mp3 = await _fetch_edge_mp3(text, profile)
+        mp3 = await asyncio.wait_for(
+            _fetch_edge_mp3(text, profile), timeout=TTS_EDGE_TIMEOUT_SECONDS,
+        )
         if mp3:
             if _edge_tts_failing:
                 print("TTS: edge-tts が復旧しました。通常の読み上げに戻ります。")
@@ -448,8 +452,11 @@ async def speak_text(
             worker.add_done_callback(lambda _: _discard_speech_queue(guild.id, queue))
         return
 
-    # 接続切替前の待機要素が上限を埋めていても、新しい接続の返信を受け付ける。
-    pending = [queued for queued in queue if queued.matches_connection(guild)]
+    # 旧接続や終了済み配信の待機分で、新しい読み上げの枠を塞がない。
+    pending = [
+        queued for queued in queue
+        if queued.matches_connection(guild) and (queued.is_valid is None or queued.is_valid())
+    ]
     # ワーカーも同じdequeを参照するため、登録を差し替えず中身だけ整理する。
     queue.clear()
     queue.extend(pending)

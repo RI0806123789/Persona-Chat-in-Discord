@@ -22,6 +22,28 @@ from persona_bot.utils import timeutil
 
 
 class ReminderCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_dates_outside_utc_range_are_rejected_during_parsing(self):
+        service = ReminderService(None, None, None)
+        for text, tz in (
+            ("9999-12-31T23:59:59-05:00", timezone.utc),
+            ("0001-01-01T00:00:00+09:00", timezone.utc),
+            ("0001-01-01T00:00:00", ZoneInfo("Asia/Tokyo")),
+            ("9999-12-31 23:59:59", timezone(timedelta(hours=-5))),
+        ):
+            with self.subTest(text=text, tz=tz):
+                service._tz = tz
+                self.assertIsNone(service._parse_at(text))
+
+    async def test_extreme_dates_fall_back_to_chat_without_registering(self):
+        db = Mock()
+        service = ReminderService(None, db, None)
+        for text in ("9999-12-31T23:59:59-05:00", "0001-01-01T00:00:00+09:00",
+                     "9999-12-31T23:59:59", "0001-01-01T00:00:00"):
+            with self.subTest(text=text):
+                result = await service.create_from_request(Mock(), {"at": text, "message": "架空の予定"})
+                self.assertIsNone(result)
+        db.reminder_add.assert_not_called()
+
     async def test_archived_thread_is_reopened_before_notifying_in_the_same_thread(self):
         for locked, manage, fails in ((False, False, False), (True, True, False), (True, False, False), (False, True, True)):
             with self.subTest(locked=locked, manage=manage, fails=fails):

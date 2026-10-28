@@ -292,7 +292,16 @@ class AffinityTagTests(unittest.TestCase):
 
     def test_trailing_metadata_overrides_tags_quoted_in_body(self) -> None:
         text = "タグ[V:+5, A:+5]は表記例です。\n[V:-1, A:0] \n"
-        self.assertEqual(affinity_service.extract_affinity_changes(text), ("タグは表記例です。", (-1, 0)))
+        self.assertEqual(affinity_service.extract_affinity_changes(text), ("タグ[V:+5, A:+5]は表記例です。", (-1, 0)))
+
+    def test_quoted_tags_without_trailing_metadata_do_not_change_emotion(self) -> None:
+        text = "  `[V:+1, A:0]`という表記を説明します。 \n"
+        self.assertEqual(affinity_service.extract_affinity_changes(text), (text, None))
+
+    def test_whitespace_separated_trailing_tags_preserve_quoted_body(self) -> None:
+        body = "`[V:+1, A:0]`は表記例です。"
+        text = body + "\n[V:1, A:2] \n [v: -3, a: +4] \n"
+        self.assertEqual(affinity_service.extract_affinity_changes(text), (body, (-3, 4)))
 
     def test_last_metadata_tag_wins_when_multiple_tags_are_emitted(self) -> None:
         text = self.BODY + "[V:1, A:2][v: -3, a: +4]"
