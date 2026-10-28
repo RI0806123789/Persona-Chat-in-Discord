@@ -382,11 +382,14 @@ def _build_agent_avatar_url(file_name: str, agent: Any) -> str | None:
 
 def _is_valid_agent_line(text: str) -> bool:
     try:
-        fields = [name for _literal, name, _spec, _conversion in string.Formatter().parse(text) if name is not None]
-        text.format(role="", step="", current=1, total=1)
-    except (ValueError, KeyError, IndexError):
+        # 書式の幅指定や変換は使わない。検証中の format でも巨大な文字列を作らせない。
+        return all(
+            name in _AGENT_LINE_FIELDS and not spec and conversion is None
+            for _literal, name, spec, conversion in string.Formatter().parse(text)
+            if name is not None
+        )
+    except ValueError:
         return False
-    return all(name in _AGENT_LINE_FIELDS for name in fields)
 
 
 def _resolve_default(default: Any, personas: tuple[Persona, ...]) -> str:

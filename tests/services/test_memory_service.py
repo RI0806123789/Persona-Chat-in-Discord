@@ -182,6 +182,20 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
                 ])
         self.assertEqual(self.projects_path.read_bytes(), original)
 
+    async def test_pending_document_summaries_only_replace_current_context_without_persistence(self):
+        old = {"document_name": "same.txt", "summary": "架空の古い要約", "document_hash": "same-hash"}
+        await self.service.store_document_summary("test-user", old)
+        await self.service.store_document_summary("other-user", {"summary": "架空の別ユーザーの要約"})
+        before = self.projects_path.read_bytes()
+        pending = [{**old, "summary": "架空の今回の要約"}]
+        ordinary, documents = await self.service.build_contexts("none", "test-user", pending_summaries=pending)
+        self.assertEqual(ordinary, "")
+        self.assertIn("架空の今回の要約", documents)
+        self.assertNotIn("架空の古い要約", documents)
+        self.assertNotIn("別ユーザー", documents)
+        self.assertEqual(self.projects_path.read_bytes(), before)
+        self.assertIn("架空の古い要約", (await self.service.build_contexts("none", "test-user"))[1])
+
     async def test_existing_users_survive_missing_or_incorrect_schema_and_repeated_load(self) -> None:
         for schema in (None, "誤った識別子"):
             with self.subTest(schema=schema):

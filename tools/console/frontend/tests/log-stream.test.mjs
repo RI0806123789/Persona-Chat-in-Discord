@@ -126,6 +126,35 @@ test("バックエンドのエラー理由と受信済みログを残し、自�
   assert.equal(h.sockets.length, 1);
 });
 
+test("#288 SSHエラーの原文と安全な文面を保持し、再接続・接続切替で解除する", (t) => {
+  const h = harness(t);
+  const raw = "架空のローカル鍵の診断";
+  const safe = "秘密鍵が見つかりません: <LOCAL_PATH>";
+  const fail = () => h.sockets.at(-1).message({type: "error", message: raw, message_safe: safe});
+  fail();
+  h.sockets[0].onclose({code: 1000});
+  assert.equal(h.read().message, raw);
+  assert.equal(h.read().messageSafe, safe);
+  h.read().retry();
+  assert.equal(h.read().messageSafe, null);
+  fail();
+  assert.equal(h.read().messageSafe, safe);
+  h.switchConnection();
+  assert.equal(h.read().messageSafe, null);
+  assert.equal(h.read().message, null);
+});
+
+test("#288 安全な文面が無い旧形式や不正な型は原文だけを保持する", (t) => {
+  const h = harness(t);
+  for (const message_safe of [undefined, null, {text: "不正な型"}]) {
+    h.sockets.at(-1).message({type: "error", message: "架空の一般エラー", message_safe});
+    assert.equal(h.read().message, "架空の一般エラー");
+    assert.equal(h.read().messageSafe, null);
+    h.read().retry();
+    h.read();
+  }
+});
+
 test("Origin拒絶・異常切断は理由を表示して停止する", (t) => {
   const h = harness(t);
   h.sockets[0].onclose({ code: 1008 });

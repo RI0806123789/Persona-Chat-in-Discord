@@ -2,7 +2,7 @@ import io
 import re
 from datetime import datetime, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeGuard
+from typing import Any, Callable, Sequence, TypeGuard, TYPE_CHECKING
 
 import discord
 from PIL import Image
@@ -25,6 +25,9 @@ from persona_bot.config.constants import (
 from persona_bot.utils.timeutil import resolve_timezone
 from persona_bot.core.background import run_in_thread
 from persona_bot.services.prompting import sanitize_prompt_data
+
+if TYPE_CHECKING:
+    from persona_bot.services.ng_word_service import NgWordFilter
 
 # ボットが会話・履歴取得に対応しているチャンネル種別
 SupportedMessageChannel = (
@@ -567,7 +570,24 @@ async def reject_blocked_interaction(
     return True
 
 
-def format_grounding_sources(sources: list[dict[str, str]]) -> str:
+def mask_grounding_sources(
+    sources: list[dict[str, str]], ng_filter: "NgWordFilter | None",
+) -> list[dict[str, str]]:
+    """出典のタイトルとURLも本文と同じNGワードマスクを通す。元の取得結果は変えない。"""
+    if ng_filter is None:
+        return sources
+    return [
+        {**source, **{
+            key: ng_filter.mask_with_log(source.get(key, ""), label="参考リンク")
+            for key in ("title", "uri")
+        }}
+        for source in sources
+    ]
+
+
+def format_grounding_sources(
+    sources: list[dict[str, str]], ng_filter: "NgWordFilter | None" = None,
+) -> str:
     """グラウンディングソースをコンパクトなテキストに整形する。
 
     グラウンディングの URI はリダイレクト用の無機質なアドレスのため、
@@ -576,7 +596,7 @@ def format_grounding_sources(sources: list[dict[str, str]]) -> str:
     if not sources:
         return ""
     lines: list[str] = []
-    for source in sources:
+    for source in mask_grounding_sources(sources, ng_filter):
         uri = source.get("uri", "")
         # Markdown リンクの構文を壊さないよう、タイトル中の角括弧は全角に置換する
         title = source.get("title", "").replace("[", "［").replace("]", "］")

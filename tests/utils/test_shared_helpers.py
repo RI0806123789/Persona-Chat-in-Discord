@@ -44,6 +44,16 @@ def make_filter() -> NgWordFilter:
         return NgWordFilter()
 
 
+class GroundingSourceMaskTests(unittest.TestCase):
+    def test_source_titles_and_urls_are_masked_without_mutating_original(self):
+        source = {"title": "架空NG[の資料]", "uri": "https://example.invalid/架空NG"}
+        result = discord_helpers.format_grounding_sources([source], make_filter())
+        self.assertNotIn("架空NG", result)
+        self.assertIn("［の資料］", result)
+        self.assertIn("https://example.invalid/", result)
+        self.assertEqual(source["title"], "架空NG[の資料]")
+
+
 def make_interaction(*, user=None):
     return SimpleNamespace(
         user=user,

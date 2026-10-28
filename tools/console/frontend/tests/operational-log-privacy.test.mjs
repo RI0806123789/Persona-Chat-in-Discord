@@ -46,13 +46,13 @@ function html(component, props, enabled, insights = null) {
   return renderToStaticMarkup(React.createElement(privacy.PrivacyContext.Provider, {value: current(enabled, insights)},
     React.createElement(component, props)));
 }
-function logPage(entries, enabled, query = "", error = null) {
+function logPage(entries, enabled, query = "", error = null, messageSafe = null, status = "error") {
   let index = 0;
   const states = [query, "all", true];
   const {LogsPage} = compile(logsSource, {...modules, react: {...React,
     useState(initial) {return [states[index++] ?? initial, () => {}];},
   }});
-  return html(LogsPage, {connected: true, stream: {entries, status: error ? "error" : "live", message: error},
+  return html(LogsPage, {connected: true, stream: {entries, status: error ? status : "live", message: error, messageSafe},
     filterInputRef: {current: null}}, enabled);
 }
 
@@ -72,6 +72,7 @@ test("#219 接続失敗・準備失敗・復帰のチャンネル名も書式か
     `自律行動: ${oldName} への接続がタイムアウトしました。`,
     `自律行動: ${oldName} への接続に失敗しました（RuntimeError: 架空の診断）。`,
     `自律行動: ステージ(${oldName})の準備に失敗しました（RuntimeError: 架空の診断）。`,
+    `自律行動: 中止時のステージ枠の終了に失敗しました（${oldName}）: RuntimeError: 架空の診断`,
     `ボイス接続の保護: 元のチャンネル「${oldName}」へ戻ります（guild=${ids[0]}）。`,
     `ボイス接続の保護: 元のチャンネル「${oldName}」へ戻りました（guild=${ids[0]}）。`,
   ];
@@ -83,7 +84,7 @@ test("#219 接続失敗・準備失敗・復帰のチャンネル名も書式か
 
 test("#219 移動前後とサーバー・チャンネルの複数識別子を伏せる", () => {
   hidden(privacy.redactLogLine(move, false, current(true)));
-  const text = `guild = ${ids[0]} / channel=${ids[1]} / guild_id=<GUILD_ID> / channel_id=<CHANNEL_ID> / 移動前=${ids[1]} / 移動後=${ids[2]}`;
+  const text = `guild = ${ids[0]} / channel=${ids[1]} / guild_id=<GUILD_ID> / channel_id=<CHANNEL_ID> / user_id=${ids[2]} / 移動前=${ids[1]} / 移動後=${ids[2]}`;
   const masked = privacy.redactLogLine(text, false, current(true));
   hidden(masked);
   assert.equal(masked.includes("<GUILD_ID>"), false);
@@ -205,6 +206,7 @@ test("#219 複数の運用ログで照合範囲が重なっても後続の名前
     ["自律行動: ボイスチャンネル「", "」で配信を開始しました"],
     ["自律行動: ", " への接続に失敗しました"],
     ["自律行動: ステージ(", ")の準備に失敗しました"],
+    ["自律行動: 中止時のステージ枠の終了に失敗しました（", "）:"],
     ["ボイス接続の保護: 元のチャンネル「", "」へ戻りました"],
   ];
   for (const [prefix, suffix] of formats) {
@@ -243,5 +245,58 @@ test("#219 現行ボットの配信開始書式を実ソースから読み両方
     const text = format[1].replace("{kind}", kind).replace("{channel.name}", oldName).replace("{guild.id}", ids[0]);
     hidden(privacy.redactLogLine(text, false, current(true)));
     assert.equal(privacy.redactLogLine(text, false, current(false)), text);
+  }
+});
+
+test("#288 中止時のステージ終了失敗も実ソースの書式で名前を隠す", async () => {
+  const bot = await source("../../../../src/persona_bot/services/autonomous_stage.py");
+  const format = bot.match(/print\(f"(自律行動: 中止時のステージ枠[^"\r\n]+)"\)/);
+  assert.ok(format);
+  const name = oldName + "（内側）: 補足\n" + otherName;
+  const text = format[1].replace("{channel.name}", name)
+    .replace("{type(error).__name__}", "RuntimeError").replace("{error}", "架空の診断");
+  hidden(current(true).redact(text), [oldName, otherName, "補足"]);
+  assert.equal(current(false).redact(text), text);
+});
+
+test("#288 user_idの出力は既知値なしでも伏せ、プロフィール統合は件数だけ表示する", async () => {
+  const text = `サブエージェント: user_id=${ids[0]} / user_id = <USER_ID>`;
+  const masked = current(true).redact(text);
+  hidden(masked, [ids[0], "<USER_ID>"]);
+  assert.equal(current(false).redact(text), text);
+  const bot = await source("../../../../src/persona_bot/core/database.py");
+  assert.equal(bot.includes('profile.json の内容 {absorbed}'), false);
+  const counts = "データベース: profile.json から 2 人分・3 項目を profile テーブルへ追加しました。";
+  assert.equal(current(true).redact(counts), counts);
+});
+
+test("#288 ログ切断の診断本文とtooltipは安全な文面へ切り替え、解除で原文に戻る", () => {
+  const owner = "FICTIONAL_LOCAL_OWNER";
+  const raw = `秘密鍵が見つかりません: ${["Q:", "Users", owner, ".ssh", "fixture-key"].join(String.fromCharCode(92))}`;
+  const safe = "秘密鍵が見つかりません: <LOCAL_PATH>（key_path を確認してください）";
+  for (const status of ["error", "ended"]) {
+    for (const enabled of [false, true, false]) {
+      const displayed = logPage([], enabled, "", raw, safe, status);
+      assert.equal(displayed.includes(owner), !enabled);
+      if (enabled) {
+        assert.ok(displayed.includes("&lt;LOCAL_PATH&gt;"));
+        assert.ok(displayed.includes('title="秘密鍵が見つかりません: &lt;LOCAL_PATH&gt;'));
+        assert.ok(displayed.includes("key_path"));
+      }
+    }
+  }
+});
+
+test("#288 未収集の解決済みホスト名もログ開始失敗の安全な案内へ切り替える", () => {
+  const host = "uncollected-resolved.fixture.invalid";
+  const raw = `ログ追跡（ライブ）: 開始できませんでした（${host}）。`;
+  const safe = "ログの接続を開始できませんでした。SSHの接続設定と接続状態を確認してから再試行してください。";
+  for (const enabled of [false, true, false]) {
+    const displayed = logPage([], enabled, "", raw, safe);
+    assert.equal(displayed.includes(host), !enabled);
+    if (enabled) {
+      assert.ok(displayed.includes(safe));
+      assert.ok(displayed.includes(`title="${safe}"`));
+    }
   }
 });

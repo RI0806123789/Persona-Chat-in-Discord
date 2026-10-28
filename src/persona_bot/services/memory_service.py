@@ -159,12 +159,15 @@ class MemoryService:
 
     async def build_contexts(
         self, category: str, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+        *, pending_summaries: list[dict[str, Any]] | None = None,
     ) -> tuple[str, str]:
         """同じスナップショットから通常記憶と文書記憶を作り、JSONを1回だけ読む。"""
         async with self.io_lock:
-            return await run_in_thread(self._build_contexts, category, str(user_id), limit)
+            return await run_in_thread(self._build_contexts, category, str(user_id), limit, pending_summaries)
 
-    def _build_contexts(self, category: str, user_id: str, limit: int) -> tuple[str, str]:
+    def _build_contexts(
+        self, category: str, user_id: str, limit: int, pending_summaries: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, str]:
         self.ensure_storage()
         wrapper = self._load_projects_wrapper()
         projects = self._user_projects(wrapper, user_id)
@@ -177,6 +180,9 @@ class MemoryService:
                 ensure_ascii=False, indent=2,
             )
         summaries = projects.get("document_summaries", [])
+        if pending_summaries:
+            # 今回の文書は応答の安全確認が済むまで保存せず、この依頼だけの文脈へ足す。
+            summaries = self._merge_document_summaries(summaries, pending_summaries)
         lines = []
         if isinstance(summaries, list) and limit > 0:
             for summary in summaries[-limit:]:
@@ -263,9 +269,17 @@ class MemoryService:
         if not isinstance(user_projects, dict):
             user_projects = {}
             wrapper["users"][user_id] = user_projects
-        summaries = user_projects.get("document_summaries", [])
+        summaries = self._merge_document_summaries(user_projects.get("document_summaries", []), incoming)
+        user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
+        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
+
+    @staticmethod
+    def _merge_document_summaries(summaries: Any, incoming: list[dict[str, Any]]) -> list:
+        """保存前の文脈と保存時で、同名・同内容の置換規則を揃える。"""
         if not isinstance(summaries, list):
             summaries = []
+        else:
+            summaries = list(summaries)
         for summary_data in incoming:
             # 再試行で同じファイルを再解析しても、同名・同内容の要約を重複させない。
             digest = summary_data.get("document_hash")
@@ -276,8 +290,7 @@ class MemoryService:
                     != (digest, summary_data.get("document_name"))
                 ]
             summaries.append(summary_data)
-        user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
-        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
+        return summaries
 
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
