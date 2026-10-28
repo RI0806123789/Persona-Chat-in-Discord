@@ -144,7 +144,10 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 claim_comment_slot=Mock(return_value=object()), handle_comment=AsyncMock(),
                 can_speak_session=Mock(return_value=False),
             ),
-            "ng_filter": SimpleNamespace(contains_ng_word=Mock(return_value=False)),
+            "ng_filter": SimpleNamespace(
+                contains_ng_word=Mock(return_value=False),
+                mask_with_log=Mock(side_effect=lambda text, **kwargs: text),
+            ),
             "moderator": self.moderator, "stats": SimpleNamespace(record=AsyncMock()),
             "documents": SimpleNamespace(enqueue_from_message=AsyncMock()),
             "reminders": SimpleNamespace(create_from_request=AsyncMock(return_value="登録しました。")),

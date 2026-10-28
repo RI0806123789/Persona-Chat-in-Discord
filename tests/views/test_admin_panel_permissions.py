@@ -18,7 +18,7 @@ from persona_bot.views.stats_view import (
 )
 from persona_bot.views.unblock_view import UnblockSelect, UnblockView
 from persona_bot.views.view_parts import BackButton
-from tests.helpers.member_helpers import make_member
+from tests.helpers.member_helpers import make_member, make_owner_client
 
 
 class AdministratorPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
@@ -63,6 +63,7 @@ class AdministratorPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
         response.edit_message = AsyncMock(side_effect=respond)
         return SimpleNamespace(
             user=make_member(admin=admin), response=response, extras={},
+            client=make_owner_client(),
             edit_original_response=AsyncMock(), followup=SimpleNamespace(send=AsyncMock()),
             original_response=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())),
         )
@@ -130,6 +131,7 @@ class AdministratorPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
                 hub = self.track(FunctionsView(*dependencies, is_admin=before))
                 view = self.stats_panel(is_admin=before, make_hub=hub.clone)
                 interaction = self.interaction(admin=now)
+                interaction.client = make_owner_client(owner_id=11 if now else 99)
                 await self.component(view, BackButton).callback(interaction)
                 returned = self.track(interaction.response.edit_message.await_args.kwargs["view"])
                 self.assertIsInstance(returned, FunctionsView)
@@ -155,17 +157,19 @@ class AdministratorPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
 
                 async def defer(**kwargs):
                     interaction.response.is_done.return_value = True
-                    # 操作時の写しは管理者のまま、待機中に最新の Member だけが変更される。
-                    interaction.user.fresh.guild_permissions.administrator = not revoked
+                    # ログイン時の情報はそのまま、最新の所有者だけが変更される。
+                    interaction.client.application_info.return_value = SimpleNamespace(
+                        owner=SimpleNamespace(id=99 if revoked else 11), team=None,
+                    )
 
                 interaction.response.defer.side_effect = defer
                 await select.callback(interaction)
                 interaction.response.defer.assert_awaited_once_with(ephemeral=True)
-                interaction.user.guild.fetch_member.assert_awaited_once_with(11)
+                interaction.client.application_info.assert_awaited_once_with()
                 content = interaction.edit_original_response.await_args.kwargs["content"]
                 if revoked:
                     self.blacklist.unblock.assert_not_awaited()
-                    self.assertIn("管理者のみ", content)
+                    self.assertIn("ボット所有者のみ", content)
                     self.assertNotIn("架空の対象者", content)
                 else:
                     self.blacklist.unblock.assert_awaited_once_with(22)
@@ -175,33 +179,34 @@ class AdministratorPanelPermissionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_unblock_denies_when_current_member_cannot_be_obtained(self):
         view = self.unblock_panel()
         interaction = self.interaction()
-        interaction.user.guild.fetch_member.side_effect = RuntimeError("架空の取得失敗")
+        interaction.client.application_info.side_effect = RuntimeError("架空の取得失敗")
         select = self.component(view, UnblockSelect)
         select._values = ["22"]
         await select.callback(interaction)
         self.blacklist.unblock.assert_not_awaited()
-        self.assertIn("管理者のみ", interaction.edit_original_response.await_args.kwargs["content"])
+        self.assertIn("ボット所有者のみ", interaction.edit_original_response.await_args.kwargs["content"])
 
     async def test_unblock_cancellation_during_permission_lookup_is_propagated(self):
         view = self.unblock_panel()
         interaction = self.interaction()
-        interaction.user.guild.fetch_member.side_effect = asyncio.CancelledError
+        interaction.client.application_info.side_effect = asyncio.CancelledError
         select = self.component(view, UnblockSelect)
         select._values = ["22"]
         with self.assertRaises(asyncio.CancelledError):
             await select.callback(interaction)
         self.blacklist.unblock.assert_not_awaited()
 
-    async def test_non_admin_cannot_start_unblock(self):
+    async def test_non_owner_cannot_start_unblock(self):
         view = self.unblock_panel()
         interaction = self.interaction(admin=False)
+        interaction.client = make_owner_client(owner_id=99)
         select = self.component(view, UnblockSelect)
         select._values = ["22"]
         await select.callback(interaction)
         self.blacklist.unblock.assert_not_awaited()
         interaction.response.defer.assert_not_awaited()
         interaction.response.send_message.assert_awaited_once_with(
-            "この機能はサーバー管理者のみ利用できます。", ephemeral=True,
+            "この機能はボット所有者のみ利用できます。", ephemeral=True,
         )
 
 

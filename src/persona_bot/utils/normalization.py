@@ -1,8 +1,18 @@
 """モデルの分類値と保存値を共通の許容値へ正規化する。"""
 
+import re
 from typing import Any
 
 from persona_bot.config.constants import MEMORY_ROUTE_CATEGORIES, REMINDER_RECURRENCE_VALUES
+
+
+def normalize_extracted_text(value: Any, max_chars: int) -> str:
+    """AIの抽出文を1行・長さ上限内に収め、メンションとして解釈させない。"""
+    if not isinstance(value, str):
+        return ""
+    # 改行で後続のプロンプトの節を作らせず、通知先の文字列も命令として持ち越さない。
+    text = re.sub(r"\s+", " ", value).strip().replace("@", "＠")
+    return text[:max_chars].rstrip()
 
 
 def normalize_memory_category(value: Any) -> str:

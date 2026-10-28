@@ -68,6 +68,17 @@ class NormalizeTests(unittest.TestCase):
         plan = normalize_agent_plan({"delegate": True, "task": "架空の調査"})
         self.assertEqual((plan.role, plan.steps), ("調査担当", ("依頼された作業",)))
 
+    def test_all_extracted_instructions_are_single_line_and_have_no_active_mentions(self) -> None:
+        plan = normalize_agent_plan({
+            "delegate": True, "role": "@everyone\n調査担当", "task": "架空の調査\r\n@here",
+            "expected_output": "箇条書き\n<@22>", "steps": ["検索\n<@&11>"],
+        })
+        self.assertEqual(plan.task, "架空の調査 ＠here")
+        for text in (plan.role, plan.task, plan.expected_output, *plan.steps):
+            self.assertNotIn("@", text)
+            self.assertNotIn("\n", text)
+            self.assertNotIn("\r", text)
+
 
 class RouterIntegrationTests(unittest.IsolatedAsyncioTestCase):
     """委任の判定は check_and_route と同じ1回の呼び出しに統合されている。"""
@@ -89,19 +100,21 @@ class RouterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((safe, reason, category, reminder), (True, "", "profile", None))
         self.assertEqual(plan, AgentPlan(True, "架空の調査担当", "架空の街のカフェを調べる", "箇条書き", ("検索", "比較")))
         request.assert_awaited_once()
-        prompt = request.await_args.kwargs["contents"]
-        # 委任の判定・会話履歴・出力例の agent が、同じプロンプトに入っている
-        self.assertIn("追加タスク3", prompt)
-        self.assertIn("さっきの架空の街の話", prompt)
-        self.assertIn('"reminder": null, "agent": null}', prompt)
+        options = request.await_args.kwargs
+        # 指示・出力例はシステム側へ、会話履歴は判定用データだけへ渡す。
+        self.assertIn("追加タスク3", options["system_instruction"])
+        self.assertIn("さっきの架空の街の話", options["contents"])
+        self.assertNotIn("さっきの架空の街の話", options["system_instruction"])
+        self.assertIn('"reminder": null, "agent": null}', options["system_instruction"])
 
     async def test_normal_routing_prompt_does_not_include_agent_task(self) -> None:
         request = AsyncMock(return_value=SimpleNamespace(text='{"safe": true, "category": "none", "reminder": null}'))
         with patch("persona_bot.services.content_moderator.generate_content", request):
             self.assertEqual(await self.moderator.check_and_route("架空の質問"), (True, "", "none", None))
-        prompt = request.await_args.kwargs["contents"]
-        self.assertNotIn("追加タスク3", prompt)
-        self.assertNotIn('"agent"', prompt)
+        for prompt in (request.await_args.kwargs["contents"], request.await_args.kwargs["system_instruction"]):
+            self.assertNotIn("追加タスク3", prompt)
+            self.assertNotIn('"agent"', prompt)
+        self.assertNotIn("agent", request.await_args.kwargs["response_schema"]["properties"])
 
     async def test_unsafe_or_unreadable_results_never_delegate(self) -> None:
         cases = [

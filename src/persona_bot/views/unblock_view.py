@@ -1,9 +1,9 @@
-"""ブロック解除パネル（/functions → 🚫 ブロック解除。管理者専用）。
+"""ブロック解除パネル（/functions → 🚫 ブロック解除。ボット所有者専用）。
 
 ハブ（functions_view.py）の UnblockButton から開く。ほかのサブパネル（settings_view.py など）と
 同じく、パネル本体は独立したモジュールに置き、ハブはボタンだけを持つ。
-管理者の判定はボタンを押したときと、解除を選んだときの両方で行う（パネルを開いた後に
-権限を外された管理者が、開いたままの画面から解除できないようにするため）。
+所有者の判定はボタンを押したときと、解除を選んだときの両方で行う。
+全サーバー共通の違反情報は、サーバー管理者へ開示しない。
 """
 
 import discord
@@ -11,7 +11,7 @@ from discord import ui
 
 from persona_bot.config.constants import DISCORD_SELECT_MAX_OPTIONS
 from persona_bot.services.blacklist_service import BlacklistService
-from persona_bot.utils.discord_helpers import is_administrator, is_current_administrator
+from persona_bot.utils.discord_helpers import is_bot_owner, is_current_bot_owner
 from persona_bot.views.view_parts import (
     BackButton, HubFactory, PanelView, begin_panel_operation, edit_panel_message, select_option_text,
 )
@@ -38,19 +38,19 @@ class UnblockSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: "UnblockView" = self.view  # type: ignore[assignment]
-        if not is_administrator(interaction.user):
-            await interaction.response.send_message("この機能はサーバー管理者のみ利用できます。", ephemeral=True)
+        if not is_bot_owner(interaction):
+            await interaction.response.send_message("この機能はボット所有者のみ利用できます。", ephemeral=True)
             return
         begin_panel_operation(view, interaction)
         user_id = int(self.values[0])
         # 選択肢のラベルから表示名を拾う（通知メッセージ用）
         name = next((o.label for o in self.options if o.value == self.values[0]), str(user_id))
         await interaction.response.defer(ephemeral=True)
-        # 待機中に権限が外されても、操作時の写しだけで解除しない。
-        if not await is_current_administrator(interaction):
+        # 待機中に所有者が変わっても、ログイン時の情報だけで解除しない。
+        if not await is_current_bot_owner(interaction):
             await edit_panel_message(
                 interaction, deferred=True,
-                content="この機能はサーバー管理者のみ利用できます。", view=None,
+                content="この機能はボット所有者のみ利用できます。", view=None,
             )
             return
         if await view.blacklist.unblock(user_id):

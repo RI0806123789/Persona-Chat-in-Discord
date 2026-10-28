@@ -16,7 +16,7 @@ from persona_bot.views import stats_view
 from persona_bot.views.unblock_view import UnblockSelect, UnblockView
 from persona_bot.utils.discord_helpers import is_current_administrator
 from persona_bot.views.stats_view import FeedbackButton, RankingButton, RunStatsButton, StatsUserSelect, StatsView
-from tests.helpers.member_helpers import make_member
+from tests.helpers.member_helpers import make_member, make_owner_client
 
 
 class StatsDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -232,20 +232,21 @@ class AdministratorRecheckTests(unittest.IsolatedAsyncioTestCase):
 
 class UnblockPermissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_permission_is_rechecked_before_unblocking(self) -> None:
-        for admin in (False, True):
-            with self.subTest(admin=admin):
+        for owner in (False, True):
+            with self.subTest(owner=owner):
                 blacklist = SimpleNamespace(unblock=AsyncMock(return_value=True), is_blocked=Mock(return_value=False))
                 view = UnblockView(blacklist, [{"user_id": 22, "user_name": "架空の対象"}])
                 self.addCleanup(view.stop)
                 select = next(item for item in view.children if isinstance(item, UnblockSelect))
                 select._values = ["22"]
                 interaction = SimpleNamespace(
-                    user=make_member(admin=admin),
+                    user=make_member(admin=True),
+                    client=make_owner_client(owner_id=11 if owner else 99),
                     response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
                     edit_original_response=AsyncMock(),
                 )
                 await select.callback(interaction)
-                if admin:
+                if owner:
                     blacklist.unblock.assert_awaited_once_with(22)
                 else:
                     blacklist.unblock.assert_not_awaited()

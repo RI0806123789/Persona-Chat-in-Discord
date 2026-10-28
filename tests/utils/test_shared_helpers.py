@@ -399,7 +399,10 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_administrator(SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True))))
 
     async def test_ranking_and_unblock_recheck_permission_at_button_press(self) -> None:
-        for module, button_class in ((functions_view, functions_view.UnblockButton), (stats_view, stats_view.RankingButton)):
+        for module, button_class, helper, denied in (
+            (functions_view, functions_view.UnblockButton, "is_bot_owner", "ボット所有者のみ"),
+            (stats_view, stats_view.RankingButton, "is_administrator", "管理者のみ"),
+        ):
             for user in (make_member(admin=False), Mock(spec=discord.User)):
                 with self.subTest(button=button_class.__name__, user=type(user).__name__):
                     view = discord.ui.View()
@@ -409,11 +412,11 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
                     button = button_class()
                     view.add_item(button)
                     interaction = make_interaction(user=user)
-                    with patch.object(module, "is_administrator", wraps=is_administrator) as check:
+                    with patch.object(module, helper, return_value=False) as check:
                         await button.callback(interaction)
-                    check.assert_called_once_with(user)
+                    check.assert_called_once_with(interaction if helper == "is_bot_owner" else user)
                     interaction.response.defer.assert_not_awaited()
-                    self.assertIn("管理者のみ", interaction.response.send_message.call_args.args[0])
+                    self.assertIn(denied, interaction.response.send_message.call_args.args[0])
                     view.blacklist.get_all_blocked_users.assert_not_called()
                     view.stats.build_ranking_graph.assert_not_awaited()
 
@@ -466,11 +469,11 @@ class AdministratorAndConstantsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_moderation_sampling_and_notice_use_the_same_limit(self) -> None:
         with patch.object(content_moderator, "MODERATION_NG_WORD_SAMPLE_LIMIT", 2):
-            text = content_moderator._build_prompt("架空の質問", "Bot応答", ["語句A", "語句B", "語句C"])
+            text, _contents = content_moderator._build_prompt("架空の質問", "Bot応答", ["語句A", "語句B", "語句C"])
             self.assertIn("語句A, 語句B", text)
             self.assertNotIn("語句C", text)
             self.assertIn("他にもあります", text)
-            text = content_moderator._build_prompt("架空", "Bot応答", ["語句A", "語句B"])
+            text, _contents = content_moderator._build_prompt("架空", "Bot応答", ["語句A", "語句B"])
             self.assertNotIn("他にもあります", text)
 
     async def test_help_and_block_notice_follow_configured_threshold(self) -> None:
