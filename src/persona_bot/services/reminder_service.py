@@ -325,19 +325,19 @@ class ReminderService:
         for fmt in _AT_FORMATS:
             try:
                 naive = datetime.strptime(text, fmt)
-            except ValueError:
+                return naive.replace(tzinfo=self._tz).astimezone(timezone.utc).replace(microsecond=0)
+            except (ValueError, OverflowError):
                 continue
-            return naive.replace(tzinfo=self._tz).astimezone(timezone.utc).replace(microsecond=0)
 
         # 上の形式で読めない場合、タイムゾーン付き ISO 8601 の可能性を試す。
         try:
             parsed = parse_iso_datetime(text)
-        except ValueError:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=self._tz)
+            return parsed.astimezone(timezone.utc).replace(microsecond=0)
+        except (ValueError, OverflowError):
             print(f"リマインダー: 日時を解釈できませんでした: {text!r}")
             return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=self._tz)
-        return parsed.astimezone(timezone.utc).replace(microsecond=0)
 
     # ---- 一覧・取り消し（/functions の ⏰ リマインダーパネルから使う） ----------
 

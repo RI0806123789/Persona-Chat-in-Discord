@@ -197,6 +197,25 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in self.synthesize.await_args_list], ["新一件目", "新二件目"])
         self.assertEqual([call.args[0] for call in self.play.await_args_list], [new, new])
 
+    async def test_full_expired_session_queue_accepts_current_and_normal_speech(self) -> None:
+        with patch.object(voice, "TTS_QUEUE_MAX", 2):
+            await self.enqueue()
+            await self.enqueue()
+            queue = voice._speech_queues[self.guild.id]
+            self.valid = False
+            await voice.speak_text(self.guild, "新しい配信の音声", is_valid=lambda: True)
+            await voice.speak_text(self.guild, "通常の返信")
+            self.assertIs(voice._speech_queues[self.guild.id], queue)
+            await self.workers[0]
+
+        self.assertEqual(
+            [call.args[0] for call in self.synthesize.await_args_list],
+            ["新しい配信の音声", "通常の返信"],
+        )
+        self.assertEqual(len(self.workers), 1)
+        self.assertEqual(self.play.await_count, 2)
+        self.assertEqual(voice._speech_queues, {})
+
     async def test_same_channel_reuse_keeps_both_waiting_requests(self) -> None:
         await voice.speak_text(self.guild, "一件目")
         self.client.channel = SimpleNamespace(id=10)

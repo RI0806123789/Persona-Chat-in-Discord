@@ -53,6 +53,16 @@ class SpeechTextTests(unittest.TestCase):
         self.assertEqual(voice.build_speech_text("あ" * (voice.TTS_MAX_CHARS + 1)),
                          "あ" * voice.TTS_MAX_CHARS + voice.TTS_TRUNCATION_NOTICE)
 
+    def test_url_removal_preserves_adjacent_japanese_text(self):
+        cases = (
+            ("https://example.com/testを見てね！", "を見てね！"),
+            ("詳細はhttps://example.com/path?q=a%20b&n=1#partを確認してください。", "詳細は を確認してください。"),
+            ("参照先http://example.com/path。次の説明です。", "参照先 。次の説明です。"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(voice.build_speech_text(text), expected)
+
     def test_unclosed_code_block_is_not_read_aloud(self):
         self.assertEqual(voice.build_speech_text("架空の説明\n```python\nprint('読まない')"), "架空の説明")
         self.assertEqual(voice.build_speech_text("```未完了のコード"), "")
@@ -181,6 +191,53 @@ class SynthesisTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     self.assertEqual(await voice._fetch_mp3("架空", {}), result)
                 backup.assert_not_called()
+
+    async def test_edge_hang_times_out_and_fallback_completes_synthesis(self):
+        cancelled = asyncio.Event()
+
+        async def hang(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch.object(voice, "_fetch_edge_mp3", side_effect=hang), patch.object(
+            voice, "_fetch_gtts_mp3", return_value=b"fallback",
+        ) as backup, patch.object(voice, "_decode_to_pcm", return_value=b"pcm") as decode, patch.object(
+            voice, "TTS_EDGE_TIMEOUT_SECONDS", 0.01,
+        ), patch.object(voice, "_edge_tts_failing", False):
+            result = await asyncio.wait_for(voice._synthesize_pcm("架空の音声", {}), 2)
+
+        self.assertEqual(result, b"pcm")
+        self.assertTrue(cancelled.is_set())
+        backup.assert_called_once_with("架空の音声")
+        decode.assert_called_once_with(b"fallback", {})
+
+    async def test_external_cancellation_during_edge_wait_does_not_fallback(self):
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def hang(*args):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch.object(voice, "_fetch_edge_mp3", side_effect=hang), patch.object(
+            voice, "_fetch_gtts_mp3",
+        ) as backup:
+            task = asyncio.create_task(voice._synthesize_pcm("架空の音声", {}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        self.assertTrue(cancelled.is_set())
+        backup.assert_not_called()
 
     async def test_pcm_decode_runs_in_worker_thread(self):
         threads = []

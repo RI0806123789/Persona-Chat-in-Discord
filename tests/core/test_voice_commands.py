@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.core.background import TaskOwner
-from persona_bot.core.voice_commands import VoiceCommandCoordinator
+from persona_bot.core.voice_commands import VoiceCommandCoordinator, skip_superseded_voice_operation
 from tests.helpers.network_guard import block_network
 
 
@@ -179,7 +179,7 @@ class VoiceCommandCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assert_released(operations)
 
     async def test_skip_notice_failure_does_not_lose_restored_operation(self):
-        """通知自体も失敗した場合、復帰したBを実行してから通知の失敗を伝える。"""
+        """通知自体も失敗した場合、復帰したBの成功を通知の例外で上書きしない。"""
         first, release_first, operations = await self.hold_first_operation()
         waiting, interaction, change = await self.queue_operation()
         latest, _, newest_change = await self.queue_operation()
@@ -191,11 +191,63 @@ class VoiceCommandCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         interaction.followup.send.side_effect = send
         release_first.set()
-        with self.assertRaises(OSError):
-            await asyncio.wait_for(waiting, 2)
-        await asyncio.wait_for(first, 2)
+        await asyncio.wait_for(asyncio.gather(first, waiting), 2)
         change.assert_awaited_once()
         newest_change.assert_not_awaited()
+        interaction.followup.send.assert_awaited_once()
+        self.assert_released(operations)
+
+    async def test_skip_notice_failure_is_reported_when_newer_operation_runs(self):
+        """後続の操作が実行されて見送りが確定したときだけ通知の失敗を伝える。"""
+        first, release_first, operations = await self.hold_first_operation()
+        waiting, interaction, change = await self.queue_operation()
+        latest, _, newest_change = await self.queue_operation()
+        interaction.followup.send.side_effect = OSError("架空の通知失敗")
+
+        release_first.set()
+        with self.assertRaises(OSError):
+            await asyncio.wait_for(waiting, 2)
+        await asyncio.wait_for(asyncio.gather(first, latest), 2)
+        change.assert_not_awaited()
+        newest_change.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
+        self.assert_released(operations)
+
+    async def test_skipped_notice_does_not_suppress_a_later_needed_notice(self):
+        """通知直前の復帰で送らなかった場合、その後に確定した見送りは通知する。"""
+        first, release_first, operations = await self.hold_first_operation()
+        waiting, interaction, change = await self.queue_operation()
+        latest, _, newest_change = await self.queue_operation()
+        next_operation = None
+        next_change = AsyncMock()
+        calls = 0
+
+        async def skip_notice(current_interaction, is_current):
+            nonlocal calls, next_operation
+            calls += 1
+            if calls == 1:
+                latest.cancel()
+                await asyncio.gather(latest, return_exceptions=True)
+                self.assertTrue(is_current())
+                sent = await skip_superseded_voice_operation(current_interaction, is_current)
+                self.assertFalse(sent)
+                deferred = asyncio.Event()
+                newest = self.interaction()
+                newest.response.defer.side_effect = deferred.set
+                next_operation = self.start(newest, next_change)
+                await asyncio.wait_for(deferred.wait(), 2)
+                return sent
+            return await skip_superseded_voice_operation(current_interaction, is_current)
+
+        with patch("persona_bot.core.voice_commands.skip_superseded_voice_operation", side_effect=skip_notice):
+            release_first.set()
+            await asyncio.wait_for(asyncio.gather(first, waiting), 2)
+            await asyncio.wait_for(next_operation, 2)
+        self.assertEqual(calls, 2)
+        interaction.followup.send.assert_awaited_once()
+        change.assert_not_awaited()
+        newest_change.assert_not_awaited()
+        next_change.assert_awaited_once()
         self.assert_released(operations)
 
     async def test_all_newer_defers_must_settle_before_skip_notice(self):
