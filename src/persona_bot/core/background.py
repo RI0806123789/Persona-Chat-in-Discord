@@ -92,8 +92,9 @@ class TaskOwner:
                 loop_tasks.add(task)
                 if task not in self._tasks:
                     self._track(task)
+        current = asyncio.current_task()
         for task, protected in list(self._tasks.items()):
-            if not protected and task not in loop_tasks:
+            if not protected and task not in loop_tasks and task is not current:
                 task.cancel()
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
