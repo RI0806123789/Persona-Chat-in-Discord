@@ -89,11 +89,19 @@ moderator = ContentModerator(
     timeout=MODERATION_TIMEOUT_SECONDS,
 )
 blacklist = BlacklistService()
-documents = DocumentService(client, state, memory, gemini, usage, database, ng_filter, moderator)
+documents = DocumentService(
+    client, state, memory, gemini, usage, database, ng_filter, moderator,
+    is_blocked=blacklist.is_blocked,
+)
 client.add_shutdown_callback(documents.stop_worker)
 stats = StatsService(database, gemini)
-auto_topic = AutoTopicService(client, state, memory, gemini, moderator, ng_filter, usage, database)
-autonomous = AutonomousService(client, state, gemini, moderator, ng_filter, usage)
+auto_topic = AutoTopicService(
+    client, state, memory, gemini, moderator, ng_filter, usage, database,
+    is_blocked=blacklist.is_blocked,
+)
+autonomous = AutonomousService(
+    client, state, gemini, moderator, ng_filter, usage, is_blocked=blacklist.is_blocked,
+)
 client.add_shutdown_callback(autonomous.stop_all_sessions)
 # 管理者などにボットを別のボイスチャンネルへ移されたとき、接続先を守る（#171）。
 voice_guard = VoiceGuard(client, autonomous)

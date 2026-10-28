@@ -24,6 +24,7 @@ from persona_bot.config.constants import (
 )
 from persona_bot.utils.timeutil import resolve_timezone
 from persona_bot.core.background import run_in_thread
+from persona_bot.services.prompting import sanitize_prompt_data
 
 # ボットが会話・履歴取得に対応しているチャンネル種別
 SupportedMessageChannel = (
@@ -82,11 +83,35 @@ def clean_message_content(message: discord.Message, bot_user: Any) -> str:
     return re.sub(rf"<@!?{bot_user.id}>", "", content).strip()
 
 
-def build_history_text(messages: Sequence[discord.Message], bot_user: Any) -> str:
+def _include_history_message(
+    message: discord.Message, bot_user: Any, is_blocked: Callable[[int], bool] | None,
+) -> bool:
+    """自ボットの回答は残し、他ボットと現在ブロック中の利用者を履歴から除く。"""
+    author = message.author
+    if bot_user is not None and author == bot_user:
+        return True
+    if getattr(author, "bot", False):
+        return False
+    if is_blocked is not None:
+        user_id = getattr(author, "id", None)
+        # 判定対象を識別できない発言は、ブロックしていないと決めつけて使わない。
+        if user_id is None or is_blocked(user_id):
+            return False
+    return True
+
+
+def build_history_text(
+    messages: Sequence[discord.Message], bot_user: Any, *,
+    is_blocked: Callable[[int], bool] | None = None,
+) -> str:
+    """発言本文を無害化してから、コード側の正規ロール行に組み立てる。"""
     lines: list[str] = []
     for history_message in messages:
-        role = "BOTの回答" if history_message.author == bot_user else "ユーザーの質問"
-        clean_content = clean_message_content(history_message, bot_user)
+        if not _include_history_message(history_message, bot_user, is_blocked):
+            continue
+        role = ("BOTの回答" if bot_user is not None and history_message.author == bot_user
+                else "ユーザーの質問")
+        clean_content = sanitize_prompt_data(clean_message_content(history_message, bot_user))
         # 画像と文書などを区別して書く（すべて「画像」と書くと、PDF を添えた発言まで
         # モデルが画像付きと誤解して応答してしまう）。
         if any(attachment_is_image(attachment) for attachment in history_message.attachments):
@@ -104,11 +129,13 @@ async def fetch_channel_history_text(
     limit: int,
     *,
     exclude_message_id: int | None = None,
+    is_blocked: Callable[[int], bool] | None = None,
 ) -> str:
     """チャンネルの直近履歴を、プロンプトへ差し込める1つのテキストに整形する。
 
     exclude_message_id を渡すと、その発言を履歴から除く（文書ワーカーが、受付後に
     編集されうる元の投稿の本文をプロンプトへ入れないために使う。#203）。
+    is_blocked は呼出元から渡し、現在ブロック中の発言者を取得後の整形時に除く。
 
     履歴の取得に失敗した場合は例外を外へ出さず、空文字を返して会話を続行する
     （フェイルオープン）。この関数は on_message の主経路から呼ばれるため、
@@ -128,6 +155,7 @@ async def fetch_channel_history_text(
             if exclude_message_id is not None and history_message.id == exclude_message_id:
                 continue
             history_messages.append(history_message)
+        return build_history_text(list(reversed(history_messages)), bot_user, is_blocked=is_blocked)
     # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること
     # （順序を逆にすると権限エラーが一時障害として扱われ、原因がログから消える）。
     except discord.Forbidden:
@@ -136,13 +164,18 @@ async def fetch_channel_history_text(
     except discord.HTTPException as error:
         print(f"履歴の取得に失敗しました（チャンネルID: {channel_id}）。履歴なしで応答します: {error}")
         return ""
-    return build_history_text(list(reversed(history_messages)), bot_user)
+    except Exception as error:
+        # 除外判定・本文整形が失敗しても、不明な履歴を使わず会話だけを続ける。
+        print(f"履歴の取得・整形に失敗しました。履歴なしで応答します: {type(error).__name__}")
+        return ""
 
 
 def build_summary_source_text(
     messages: Sequence[discord.Message],
     bot_user: Any,
     tz: tzinfo | None = None,
+    *,
+    is_blocked: Callable[[int], bool] | None = None,
 ) -> str:
     """議事録要約用に「発言者名つき」で会話ログを整形する。
 
@@ -164,15 +197,16 @@ def build_summary_source_text(
     for history_message in messages:
         # 他のBOTの発言は議事録に含めない（人間の会話に集中する）。
         # 自ボット自身の発言は文脈が繋がるように含める。
-        if history_message.author.bot and history_message.author != bot_user:
+        if not _include_history_message(history_message, bot_user, is_blocked):
             continue
-        content = clean_message_content(history_message, bot_user)
+        content = sanitize_prompt_data(clean_message_content(history_message, bot_user))
         if history_message.attachments:
             content += " [添付ファイルあり]"
         # スタンプや埋め込みのみで本文が空の発言はノイズになるためスキップ
         if not content.strip():
             continue
-        speaker = "（このBOT）" if history_message.author == bot_user else history_message.author.display_name
+        speaker = ("（このBOT）" if history_message.author == bot_user
+                   else " ".join(sanitize_prompt_data(history_message.author.display_name).splitlines()))
         # created_at は UTC。表示用のタイムゾーン（既定は SUMMARY_TIMEZONE）へ明示的に変換する。
         timestamp = history_message.created_at.astimezone(display_tz).strftime("%m/%d %H:%M")
         lines.append(f"[{timestamp}] {speaker}: {content}")

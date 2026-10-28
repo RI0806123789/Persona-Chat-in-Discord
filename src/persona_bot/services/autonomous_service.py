@@ -39,7 +39,7 @@ VoiceClient を持たせない。持たせると、管理者にキックされ�
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import discord
 
@@ -140,6 +140,8 @@ class AutonomousService:
         moderator: ContentModerator,
         ng_filter: NgWordFilter,
         usage: UsageTracker,
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> None:
         self._client = client
         self._state = state
@@ -147,6 +149,7 @@ class AutonomousService:
         self._moderator = moderator
         self._ng_filter = ng_filter
         self._usage = usage
+        self._is_blocked = is_blocked
         self._starting: dict[int, _StartAttempt] = {}
         self._stopping: dict[int, _StopAttempt] = {}
 
@@ -274,6 +277,7 @@ class AutonomousService:
                 history_text = await fetch_channel_history_text(
                     channel, guild_settings.channel_reset_points.get(channel.id),
                     self._client.user, AUTONOMOUS_HISTORY_LIMIT,
+                    is_blocked=self._is_blocked,
                 )
                 full_prompt = build_autonomous_reply_prompt(
                     persona_prompt,
@@ -857,6 +861,7 @@ class AutonomousService:
                 history_text = await fetch_channel_history_text(
                     channel, guild_settings.channel_reset_points.get(channel.id),
                     self._client.user, AUTONOMOUS_HISTORY_LIMIT,
+                    is_blocked=self._is_blocked,
                 )
                 full_prompt = build_autonomous_opening_prompt(
                     persona_prompt, getattr(channel, "name", ""), history_text
@@ -907,6 +912,7 @@ class AutonomousService:
             history_text = await fetch_channel_history_text(
                 channel, guild_settings.channel_reset_points.get(channel.id),
                 self._client.user, AUTONOMOUS_HISTORY_LIMIT,
+                is_blocked=self._is_blocked,
             )
             full_prompt = build_autonomous_monologue_prompt(
                 persona_prompt, history_text, session.turn_count

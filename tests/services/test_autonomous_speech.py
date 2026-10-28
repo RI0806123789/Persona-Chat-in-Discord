@@ -53,11 +53,13 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
             get_guild=Mock(return_value=self.guild),
         )
         self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("架空の応答", None, [])))
+        self.is_blocked = Mock(return_value=False)
         self.service = AutonomousService(
             self.client, self.state, self.gemini,
             SimpleNamespace(check=AsyncMock(return_value=(True, ""))),
             SimpleNamespace(mask_with_log=Mock(side_effect=lambda text, **kwargs: text)),
             SimpleNamespace(log_snapshot=Mock()),
+            is_blocked=self.is_blocked,
         )
         self.loader = Mock(return_value="架空のペルソナ")
         loader_patch = patch("persona_bot.config.paths.load_prompt_template", self.loader)
@@ -276,6 +278,7 @@ class AutonomousSpeechTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     await self.speak(kind)
                 self.assertEqual(self.history.await_args.args[1], 77)
+                self.assertIs(self.history.await_args.kwargs["is_blocked"], self.is_blocked)
 
 
 if __name__ == "__main__":

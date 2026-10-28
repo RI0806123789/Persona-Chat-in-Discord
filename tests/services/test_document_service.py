@@ -254,10 +254,12 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         self.gemini = SimpleNamespace(generate=AsyncMock())
         self.moderator = SimpleNamespace(check=AsyncMock(return_value=(True, "")))
         self.usage = SimpleNamespace(log_snapshot=Mock())
+        self.is_blocked = Mock(return_value=False)
         self.service = DocumentService(
             SimpleNamespace(user=SimpleNamespace(id=99)),
             BotState(), self.memory, self.gemini, self.usage, None,
             moderator=self.moderator,
+            is_blocked=self.is_blocked,
         )
         self.message = SimpleNamespace(
             id=30,
@@ -331,6 +333,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
                 # 元の投稿は履歴からも除く（編集後の本文が履歴経由で入らないように）。
                 history = document_service.fetch_channel_history_text.await_args
                 self.assertEqual(history.kwargs["exclude_message_id"], self.message.id)
+                self.assertIs(history.kwargs["is_blocked"], self.is_blocked)
 
     async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
         await self.process_response("要約です。[V:1, A:2]")

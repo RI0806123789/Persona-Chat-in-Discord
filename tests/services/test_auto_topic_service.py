@@ -38,9 +38,11 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.gemini = SimpleNamespace(generate=AsyncMock(return_value=("@everyone @here <@&22> <@33>", None, [])))
         self.moderator = SimpleNamespace(check=AsyncMock(return_value=(True, "")))
         self.ng_filter = SimpleNamespace(mask_with_log=Mock(side_effect=lambda text, **kwargs: text))
+        self.is_blocked = Mock(return_value=False)
         self.service = AutoTopicService(
             self.client, self.state, None, self.gemini, self.moderator, self.ng_filter,
             SimpleNamespace(log_snapshot=Mock()), None,
+            is_blocked=self.is_blocked,
         )
         self.member = SimpleNamespace(id=11, display_name="架空の利用者", mention="<@11>")
         self.prompt = patch("persona_bot.config.paths.load_prompt_template", return_value="架空のペルソナ").start()
@@ -65,7 +67,7 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
                             change()
                         return "架空のペルソナ"
 
-                    async def history(*args):
+                    async def history(*args, **kwargs):
                         if stage == "history":
                             change()
                         return "架空の履歴"
@@ -83,6 +85,15 @@ class AutoTopicServiceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(await post())
                     self.assertEqual(self.prompt.call_args.args[0].name, "prompt_maid.txt")
                     self.assertEqual(self.gemini.generate.await_args.args[1], "new-model")
+
+    async def test_topic_and_anniversary_pass_current_block_check_to_history(self):
+        for kind in ("topic", "anniversary"):
+            with self.subTest(kind=kind):
+                if kind == "topic":
+                    await self.service._post_topic(self.channel, self.settings)
+                else:
+                    await self.service._post_anniversary(self.channel, self.settings, self.member, "誕生日")
+                self.assertIs(self.history.await_args.kwargs["is_blocked"], self.is_blocked)
 
     async def test_whitespace_or_tag_only_auto_posts_are_skipped_before_screening(self):
         for text in (" \n\t", "  \n[V:+1, A:+1]  "):

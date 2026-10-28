@@ -4,6 +4,7 @@ import codecs
 from pathlib import Path
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest.mock import patch
 
@@ -116,6 +117,111 @@ class NgWordReloadTests(NgWordFileTestCase):
             ng_filter.reload()
         self.assertEqual(ng_filter.words, ["架空語B", "架空語C"])
         self.assertEqual(ng_filter.mask_ng_words("架空語Aと架空語B"), "架空語Aと●●●●")
+
+
+class NgWordNormalizationTests(NgWordFileTestCase):
+    def make_filter(self, words: str) -> NgWordFilter:
+        self.write(self.public, words + "\n", bom=False)
+        return NgWordFilter()
+
+    def assert_detected_span(self, ng_filter: NgWordFilter, value: str) -> None:
+        text = "前" + value + "後"
+        self.assertTrue(ng_filter.contains_ng_word(text))
+        self.assertEqual(ng_filter.find_ng_words(text), [value])
+        self.assertEqual(ng_filter.mask_ng_words(text), "前" + "●" * len(value) + "後")
+
+    def test_kana_width_and_combining_dakuten_share_one_matching_form(self) -> None:
+        ng_filter = self.make_filter("がくう")
+        for value in ("がくう", "ガクウ", "ｶﾞｸｳ", "か\u3099くう", "ｶ\u200bﾞｸｳ", "カ\u200b\u3099クウ"):
+            with self.subTest(value=repr(value)):
+                self.assert_detected_span(ng_filter, value)
+
+    def test_width_casefold_and_ligature_expansion_map_back_to_original_length(self) -> None:
+        ng_filter = self.make_filter("架空paz\n架空strasse\n架空ffi語")
+        for value in ("架空ＰＡＺ", "架空PAZ", "架空Straße", "架空STRAẞE", "架空ﬃ語"):
+            with self.subTest(value=value):
+                self.assert_detected_span(ng_filter, value)
+
+    def test_zero_width_and_non_whitespace_controls_are_removed_before_composition(self) -> None:
+        ng_filter = self.make_filter("がくう")
+        for separator in ("\u200b", "\u200c", "\u200d", "\ufeff", "\u2060", "\u034f", "\ufe0f", "\U000e0100", "\x00", "\x7f"):
+            with self.subTest(separator=repr(separator)):
+                self.assert_detected_span(ng_filter, "か" + separator + "\u3099くう")
+
+    def test_spaces_symbols_and_leet_substitution_are_not_skipped(self) -> None:
+        ng_filter = self.make_filter("がくう\n架空paz")
+        for text in ("が くう", "が.くう", "がーくう", "が\nくう", "が\tくう", "が\r\nくう", "架空p4z"):
+            with self.subTest(text=repr(text)):
+                self.assertFalse(ng_filter.contains_ng_word(text))
+                self.assertEqual(ng_filter.find_ng_words(text), [])
+                self.assertEqual(ng_filter.mask_ng_words(text), text)
+
+    def test_registered_words_are_normalized_and_deduplicated_in_first_seen_order(self) -> None:
+        self.write(self.public, "架空ＰＡＺ\nがくう\n架空ＳＳ\n\u200b\n\x00\n", bom=False)
+        self.write(self.private, "架空paz\nｶﾞｸｳ\n架空ß\n", bom=False)
+        ng_filter = NgWordFilter()
+        self.assertEqual(ng_filter.words, ["架空ＰＡＺ", "がくう", "架空ＳＳ"])
+        self.assertEqual(ng_filter.word_count, 3)
+        self.assertEqual(ng_filter.find_ng_words("架空ß がくう 架空PAZ 架空ß"), ["架空ß", "がくう", "架空PAZ"])
+        ng_filter.words.clear()
+        self.assertEqual(ng_filter.word_count, 3)
+
+    def test_longest_normalized_match_and_duplicate_source_spans_are_fully_masked(self) -> None:
+        ng_filter = self.make_filter("架空s\n架空ß")
+        self.assert_detected_span(ng_filter, "架空SS")
+        self.assert_detected_span(ng_filter, "架空ß")
+        # 1文字が展開した複数の位置で一致しても、元の文字は1回・1文字分だけ伏せる。
+        ng_filter = self.make_filter("s")
+        self.assertEqual(ng_filter.mask_ng_words("前ß後"), "前●後")
+        self.assertEqual(ng_filter.find_ng_words("前ß後"), ["ß"])
+
+    def test_no_normalized_word_does_not_create_empty_pattern_matches(self) -> None:
+        ng_filter = self.make_filter("\u200b\n\x00")
+        text = "通常の会話です。\n😀 👩\u200d💻 ＡＢＣ カナ"
+        self.assertEqual(ng_filter.word_count, 0)
+        self.assertFalse(ng_filter.contains_ng_word(text))
+        self.assertEqual(ng_filter.find_ng_words(text), [])
+        self.assertEqual(ng_filter.mask_with_log(text, label="架空の文脈"), text)
+
+    def test_matching_units_agree_with_stdlib_nfkc_for_composition_and_reordering(self) -> None:
+        examples = (
+            "か\u3099\u200bくう", "ｶ\u200bﾞｸｳ", "각", "ᄀ\u200bᅡᆨ", "\u09c7\u09be",
+            "a\u0315\u0300", "Kßﬃ①ﾊﾞｶ", "ワ\u3099ヷわ\u3099", "Σςẞİ", "Ａ\u034fＢ",
+        )
+        for text in examples:
+            with self.subTest(text=repr(text)):
+                cleaned = "".join(character for character in text if not ng_word_service._is_ignored_character(character))
+                expected = ng_word_service._fold_kana(unicodedata.normalize("NFKC", cleaned))
+                normalized, spans = ng_word_service._normalize_for_matching(text)
+                self.assertEqual(normalized, expected)
+                self.assertEqual(len(normalized), len(spans))
+                self.assertTrue(all(0 <= start < end <= len(text) for start, end in spans))
+
+    def test_compilation_is_not_repeated_for_each_message(self) -> None:
+        with patch.object(ng_word_service.re, "compile", wraps=ng_word_service.re.compile) as compile_pattern:
+            ng_filter = self.make_filter("架空paz\nがくう")
+            for _ in range(3):
+                ng_filter.contains_ng_word("架空ＰＡＺ")
+                ng_filter.find_ng_words("ガクウ")
+                ng_filter.mask_ng_words("ｶﾞｸｳ")
+                ng_filter.mask_with_log("架空PAZ", label="架空の文脈")
+            compile_pattern.assert_called_once()
+
+    def test_log_and_mask_keep_one_snapshot_if_reload_happens_during_matching(self) -> None:
+        ng_filter = self.make_filter("架空Ａ")
+        original_ranges = ng_word_service._source_ranges
+
+        def matching_with_reload(text, pattern):
+            ranges = original_ranges(text, pattern)
+            self.write(self.public, "架空Ｂ\n", bom=False)
+            ng_filter.reload()
+            return ranges
+
+        with patch.object(ng_word_service, "_source_ranges", side_effect=matching_with_reload), patch("builtins.print") as logging:
+            masked = ng_filter.mask_with_log("架空aと架空b", label="架空の文脈")
+        self.assertEqual(masked, "●●●と架空b")
+        self.assertEqual(logging.call_args.args[0], "NGワード検出 (架空の文脈): ['架空a']")
+        self.assertTrue(ng_filter.contains_ng_word("架空b"))
 
 
 if __name__ == "__main__":
