@@ -24,7 +24,7 @@ from persona_bot.utils.discord_helpers import (
     attachment_is_image, clean_message_content, describe_supported_attachments,
     fetch_channel_history_text, format_grounding_sources, is_supported_document_attachment,
     close_image_attachments, is_connected_voice_chat, is_supported_message_channel,
-    load_image_attachments, send_long_reply,
+    load_image_attachments, REPLY_ALLOWED_MENTIONS, send_long_reply,
 )
 from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import (
@@ -120,7 +120,7 @@ class MessageHandler:
     async def _send_violation_notice(message: discord.Message, text: str) -> None:
         """違反の保存結果は保持し、通知の送信失敗をイベントへ漏らさない。"""
         try:
-            await message.reply(text)
+            await message.reply(text, allowed_mentions=REPLY_ALLOWED_MENTIONS)
         except discord.DiscordException as error:
             print(f"違反通知: 送信に失敗しました: {type(error).__name__}")
 
@@ -310,20 +310,26 @@ class MessageHandler:
             ]
 
             if unsupported_attachments:
-                await message.reply(f"未対応の添付ファイルが含まれています。{describe_supported_attachments()}に対応しています。")
+                await message.reply(
+                    f"未対応の添付ファイルが含まれています。{describe_supported_attachments()}に対応しています。",
+                    allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                )
                 return
 
             if document_attachments:
                 for attachment in document_attachments:
                     if attachment.size > MAX_DOCUMENT_SIZE_BYTES:
-                        await message.reply(f"ファイルサイズが上限({MAX_DOCUMENT_SIZE_BYTES // (1024 * 1024)}MB)を超えています。")
+                        await message.reply(
+                            f"ファイルサイズが上限({MAX_DOCUMENT_SIZE_BYTES // (1024 * 1024)}MB)を超えています。",
+                            allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                        )
                         return
 
                 # 未処理件数の上限で受け付けなかった文書には、受付完了を伝えない（#202）。
                 if await self.documents.enqueue_from_message(message, question, document_attachments) is None:
-                    await message.reply(DOCUMENT_QUEUE_FULL_NOTICE)
+                    await message.reply(DOCUMENT_QUEUE_FULL_NOTICE, allowed_mentions=REPLY_ALLOWED_MENTIONS)
                     return
-                await message.reply("受付が完了しました。順番に処理しています…")
+                await message.reply("受付が完了しました。順番に処理しています…", allowed_mentions=REPLY_ALLOWED_MENTIONS)
                 return
 
             # --- 会話統計の記録（ボットへの発言のみを集計。失敗してもチャット本体は止めない） ---
@@ -346,7 +352,8 @@ class MessageHandler:
             if reminder_request is not None:
                 confirmation = await self.reminders.create_from_request(message, reminder_request)
                 if confirmation:
-                    await message.reply(confirmation)
+                    confirmation = self.ng_filter.mask_with_log(confirmation, label="リマインダー登録確認")
+                    await message.reply(confirmation, allowed_mentions=REPLY_ALLOWED_MENTIONS)
                     return
 
             response_settings = guild_settings.snapshot_response()
@@ -466,7 +473,8 @@ class MessageHandler:
                         # Gemini を呼ぶと、見えていない画像への反応を作り話で返してしまうため断る。
                         await message.reply(
                             "画像を読み込めませんでした。"
-                            f"{describe_supported_attachments(documents=False)}の画像か確認して、もう一度送ってください。"
+                            f"{describe_supported_attachments(documents=False)}の画像か確認して、もう一度送ってください。",
+                            allowed_mentions=REPLY_ALLOWED_MENTIONS,
                         )
                         return None
                     question = IMAGE_ONLY_QUESTION
@@ -485,7 +493,10 @@ class MessageHandler:
                     prompt = await load_persona_template(response_settings.prompt_file)
                 except FileNotFoundError:
                     logger.warning("プロンプトファイルが見つかりません: %s", response_settings.prompt_file, exc_info=True)
-                    await message.reply("会話設定のファイルが見つかりません。管理者に設定の確認を依頼してください。")
+                    await message.reply(
+                        "会話設定のファイルが見つかりません。管理者に設定の確認を依頼してください。",
+                        allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                    )
                     return None
 
                 full_prompt = build_full_prompt(
@@ -506,7 +517,10 @@ class MessageHandler:
                 )
 
                 if response_text is None:
-                    await message.reply("エラーが発生しました。（Gemini APIの呼び出しに失敗、または非対応の画像形式です）")
+                    await message.reply(
+                        "エラーが発生しました。（Gemini APIの呼び出しに失敗、または非対応の画像形式です）",
+                        allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                    )
                     return None
                 if delegated:
                     grounding_sources = delegated_sources
@@ -523,7 +537,10 @@ class MessageHandler:
                 # （モデルが感情タグだけを返したケース）。
                 if not response_text.strip():
                     print("応答本文が空です（感情タグのみ、または空応答）。")
-                    await message.reply("申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。")
+                    await message.reply(
+                        "申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。",
+                        allowed_mentions=REPLY_ALLOWED_MENTIONS,
+                    )
                     return None
 
                 response_text, accepted = await screen_bot_response_with_status(

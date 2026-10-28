@@ -464,7 +464,7 @@ async def post_welcome_message(
 def is_administrator(user: Any) -> bool:
     """そのユーザーがサーバーの管理者権限を持つかを判定する。
 
-    この判定は「他人の会話統計の閲覧可否」「ブロック解除の可否」という
+    この判定は「他人の会話統計の閲覧可否」などの
     セキュリティ境界であり、条件を1か所に固定するためここへ集約している
     （各所へコピーすると、片方だけ条件が緩んだときに気づけない）。
 
@@ -473,6 +473,30 @@ def is_administrator(user: Any) -> bool:
     guild_permissions で権限を確認できないため。
     """
     return isinstance(user, discord.Member) and user.guild_permissions.administrator
+
+
+def _is_application_owner(user_id: int, application: Any) -> bool:
+    """個人所有なら所有者、チーム所有ならチーム所有者本人だけを許可する。"""
+    team = getattr(application, "team", None)
+    owner_id = (getattr(team, "owner_id", None) if team is not None
+                else getattr(getattr(application, "owner", None), "id", None))
+    return type(owner_id) is int and type(user_id) is int and owner_id > 0 and owner_id == user_id
+
+
+def is_bot_owner(interaction: discord.Interaction) -> bool:
+    """ログイン時のアプリ情報で、所有者向けボタンの表示可否を決める。"""
+    client = getattr(interaction, "client", None)
+    return _is_application_owner(interaction.user.id, getattr(client, "application", None))
+
+
+async def is_current_bot_owner(interaction: discord.Interaction) -> bool:
+    """全サーバー共通の違反情報を扱う直前に所有者を取り直し、確認失敗は拒否する。"""
+    try:
+        application = await interaction.client.application_info()
+    except Exception as error:
+        print(f"ボット所有者の再確認に失敗したため拒否します: {type(error).__name__}")
+        return False
+    return _is_application_owner(interaction.user.id, application)
 
 
 async def is_current_administrator(interaction: discord.Interaction) -> bool:

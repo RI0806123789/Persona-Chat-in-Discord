@@ -14,7 +14,7 @@ from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.autonomous_stage import enable_stage_speaker
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
-from persona_bot.utils.discord_helpers import is_administrator, reject_blocked_interaction
+from persona_bot.utils.discord_helpers import is_administrator, is_bot_owner, reject_blocked_interaction
 from persona_bot.views.functions_view import FunctionsView
 from persona_bot.views.view_parts import edit_panel_message
 from persona_bot.services.gemini_service import GeminiService
@@ -92,14 +92,15 @@ async def announce_voice_join(
             print(f"ステージの発言者への昇格に失敗しました: {type(error).__name__}: {error}")
             await interaction.followup.send(
                 f"⚠️ {channel.name} へ接続していますが、ステージの発言者になれませんでした。"
-                "ボットを発言者へ招待するか、管理者にステージの「メンバーをミュート」権限を確認してください。"
+                "ボットを発言者へ招待するか、管理者にステージの「メンバーをミュート」権限を確認してください。",
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             return
     message = (f"{channel.name} には既に接続しています。" if already_connected
                else f"{channel.name} に接続しました。")
     if isinstance(channel, discord.StageChannel):
         message += "ステージの発言者として読み上げます。"
-    await interaction.followup.send(message)
+    await interaction.followup.send(message, allowed_mentions=discord.AllowedMentions.none())
 
 
 def register_commands(
@@ -146,7 +147,7 @@ def register_commands(
     async def functions(interaction: discord.Interaction) -> None:
         if await reject_blocked_interaction(interaction, blacklist.is_blocked):
             return
-        # ブロック解除ボタンの表示可否を決めるため、実行者が管理者かどうかを判定する
+        # 統計などの管理者機能と、所有者限定のブロック解除を分けて判定する。
         is_admin = is_administrator(interaction.user)
         # ペルソナ・モデル等はサーバー（ギルド）ごとに独立している。DM では guild_id が
         # 無いため、全DM共有の設定スロット（state.dm_settings）が使われる。
@@ -159,7 +160,8 @@ def register_commands(
             deferred = True
             guild_settings = await state.get_guild_async(interaction.guild_id)
         view = FunctionsView(
-            guild_settings, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, is_admin=is_admin
+            guild_settings, usage, ng_filter, blacklist, gemini, moderator, stats, reminders,
+            is_admin=is_admin, is_owner=is_bot_owner(interaction),
         )
         # 機能パネルは本人だけに見えるよう ephemeral で送信する
         if deferred:
@@ -205,7 +207,8 @@ def register_commands(
                     "サーバー設定 →「連携サービス」か、そのボイスチャンネルの権限設定で、"
                     f"ボットのロールに{permission_names}を許可してください"
                     "（チャンネル個別の権限で拒否されている場合もあります）。"
-                    + ("ステージでは観客から発言者になるため「メンバーをミュート」が必要です。" if is_stage else "")
+                    + ("ステージでは観客から発言者になるため「メンバーをミュート」が必要です。" if is_stage else ""),
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return
 
@@ -284,7 +287,8 @@ def register_commands(
             logger.warning("ボイス接続が権限不足で拒否されました。", exc_info=True)
             await interaction.followup.send(
                 f"⚠️ {voice_channel.name} への接続を拒否されました（権限不足）。"
-                "チャンネルの権限設定でボットに「接続」を許可してください。"
+                "チャンネルの権限設定でボットに「接続」を許可してください。",
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except asyncio.TimeoutError:
             logger.warning("ボイス接続がタイムアウトしました。", exc_info=True)

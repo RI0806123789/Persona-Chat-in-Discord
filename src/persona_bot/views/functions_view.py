@@ -7,7 +7,7 @@ from persona_bot.core.background import run_in_thread
 from persona_bot.views.auto_topic_view import AutoTopicView
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
-from persona_bot.utils.discord_helpers import is_administrator
+from persona_bot.utils.discord_helpers import is_administrator, is_bot_owner, is_current_bot_owner
 from persona_bot.services.gemini_service import GeminiService
 from persona_bot.views.help_view import HelpView, resolve_bot_name
 from persona_bot.services.ng_word_service import NgWordFilter
@@ -39,8 +39,11 @@ class OpenSettingsButton(ui.Button):
         # ファイルを読むので先に応答を保留する。
         await interaction.response.defer(ephemeral=True)
         await refresh_persona_catalog()
-        blocked_users = hub.blacklist.get_all_blocked_users()
-        blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
+        # 全体の違反情報は、サーバー管理者にも件数を開示しない。
+        blacklist_status = "非公開（ボット所有者のみ）"
+        if is_bot_owner(interaction) and await is_current_bot_owner(interaction):
+            blocked_users = hub.blacklist.get_all_blocked_users()
+            blacklist_status = f"{len(blocked_users)}人" if blocked_users else "なし"
         settings_view = SettingsView(
             hub.guild_settings,
             ng_count=hub.ng_filter.word_count,
@@ -264,7 +267,7 @@ class StatsPrivacyButton(ui.Button):
 
 
 class UnblockButton(ui.Button):
-    """ブロック解除パネル（UnblockView）を開くボタン（管理者専用）。"""
+    """ブロック解除パネル（UnblockView）を開くボタン（ボット所有者専用）。"""
 
     def __init__(self) -> None:
         super().__init__(label="ブロック解除", style=discord.ButtonStyle.danger, emoji="🚫", row=1)
@@ -272,20 +275,28 @@ class UnblockButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         hub: "FunctionsView" = self.view  # type: ignore[assignment]
 
-        if not is_administrator(interaction.user):
+        if not is_bot_owner(interaction):
             await interaction.response.send_message(
-                "この機能はサーバー管理者のみ利用できます。", ephemeral=True
-            )
-            return
-
-        blocked_users = hub.blacklist.get_all_blocked_users()
-        if not blocked_users:
-            await interaction.response.send_message(
-                "現在ブラックリストに登録されているユーザーはいません。", ephemeral=True
+                "この機能はボット所有者のみ利用できます。", ephemeral=True
             )
             return
 
         begin_panel_operation(hub, interaction)
+        await interaction.response.defer(ephemeral=True)
+        if not await is_current_bot_owner(interaction):
+            await edit_panel_message(
+                interaction, deferred=True,
+                content="この機能はボット所有者のみ利用できます。", view=None,
+            )
+            return
+        blocked_users = hub.blacklist.get_all_blocked_users()
+        if not blocked_users:
+            await edit_panel_message(
+                interaction, deferred=True,
+                content="現在ブラックリストに登録されているユーザーはいません。", view=None,
+            )
+            return
+
         unblock_view = UnblockView(hub.blacklist, blocked_users, make_hub=hub.clone)
         # 同じ（エフェメラルな）メッセージをブロック解除パネルに差し替える
         await swap_panel(
@@ -313,6 +324,7 @@ class FunctionsView(PanelView):
         reminders: ReminderService,
         *,
         is_admin: bool = False,
+        is_owner: bool = False,
     ) -> None:
         super().__init__(
             timeout_notice=(
@@ -331,6 +343,7 @@ class FunctionsView(PanelView):
         self.stats = stats
         self.reminders = reminders
         self.is_admin = is_admin
+        self.is_owner = is_owner
 
         self._add_all_items()
 
@@ -344,8 +357,8 @@ class FunctionsView(PanelView):
         self.add_item(NgReloadButton())
         self.add_item(StatsButton())
         self.add_item(AutoTopicButton())
-        # ブロック解除は管理者専用。管理者以外にはボタン自体を表示しない。
-        if self.is_admin:
+        # 全サーバー共通のブロック解除は、ボット所有者本人だけに表示する。
+        if self.is_owner:
             self.add_item(UnblockButton())
         # row2: パネルを開くリマインダー ＋ Google検索のその場トグル
         self.add_item(ReminderButton())
@@ -367,10 +380,11 @@ class FunctionsView(PanelView):
             self.stats,
             self.reminders,
             is_admin=is_administrator(interaction.user),
+            is_owner=is_bot_owner(interaction),
         )
 
     def build_preview(self) -> str:
-        """ハブパネルの表示テキスト。管理者のみブロック解除の案内を出す。"""
+        """ハブパネルの表示テキスト。ボット所有者のみブロック解除の案内を出す。"""
         grounding_display = "✅ 有効" if self.guild_settings.grounding_enabled else "❌ 無効"
         lines = [
             "🛠️ **機能パネル** — 使いたい機能を選んでください。",
@@ -382,6 +396,6 @@ class FunctionsView(PanelView):
             "・❓ 使い方 … 会話のしかたと各機能の説明を表示",
             "・🔒 統計プライバシー … 会話統計の収集停止・データ削除（あなた自身の分だけ）",
         ]
-        if self.is_admin:
-            lines.append("・🚫 ブロック解除 … 管理者専用")
+        if self.is_owner:
+            lines.append("・🚫 ブロック解除 … ボット所有者専用")
         return "\n".join(lines)

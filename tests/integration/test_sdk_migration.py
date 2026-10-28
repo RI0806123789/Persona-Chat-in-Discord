@@ -113,9 +113,18 @@ class SdkWorkflowTests(unittest.IsolatedAsyncioTestCase):
         request = self.requests[0]
         self.assertEqual(request.headers["x-goog-api-key"], "YOUR_GEMINI_API_KEY")
         self.assertNotIn("key", request.url.params)
-        config = json.loads(request.content)["generationConfig"]
+        payload = json.loads(request.content)
+        config = payload["generationConfig"]
         self.assertEqual(config["responseMimeType"], "application/json")
         self.assertEqual(config["temperature"], 0)
+        self.assertEqual(config["responseSchema"]["required"], ["safe", "category", "reminder"])
+        self.assertNotIn("agent", config["responseSchema"]["properties"])
+        system = payload["systemInstruction"]["parts"][0]["text"]
+        contents = payload["contents"][0]["parts"][0]["text"]
+        self.assertIn("追加タスク2", system)
+        self.assertNotIn("架空の予定を来週も教えて", system)
+        self.assertIn("架空の予定を来週も教えて", contents)
+        self.assertNotIn("追加タスク2", contents)
 
     async def test_prompt_block_is_unsafe_but_server_error_is_fail_open_without_retry(self) -> None:
         self.responses.extend([

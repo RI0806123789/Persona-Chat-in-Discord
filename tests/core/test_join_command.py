@@ -80,6 +80,25 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
         self.channel.connect.assert_not_awaited()
         self.assertIn("既に接続しています", reply)
 
+    async def test_channel_name_mentions_cannot_notify_other_users_or_roles(self) -> None:
+        self.channel.name = "@everyone @here <@&22> <@33>"
+        for outcome in ("connected", "already_connected", "missing_permissions", "forbidden"):
+            with self.subTest(outcome=outcome):
+                self.interaction.response.send_message.reset_mock()
+                self.interaction.followup.send.reset_mock()
+                self.guild.voice_client = self.make_voice_client(self.channel) if outcome == "already_connected" else None
+                self.channel.permissions_for.return_value.connect = outcome != "missing_permissions"
+                self.channel.connect.side_effect = (
+                    discord.Forbidden(SimpleNamespace(status=403, reason="禁止"), "架空の拒否")
+                    if outcome == "forbidden" else None
+                )
+                await self.commands["join"](self.interaction)
+                send = (self.interaction.response.send_message if outcome == "missing_permissions"
+                        else self.interaction.followup.send)
+                send.assert_awaited_once()
+                self.assertIn(self.channel.name, send.await_args.args[0])
+                self.assertEqual(send.await_args.kwargs["allowed_mentions"].to_dict(), {"parse": []})
+
     async def test_other_channel_or_dropped_connection_reconnects_with_timeout(self) -> None:
         cases = {
             "別のチャンネル": self.make_voice_client(self.make_channel(30)),
