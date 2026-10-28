@@ -1,6 +1,6 @@
 """ブラックリスト管理サービス。
 
-ng/blacklist.json を使って、不適切な発言を繰り返すユーザーを
+data/ng/blacklist.json を使って、不適切な発言を繰り返すユーザーを
 三審制（3回違反でブロック）で管理する。
 ユーザーの識別にはDiscordの固有ID（スノーフレークID）を使用する。
 """
@@ -28,13 +28,13 @@ class BlacklistService:
         self.reload()
 
     def reload(self) -> None:
-        """ng/blacklist.json からデータを読み込む。"""
+        """data/ng/blacklist.json からデータを読み込む。"""
         self._data = load_json_file(self._path, {})
 
     def _save(self, data: dict[str, Any]) -> None:
-        """現在のデータを ng/blacklist.json に書き込む。"""
-        # 一時ファイルを同じディレクトリに作ってから置き換えるため、ng/ が無いと
-        # 初回の違反記録で保存に失敗する（クリーンな環境では ng/ が無いことがある）。
+        """現在のデータを data/ng/blacklist.json に書き込む。"""
+        # 一時ファイルを同じディレクトリに作ってから置き換えるため、data/ng/ が無いと
+        # 初回の違反記録で保存に失敗する（クリーンな環境では data/ng/ が無いことがある）。
         self._path.parent.mkdir(parents=True, exist_ok=True)
         write_json_file(self._path, data)
 

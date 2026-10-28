@@ -167,13 +167,15 @@ Edge も入っている環境でも Chrome を使います。Chrome は `Program
 | `key_path` / `known_hosts` | 秘密鍵と known_hosts の場所。`null` なら `~/.ssh/config` の IdentityFile と `~/.ssh/known_hosts` を使う。相対パスは `backend/` が基準 |
 | `use_ssh_config` | `true` なら `~/.ssh/config` を読む |
 | `service` | systemd のサービス名（英数字と `@._-` だけ） |
-| `bot_dir` | サーバー上のボットのフォルダ（絶対パス）。Git の情報・`bot.db`・`ng/blacklist.json` をここから読み、デプロイ時はこのフォルダのコードを更新する |
+| `bot_dir` | サーバー上のボットのフォルダ（絶対パス）。Git の情報・`data/memory/bot.db`・`data/ng/blacklist.json` をここから読み、デプロイ時はこのフォルダのコードを更新する |
 | `deploy_branch` | デプロイで取り込む `origin` のブランチ。既定は `main`。サーバー側も同じブランチであることが必要 |
 | `python` | サーバー上のボットの仮想環境の Python。既定は `.venv/bin/python`（`bot_dir` からの相対パス）。絶対パスも可。依存関係の更新に使うため、systemd の `ExecStart` と同じ仮想環境を指定する。空白を含むパスは不可 |
 | `journal_sudo` | ログを読む権限が無いサーバーでは `true`（`sudo -n journalctl` で読む） |
 | `note` | 画面の接続ページに出すメモ |
 
 ## デプロイする
+
+旧配置の `memory/`・`ng/` を持つサーバーは、[データ移行手順](../../README.md#data-directory-migration)に従ってボット停止中に `data/` 配下へ移してください。管理コンソールは `data/memory/bot.db`・`data/ng/blacklist.json` を読み取り、旧配置へは切り替えません。
 
 概要ページかサービス操作ページの「デプロイする」から、**接続中のサーバー上のコード**を `origin/<deploy_branch>` の最新へ更新できます。
 サーバーにボット・仮想環境・systemd のサービスを用意し、SSH ユーザーが `origin` を取得できることと、上記の sudo の許可を先に確かめてください。

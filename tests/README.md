@@ -404,6 +404,8 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | utils | [test_timeutil.py](utils/test_timeutil.py) |
 | utils | [test_welcome_message.py](utils/test_welcome_message.py) |
 | deploy | [test_migrate_config_to_env.py](deploy/test_migrate_config_to_env.py) |
+| deploy | [test_migrate_data_directory.py](deploy/test_migrate_data_directory.py) |
+| config | [test_data_paths.py](config/test_data_paths.py) |
 | integration | [test_event_loop_io.py](integration/test_event_loop_io.py) |
 | integration | [test_package_layout.py](integration/test_package_layout.py) |
 | integration | [test_sdk_migration.py](integration/test_sdk_migration.py) |
@@ -567,13 +569,13 @@ Windows・Python 3.13で既存288件と追加22件の全310テストが省略な
 | #55 | `services/test_ng_word_service` | BOM付きの公開／非公開NGファイルで1行目のコメントを除外し、1行目の語を検知・マスクする。BOMの有無だけが違う同じ語は1件にまとめる。検出結果は重複を除いた出現順 |
 | #55 | `config/test_prompt_loading` | BOM付きのペルソナを先頭のU+FEFFなしで読み、BOMなし・文字列パス指定も従来どおり |
 
-NGワードは一時ディレクトリの架空の語だけを使い、実際の `ng/` は読まない。
+NGワードは一時ディレクトリの架空の語だけを使い、実際の `data/ng/` は読まない。
 
 2026-10-16、Windows・Python 3.13で修正前のソースに対して追加11件を実行し、10件が失敗した（小文字・混在タグの4パターン、BOM付きNGファイル3件、検出順1件、BOM付きペルソナ2件）。BOMなしと大文字タグの確認は修正前から成功する。修正後は `PYTHONHASHSEED` を0〜3とランダムに変えて追加分がすべて成功し、全299テストが省略なしで成功した。依存関係・全ソースの構文・メッセージ分割・`compileall` も確認した。Linux・Python 3.10での実行と、実際のDiscord・Geminiでの再現は未確認。
 
 ## ボット本体のフォルダ整理時の確認
 
-`integration/test_package_layout.py` は、移動後も全ペルソナの既存の相対パスと、`.env`・DB・記憶・NG関連ファイルの保存先が変わらないことを確認する。起動の確認ではソースだけを一時プロジェクトへコピーし、架空の `.env` と一時DBを使って、従来の `src/bot.py` を子プロセス内で実行する。Geminiクライアントの生成とDiscordの接続入口をモック化し、コマンド登録まで進むことと外部通信・DNSの試行がないことを確認する。
+`integration/test_package_layout.py` は、全ペルソナの既存の相対パスと `.env` の場所を保ち、DB・記憶・NG関連ファイルが `data/` 配下を参照することを確認する。起動の確認ではソースだけを一時プロジェクトへコピーし、架空の `.env` と一時DBを使って、従来の `src/bot.py` を子プロセス内で実行する。Geminiクライアントの生成とDiscordの接続入口をモック化し、コマンド登録まで進むことと外部通信・DNSの試行がないことを確認する。
 
 Windows・Python 3.13の仮想環境で、既存286件と追加2件の全288テストが省略なしで成功した。依存関係、全79ソースの構文とPython 3.10文法、メッセージ分割、構成図のXML、差分も確認した。移動前後の全43ソースは、importとパス基準の調整を除いてASTが一致した。Linuxでの実行、Python 3.10での実行、実際のDiscord・Gemini・ボイス接続は未確認。
 

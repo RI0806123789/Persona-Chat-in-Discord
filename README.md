@@ -63,20 +63,22 @@ Persona Chat in Discord/
 │   ├── 00_prompt_format.json                   # personas.json の書式見本（Git 管理対象。コピーして表示名・声を決める）
 │   ├── <名前>.txt                              # 自作のペルソナ（Git 管理対象外。作り方は「ペルソナを作る」）
 │   └── personas.json                           # 表示名・声・既定のペルソナ（任意。Git 管理対象外）
-├── memory/                                     # 長期記憶の保存先（.gitkeep 以外は Git 管理対象外）
-│   ├── .gitkeep                                # 空ディレクトリを Git に残すためのファイル
-│   ├── bot.db                                  # SQLite DB（親密度・会話統計・文書キュー・一時ログ・プロフィール記憶・サーバー設定・記念日の投稿記録・リマインダー・フィードバックの9テーブル）
-│   ├── profile.json                            # プロフィール記憶の手書き追加用（起動時に DB へ吸収され {} に戻る）
-│   ├── projects.json                           # 動的なプロジェクト記憶
-│   └── *.imported.bak                          # 旧 JSON からの移行時に作られるバックアップ
-├── ng/
-│   ├── NG_WORD.txt                             # NGワードリスト
-│   ├── NG_WORD_private.txt                     # 非公開NGワード（Git 管理対象外。読み込み時に NG_WORD.txt へマージ）
-│   └── blacklist.json                          # ブラックリスト（三審制違反記録。Git 管理対象外）
+├── data/                                       # 保存データ・NGワード設定
+│   ├── memory/                                 # 長期記憶の保存先（.gitkeep 以外は Git 管理対象外）
+│   │   ├── .gitkeep                            # 空ディレクトリを Git に残すためのファイル
+│   │   ├── bot.db                              # SQLite DB（親密度・会話統計・文書キュー・一時ログ・プロフィール記憶・サーバー設定・記念日の投稿記録・リマインダー・フィードバックの9テーブル）
+│   │   ├── profile.json                        # プロフィール記憶の手書き追加用（起動時に DB へ吸収され {} に戻る）
+│   │   ├── projects.json                       # 動的なプロジェクト記憶
+│   │   └── *.imported.bak                      # 旧 JSON からの移行時に作られるバックアップ
+│   └── ng/
+│       ├── NG_WORD.txt                         # NGワードリスト（Git 管理対象）
+│       ├── NG_WORD_private.txt                 # 非公開NGワード（Git 管理対象外。読み込み時に NG_WORD.txt へマージ）
+│       └── blacklist.json                      # ブラックリスト（三審制違反記録。Git 管理対象外）
 ├── deploy/                                     # サーバー運用（systemd）用のファイル
 │   ├── bot.service.example                     # systemd ユニットの見本（Git 管理対象）
 │   ├── bot.service                             # 実パス・ユーザー名入り（Git 管理対象外）
-│   └── migrate_config_to_env.py                # 旧 config_private.py から .env を生成する移行用
+│   ├── migrate_config_to_env.py                # 旧 config_private.py から .env を生成する移行用
+│   └── migrate_data_directory.py               # 旧 memory/・ng/ を data/ 配下へ移す移行用
 ├── docs/                                       # 設計資料
 │   └── フロー図.drawio                         # 構成・メッセージ処理・on_message・自律行動のフロー図（draw.io）
 ├── tools/
@@ -182,6 +184,27 @@ python3 deploy/migrate_config_to_env.py --force     # 既存の .env を上書�
 
 旧ファイルは import せず構文解析だけで読み、作った `.env` のパーミッションは `600` になります。移行が済んだら、`index/config_private.py` は削除して構いません。
 
+<a id="data-directory-migration"></a>
+
+#### 既存のデータの移行（ver0.1.9(BETA)）
+
+`memory/`・`ng/` は、`data/memory/`・`data/ng/` へ移りました。新規導入では移行は不要です。既存環境では、記憶・設定・違反記録を引き継ぐため、次の順序で作業してください。
+
+1. ボットを停止します。ローカルでは起動中のボットを終了し、systemd では `sudo systemctl stop bot` を実行します。移行中は管理コンソールからも起動・デプロイしないでください。
+2. コード更新前に、旧 `memory/` と `ng/` をリポジトリ外の非公開の場所へコピーしておくことを推奨します。DBがWALモードでも、停止後のディレクトリを丸ごと保管してください。
+3. コードを更新し、リポジトリルートで移行対象と衝突の有無を確認してから移します。
+
+```bash
+python deploy/migrate_data_directory.py --check  # 確認のみ。データは変更しない
+python deploy/migrate_data_directory.py          # バックアップ・内容照合後に移動
+```
+
+Windowsでは `.venv\Scripts\python.exe`、Linuxでは `.venv/bin/python` を `python` の代わりに指定できます。移行スクリプトはPython標準ライブラリだけで動作し、APIキーや外部通信は不要です。
+
+旧ディレクトリは `data/.migration-backups/` の実行ごとのフォルダへバックアップし、全ファイルの内容を照合してから移動します。既存の移行先と同名のファイルは、内容が一致する場合だけ引き継ぎます。内容が違う場合は移動前に停止するため、どちらを残すかを確認してから再実行してください。ファイルの内容は画面へ表示しません。移行済みの環境で再実行してもデータは変更しません。
+
+4. 移行後に、通常の起動手順または `sudo systemctl start bot` で起動します。旧配置が残ったままでは、空のDBで動き始めることを防ぐため起動を停止して移行を案内します。`prompts/`・`.env` の場所と `src/` からの起動方法は変わりません。
+
 ### 6. ボットの起動
 
 依存を導入した仮想環境のPythonを直接指定すると、通常の`python`に入っている別版のSDKを使わずに起動できます。
@@ -232,8 +255,8 @@ systemctl status bot                        # "active (running)" なら成功
 
 - `WorkingDirectory` は必ず `src/` にし、`ExecStart` には仮想環境の `python` を絶対パスで書きます（systemd ではシェルの `activate` が効かないため）。既存の`deploy/bot.service`はGit管理外なので、更新時も`index/`が残っていないか確認し、上表のユニット更新手順を実行してください。反映先は`systemctl show bot -p WorkingDirectory --value`で確認できます。
 - 再起動の回数制限を外している（`StartLimitIntervalSec=0`）ため、設定ミスがあると**再起動を繰り返し続けます**。`systemctl status bot` が `activating (auto-restart)` のままなら、`journalctl -u bot -n 50` を確認してください。
-- `ProtectSystem=strict` や `ProtectHome=yes` は追加しないでください。実行中に `memory/` と `ng/` へ書き込むため、記憶とモデレーションが黙って壊れます。
-- 過去に `sudo python bot.py` で動かしたことがあると、`memory/` が root の所有になって書き込めません。`sudo chown -R <USER>:<USER> <PROJECT_DIR>` で直せます。
+- `ProtectSystem=strict` や `ProtectHome=yes` は追加しないでください。実行中に `data/memory/` と `data/ng/` へ書き込むため、記憶とモデレーションが黙って壊れます。
+- 過去に `sudo python bot.py` で動かしたことがあると、`data/memory/` が root の所有になって書き込めません。`sudo chown -R <USER>:<USER> <PROJECT_DIR>` で直せます。
 
 #### 日本語グラフのフォント
 
@@ -376,7 +399,7 @@ sudo systemctl restart bot                                # 4. 読み直す
 python -B -m unittest discover -s tests -v
 ```
 
-APIキーや `.env`、Discord接続、Gemini呼び出しは不要です。外部サービスはモック、一時DB・一時ファイルには架空のデータを使い、実際の `memory/`・`ng/` は変更しません。Windowsでは `.venv\Scripts\python.exe`、Linuxでは `.venv/bin/python` を直接指定しても実行できます。
+APIキーや `.env`、Discord接続、Gemini呼び出しは不要です。外部サービスはモック、一時DB・一時ファイルには架空のデータを使い、実際の `data/memory/`・`data/ng/` は変更しません。Windowsでは `.venv\Scripts\python.exe`、Linuxでは `.venv/bin/python` を直接指定しても実行できます。
 
 DBの初期化・設定保存と復元、文書処理の異常系、会話リセット、リマインダー登録・記憶更新の並行処理、生成中の設定変更、コメントの流量制限、JSON保存の中断、長いリマインダー一覧を検証します。`message_handler.py` は起動処理を実行せずimportでき、実際のメッセージ処理へモックを注入してテストします。
 
@@ -404,7 +427,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 | 💬 自発会話 | 自発的な会話と 🎙️ 自律行動の ON/OFF、無会話しきい値の設定 |
 | ⏰ リマインダー | 自分のリマインダーの一覧と取り消し |
 | 📊 グラフ | トークン使用量の推移を表示（再起動でリセット） |
-| 🔄 NGワード再読込 | `ng/NG_WORD.txt` を再起動せずに読み直す |
+| 🔄 NGワード再読込 | `data/ng/NG_WORD.txt` を再起動せずに読み直す |
 | 🔍 Google検索 | Google 検索の ON/OFF をその場で切り替え（既定: ON） |
 | ❓ 使い方 | 会話のしかたと全機能の説明を表示 |
 | 🔒 統計プライバシー | 自分の会話統計の収集停止と、溜まったデータの削除 |
@@ -463,7 +486,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 #### 🎂 記念日・誕生日の自動お祝い
 
-パネルもコマンドもありません。会話で「誕生日は5月1日」のように伝えると、記憶を整理するときに記録され（`memory/profile.json` に手書きして再起動しても登録できます）、当日にお祝いを投稿します（`Asia/Tokyo` 基準。確認は 1 時間ごと）。
+パネルもコマンドもありません。会話で「誕生日は5月1日」のように伝えると、記憶を整理するときに記録され（`data/memory/profile.json` に手書きして再起動しても登録できます）、当日にお祝いを投稿します（`Asia/Tokyo` 基準。確認は 1 時間ごと）。
 
 - 投稿先は、そのユーザーがいるサーバーの自発会話の対象チャンネル（直近に会話があったもの）です。DM は対象外です。
 - 同じお祝いを同じ日に二度投稿することはありません（再起動しても）。文面に長期記憶の中身は使いません。
@@ -538,6 +561,8 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 ---
 ## 📋 更新履歴
 
+過去バージョンの記載にある `memory/`・`ng/` は当時の保存先です。現在の配置は上のディレクトリ構成と移行手順を参照してください。
+
 ### ver0.1.9(BETA)
 
 #### 新機能
@@ -575,6 +600,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 #### 内部修正
 
+- **保存データの配置整理**: ルート直下の `memory/`・`ng/` を `data/memory/`・`data/ng/` へまとめ、ボット・管理コンソール・Gitの除外設定を新配置へ統一。既存環境向けにバックアップと内容照合を行う移行スクリプトを追加し、旧配置が残る場合は空のDBを作らず起動を止めて移行を案内する。`prompts/`・`.env` と起動方法は従来どおり。
 - **記念日のプロフィール検索用索引**: スキーマ14への移行で`profile(key, user_id)`の索引を追加し、記念日巡回が無関係なプロフィール行を全件走査する処理を避ける。ユーザー別の記憶取得・保存・圧縮は従来の主キーと仕様を保つ（#249）。
 - **UI タスクの所有者管理**: discord.py 標準の `View._dispatch_item` は `asyncio.create_task` で直接タスクを作るため、ボット終了時に所有者の回収待機へ含まれない問題を解消。`PanelView` 基底クラスで `_dispatch_item` をオーバーライドし、全パネル（キャラ設定・会話要約・会話統計・自発会話・リマインダー・統計プライバシー・ブロック解除・ヘルプ）に適用。`interaction_check` に `stopping` チェックを追加し、終了後の UI 操作を早期に拒否。
 

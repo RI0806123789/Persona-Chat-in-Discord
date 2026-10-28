@@ -46,7 +46,7 @@ Group=<USER>
 
 # 起動スクリプト bot.py の場所に合わせ、従来どおり src/ の中から起動する。
 # 各機能は src/persona_bot/ 内のパッケージから読み込む。
-# プロンプトの相対パスの基準と、ルート直下の memory/・ng/ の保存先は変わらない。
+# プロンプトの相対パスは src/ 基準、記憶とNG関連データの保存先はルートの data/ 配下。
 WorkingDirectory=<PROJECT_DIR>/src
 
 # systemd はシェルを介さずプロセスを起動するため、source .venv/bin/activate は効かない。
@@ -96,10 +96,10 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 #
 # ProtectSystem=strict / ProtectHome=yes は入れないこと。
-# このボットは実行中に memory/（SQLite DB・JSON）と ng/（ブラックリスト）へ書き込む。
+# このボットは実行中に data/memory/（SQLite DB・JSON）と data/ng/（ブラックリスト）へ書き込む。
 # これらはユーザーのホーム配下にあるため、上記を有効にすると書き込みが
 # read-only エラーで失敗し、記憶やモデレーションが黙って壊れる。
-# どうしても導入するなら ReadWritePaths= で memory/ と ng/ を個別に開ける必要がある。
+# どうしても導入するなら ReadWritePaths= で data/memory/ と data/ng/ を個別に開ける必要がある。
 
 # --- ウォッチドッグ（現時点では未導入）---
 # WatchdogSec= を設定すると「一定時間ハートビートが無ければ強制再起動」にできるが、

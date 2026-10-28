@@ -62,8 +62,8 @@ def make_fake_bot(root: Path, *, layout: str, with_autonomous_column: bool) -> N
         (services / "autonomous_service.py").write_text("", encoding="utf-8")
     (root / "README.md").write_text("# bot\n\n## 📋 更新履歴\n\n### ver0.1.6 — 2026/08/14\n", encoding="utf-8")
 
-    (root / "memory").mkdir()
-    con = sqlite3.connect(root / "memory" / "bot.db")
+    (root / "data" / "memory").mkdir(parents=True)
+    con = sqlite3.connect(root / "data" / "memory" / "bot.db")
     columns = "guild_id INTEGER PRIMARY KEY, prompt_file TEXT, model_name TEXT, respond_mode TEXT, " \
               "grounding_enabled INTEGER, auto_topic_enabled INTEGER, auto_topic_interval_hours INTEGER"
     if with_autonomous_column:
@@ -195,7 +195,7 @@ subprocess.run = _fake_run
                          for value in invalid]
                 cases += [{"model_name": "gemini-3.1-flash-lite", "respond_mode": "all",
                            "auto_topic_interval_hours": value} for value in (1, 3, 6)]
-                before = (self.root / "memory/bot.db").read_bytes()
+                before = (self.root / "data/memory/bot.db").read_bytes()
                 views = self.insights(journal=[], settings_cases=cases)["settings_cases"]
                 for view in views[:len(invalid)]:
                     self.assertEqual((view["model"], view["respond_mode"], view["auto_topic_interval_hours"]),
@@ -203,7 +203,7 @@ subprocess.run = _fake_run
                 for interval, view in zip((1, 3, 6), views[len(invalid):]):
                     self.assertEqual((view["model"], view["respond_mode"], view["auto_topic_interval_hours"]),
                                      ("Gemini 3.1 Flash Lite", "すべての発言に反応", interval))
-                self.assertEqual((self.root / "memory/bot.db").read_bytes(), before)
+                self.assertEqual((self.root / "data/memory/bot.db").read_bytes(), before)
 
     def test_initial_journal_failure_skips_fallback_and_records_one_error(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
@@ -281,7 +281,7 @@ subprocess.run = _fake_run
 
     def test_output_has_no_guild_ids(self) -> None:
         make_fake_bot(self.root, layout="index", with_autonomous_column=False)
-        con = sqlite3.connect(self.root / "memory" / "bot.db")
+        con = sqlite3.connect(self.root / "data" / "memory" / "bot.db")
         con.execute("INSERT INTO guild_settings (guild_id, prompt_file) VALUES (?, '../prompts/prompt_tsun.txt')", (GUILD_ID,))
         con.commit()
         con.close()
@@ -308,7 +308,7 @@ subprocess.run = _fake_run
 
     def test_paginated_discord_script_keeps_settings_after_first_200_guilds(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
-        con = sqlite3.connect(self.root / "memory/bot.db")
+        con = sqlite3.connect(self.root / "data/memory/bot.db")
         try:
             con.execute("INSERT INTO guild_settings (guild_id, respond_mode) VALUES (?, 'all')", (GUILD_ID + 200,))
             con.commit()
@@ -333,7 +333,7 @@ subprocess.run = _fake_run
 
     def test_discord_errors_keep_db_and_log_results(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
-        con = sqlite3.connect(self.root / "memory/bot.db")
+        con = sqlite3.connect(self.root / "data/memory/bot.db")
         con.execute("INSERT INTO guild_settings (guild_id, respond_mode) VALUES (?, 'all')", (GUILD_ID,))
         con.commit()
         con.close()
@@ -407,11 +407,11 @@ subprocess.run = _fake_run
     def test_env_comments_are_supported_and_database_is_unchanged(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
         (self.root / ".env").write_text(f'export TOKEN_DISCORD="{FAKE_TOKEN}" # 架空の設定\n', encoding="utf-8")
-        before = (self.root / "memory/bot.db").read_bytes()
+        before = (self.root / "data/memory/bot.db").read_bytes()
         data = self.insights(responses={"/users/@me": {"username": "架空のボット"}, "/users/@me/guilds": []}, journal=[])
         self.assertTrue(data["discord"]["ok"])
         self.assertNotIn(FAKE_TOKEN, self.stdout)
-        self.assertEqual((self.root / "memory/bot.db").read_bytes(), before)
+        self.assertEqual((self.root / "data/memory/bot.db").read_bytes(), before)
 
     def test_annotated_sources_are_read_without_importing(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
@@ -447,7 +447,7 @@ subprocess.run = _fake_run
 
     def personas_for(self, saved_values):
         """保存値ごとのペルソナ表示。Discord API を使わず「保存済みサーバー」として ID 順に並べる。"""
-        con = sqlite3.connect(self.root / "memory/bot.db")
+        con = sqlite3.connect(self.root / "data/memory/bot.db")
         con.execute("DELETE FROM guild_settings")
         con.executemany("INSERT INTO guild_settings (guild_id, prompt_file) VALUES (?, ?)",
                         list(enumerate(saved_values, 1)))

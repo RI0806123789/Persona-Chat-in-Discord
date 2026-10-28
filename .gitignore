@@ -43,9 +43,17 @@ ffprobe.exe
 *.dll
 
 
-# --- Runtime memory files ---
-memory/*
-!memory/.gitkeep
+# --- Runtime data（公開する見本以外はまとめて除外）---
+data/*
+!data/memory/
+data/memory/*
+!data/memory/.gitkeep
+!data/ng/
+data/ng/*
+!data/ng/NG_WORD.txt
+# 移行前の保存先にも会話・記憶・違反記録が残るので、引き続き除外する。
+/memory/
+/ng/
 *temp
 
 # --- ペルソナ（キャラ別のプロンプト）---
@@ -61,7 +69,7 @@ prompts/*
 # --- NG ---
 NG_WORD_private.txt
 # 違反記録（実ユーザーの Discord ID・ユーザー名を含むランタイムデータ）
-ng/blacklist.json
+data/ng/blacklist.json
 
 # ---dev---
 memo/

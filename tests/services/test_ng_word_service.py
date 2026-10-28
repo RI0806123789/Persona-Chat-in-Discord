@@ -15,7 +15,7 @@ from persona_bot.services.ng_word_service import NgWordFilter
 
 
 class NgWordFileTestCase(unittest.TestCase):
-    """実際の ng/ を読まないよう、両方のNGワードファイルを一時ディレクトリへ差し替える。"""
+    """実際の data/ng/ を読まないよう、両方のNGワードファイルを一時ディレクトリへ差し替える。"""
 
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()

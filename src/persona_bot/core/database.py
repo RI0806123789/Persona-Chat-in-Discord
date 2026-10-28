@@ -1,4 +1,4 @@
-"""SQLite データベース層（memory/bot.db）。
+"""SQLite データベース層（data/memory/bot.db）。
 
 以下の10テーブルを SQLite で管理する。SQL 文はすべてこのモジュールに集約する。
 旧 JSON / テキストファイルから移したデータと、その後追加した機能のデータを持つ。
@@ -346,7 +346,7 @@ def _affinity_row_params(user_id: Any, entry: dict[str, Any]) -> tuple[str, Any,
 
 
 class Database:
-    """memory/bot.db への読み書きを一手に引き受けるクラス。
+    """data/memory/bot.db への読み書きを一手に引き受けるクラス。
 
     サービス各所が run_in_thread 経由（＝別スレッド）で呼ぶため、
     check_same_thread=False で接続し、自前の threading.Lock で直列化する。
@@ -361,7 +361,7 @@ class Database:
         legacy_owner_id: str = "",
     ) -> None:
         self._db_path = Path(db_path)
-        # 旧 JSON ファイルの置き場所。省略時は DB と同じディレクトリ（memory/）。
+        # 旧 JSON ファイルの置き場所。省略時は DB と同じディレクトリ（data/memory/）。
         self._legacy_dir = Path(legacy_dir) if legacy_dir is not None else self._db_path.parent
         # ユーザー別記憶への移行時、旧・全体共有データ（profile / pending_log）を
         # 引き継ぐ先の Discord ユーザーID。空文字なら引き継がず破棄する。

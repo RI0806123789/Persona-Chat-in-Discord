@@ -41,7 +41,9 @@ DM_SETTINGS_GUILD_KEY = 0
 # .gitignore で除外済み（見本は Git 管理された .env.example）。
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
-MEMORY_DIR = PROJECT_ROOT / "memory"
+# プログラムと利用者のデータを分け、保存先を data/ 配下へまとめる。
+DATA_DIR = PROJECT_ROOT / "data"
+MEMORY_DIR = DATA_DIR / "memory"
 # SQLite データベース本体。親密度・統計・文書キュー・一時ログ・プロフィール・
 # サーバー設定・記念日の投稿記録・リマインダー・フィードバックの9テーブルを格納する。
 # profile.json は起動時の手書き追加用、projects.json は自由形式JSONとして保持する。
@@ -49,7 +51,7 @@ DATABASE_PATH = MEMORY_DIR / "bot.db"
 PROFILE_MEMORY_PATH = MEMORY_DIR / "profile.json"
 PROJECTS_MEMORY_PATH = MEMORY_DIR / "projects.json"
 
-NG_DIR = PROJECT_ROOT / "ng"
+NG_DIR = DATA_DIR / "ng"
 NG_WORD_PATH = NG_DIR / "NG_WORD.txt"
 NG_WORD_PRIVATE_PATH = NG_DIR / "NG_WORD_private.txt"
 BLACKLIST_PATH = NG_DIR / "blacklist.json"

@@ -50,12 +50,15 @@ from persona_bot.core.message_handler import MessageHandler
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.services.reminder_service import ReminderService
 from persona_bot.config.personas import reload_persona_catalog
+from persona_bot.config.data_paths import ensure_data_directory_ready
 from persona_bot.config.settings_loader import load_settings
 from persona_bot.services.stats_service import StatsService
 from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
 
 
+# 旧保存先を見落として空の DB・違反記録で再開しないよう、接続や初期化より先に確認する。
+ensure_data_directory_ready()
 settings = load_settings()
 genai_client = create_genai_client(settings.API_KEY_GEMINI)
 
