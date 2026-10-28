@@ -1,7 +1,7 @@
 """実際の NG 判定・ブラックリスト・メッセージ処理を、架空の語と一時ファイルでつなぐ（#172・#173）。
 
 Discord・Gemini はモックに置き換える。NG 語は架空の1語だけを読み込み、実際の
-ng/NG_WORD.txt・ng/NG_WORD_private.txt・ng/blacklist.json には触れない。
+data/ng/NG_WORD.txt・data/ng/NG_WORD_private.txt・data/ng/blacklist.json には触れない。
 """
 
 from contextlib import asynccontextmanager
@@ -54,7 +54,7 @@ class NgPipeline:
     def __init__(self, test_case) -> None:
         directory = tempfile.TemporaryDirectory()
         test_case.addCleanup(directory.cleanup)
-        self.blacklist_path = Path(directory.name) / "ng" / "blacklist.json"
+        self.blacklist_path = Path(directory.name) / "data" / "ng" / "blacklist.json"
         self.blacklist = BlacklistService(self.blacklist_path)
         with patch.object(ng_word_service, "load_ng_words", return_value=[FICTIONAL_NG_WORD]):
             self.ng_filter = NgWordFilter()

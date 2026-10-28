@@ -9,7 +9,7 @@ start_fake_server(...) に渡した一時フォルダへ、次のファイルを
 - host_key          … このサーバーのホスト鍵
 - client_key(.pub)  … ダッシュボードがログインに使う鍵
 - known_hosts       … ダッシュボードがホスト鍵を検証するためのファイル
-- bot/memory/bot.db・bot/ng/blacklist.json … 架空の利用者・会話で作った DB と違反記録（make_fake_database）
+- bot/data/memory/bot.db・bot/data/ng/blacklist.json … 架空の利用者・会話で作った DB と違反記録（make_fake_database）
 
 デプロイの確かめ方: bot.repo（FakeRepo）で、新しいコミット・requirements.txt の変更・pip の失敗・
 起動に失敗する版などを作ってから、デプロイを実行する。
@@ -495,8 +495,8 @@ def make_fake_database(directory: Path) -> tuple[Path, Path]:
     """架空の bot.db と blacklist.json を作り直して、それぞれの場所を返す。中身は毎回同じ（乱数の種を固定）。"""
     rng = random.Random(103)
     now = datetime.now(timezone.utc)
-    db_path = directory / "memory" / "bot.db"
-    blacklist_path = directory / "ng" / "blacklist.json"
+    db_path = directory / "data" / "memory" / "bot.db"
+    blacklist_path = directory / "data" / "ng" / "blacklist.json"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     blacklist_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.unlink(missing_ok=True)
@@ -645,9 +645,9 @@ def run_db_script(bot: FakeBot, command: str, script: str) -> tuple[str, str, in
         return "", "fake-ssh-server: 架空の bot.db がありません。\n", 1
     arguments = []
     for argument in shlex.split(command)[2:]:  # 「python3 -」の後ろ
-        if argument.endswith("/memory/bot.db"):
+        if argument.endswith("/data/memory/bot.db"):
             argument = str(bot.db_path)
-        elif argument.endswith("/ng/blacklist.json"):
+        elif argument.endswith("/data/ng/blacklist.json"):
             argument = str(bot.blacklist_path)
         arguments.append(argument)
     completed = subprocess.run(

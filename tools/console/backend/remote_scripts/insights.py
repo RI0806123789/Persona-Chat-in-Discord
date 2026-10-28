@@ -260,7 +260,7 @@ SETTINGS_COLUMNS = set()
 
 def load_guild_settings():
     rows = {}
-    db_path = BOT_DIR / "memory" / "bot.db"
+    db_path = BOT_DIR / "data" / "memory" / "bot.db"
     if not db_path.exists():
         note("bot.db がありません。")
         return rows

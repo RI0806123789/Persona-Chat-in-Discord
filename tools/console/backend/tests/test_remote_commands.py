@@ -63,13 +63,13 @@ class CommandBuildTest(unittest.TestCase):
         self.assertIn("cd '/home/u/my bot' &&", rc.git_command("/home/u/my bot"))
         self.assertEqual(
             rc.db_summary_command("/srv/bot/"),
-            "python3 - /srv/bot/memory/bot.db /srv/bot/ng/blacklist.json",
+            "python3 - /srv/bot/data/memory/bot.db /srv/bot/data/ng/blacklist.json",
         )
 
     def test_db_table_command_accepts_only_known_tables_and_clamps_paging(self):
         self.assertEqual(
             rc.db_table_command("/home/u/my bot/", "feedback", 50, 50),
-            "python3 - --db-table '/home/u/my bot/memory/bot.db' feedback 50 50",
+            "python3 - --db-table '/home/u/my bot/data/memory/bot.db' feedback 50 50",
         )
         self.assertTrue(rc.db_table_command("/srv/bot", "reminders", -3, 10**6).endswith(" reminders 0 200"))
         self.assertTrue(rc.db_table_command("/srv/bot", "profile", 0, 0).endswith(" profile 0 1"))

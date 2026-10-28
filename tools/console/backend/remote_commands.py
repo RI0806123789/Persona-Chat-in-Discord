@@ -218,8 +218,8 @@ def insights_command(bot_dir: str, service: str, *, use_sudo: bool = False) -> s
 def db_summary_command(bot_dir: str) -> str:
     """DB の集計スクリプト（DB_SUMMARY_SCRIPT）を標準入力から python3 に渡して実行する。"""
     base = bot_dir.rstrip("/")
-    db_path = shlex.quote(f"{base}/memory/bot.db")
-    blacklist_path = shlex.quote(f"{base}/ng/blacklist.json")
+    db_path = shlex.quote(f"{base}/data/memory/bot.db")
+    blacklist_path = shlex.quote(f"{base}/data/ng/blacklist.json")
     return f"python3 - {db_path} {blacklist_path}"
 
 
@@ -249,7 +249,7 @@ def db_table_command(bot_dir: str, table: str, offset: int, limit: int) -> str:
         raise ValueError(f"表示できないテーブルです: {table!r}")
     offset = max(0, int(offset))
     limit = max(1, min(int(limit), DB_TABLE_PAGE_MAX))
-    db_path = shlex.quote(f"{bot_dir.rstrip('/')}/memory/bot.db")
+    db_path = shlex.quote(f"{bot_dir.rstrip('/')}/data/memory/bot.db")
     return f"python3 - --db-table {db_path} {table} {offset} {limit}"
 
 

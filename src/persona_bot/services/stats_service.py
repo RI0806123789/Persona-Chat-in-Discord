@@ -122,7 +122,7 @@ class _AnalysisFlight:
 class StatsService:
     """ユーザー別の会話統計（発言回数・時間帯・話題・性格推定）を集計・可視化する。
 
-    集計対象は「ボットへの発言のみ」。データは SQLite（memory/bot.db の
+    集計対象は「ボットへの発言のみ」。データは SQLite（data/memory/bot.db の
     user_stats テーブル）に永続化する。保存は asyncio.Lock で直列化する
     （単一プロセス前提）。
 

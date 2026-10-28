@@ -431,7 +431,7 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         for error in (
             ValueError(f"架空の内部エラー: {self.FICTIONAL_CONNECTION}"),
             RuntimeError(f"架空の接続失敗: {self.FICTIONAL_CONNECTION}"),
-            OSError("架空の読込失敗: /srv/fictional-bot/memory/bot.db"),
+            OSError("架空の読込失敗: /srv/fictional-bot/data/memory/bot.db"),
         ):
             with self.subTest(error=type(error).__name__):
                 self.message.reply.reset_mock()

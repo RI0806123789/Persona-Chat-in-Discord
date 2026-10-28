@@ -25,7 +25,7 @@ class BlacklistFileTests(unittest.IsolatedAsyncioTestCase):
         return json.loads(path.read_text(encoding="utf-8"))
 
     async def test_first_violation_creates_the_missing_directory(self) -> None:
-        path = self.root / "ng" / "blacklist.json"  # ng/ がまだ無いクリーンな環境
+        path = self.root / "data" / "ng" / "blacklist.json"  # data/ng/ がまだ無いクリーンな環境
         service = BlacklistService(path)
         self.assertEqual(await service.record_violation(11, "架空の利用者"), (1, False))
         self.assertEqual(self.saved(path)["11"]["count"], 1)

@@ -1,6 +1,6 @@
 """NGワードの読み込み・判定・マスク処理を提供するサービス。
 
-ng/NG_WORD.txt と ng/NG_WORD_private.txt から1行ずつNGワードを読み込み、
+data/ng/NG_WORD.txt と data/ng/NG_WORD_private.txt から1行ずつNGワードを読み込み、
 ユーザーの入力やBotの応答に含まれていないかチェックする。
 """
 
