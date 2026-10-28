@@ -1,10 +1,11 @@
 import asyncio
 import hashlib
 import codecs
+import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import discord
 
@@ -80,6 +81,8 @@ class DocumentService:
         db: Database,
         ng_filter: NgWordFilter | None = None,
         moderator: ContentModerator | None = None,
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> None:
         self._client = client
         self._state = state
@@ -89,6 +92,7 @@ class DocumentService:
         self._db = db
         self._ng_filter = ng_filter
         self._moderator = moderator
+        self._is_blocked = is_blocked
         self._worker: asyncio.Task[Any] | None = None
         self._stopping = False
 
@@ -236,13 +240,24 @@ class DocumentService:
                 await self._process_attachment(attachment, author_id, response_settings.model_name)
                 for attachment in attachments
             ]
-            await self._memory.store_document_summaries(author_id, summaries)
+            summaries = [self._mask_summary_data(summary) for summary in summaries]
+            summary_notice, summaries_accepted = await screen_bot_response_with_status(
+                json.dumps(summaries, ensure_ascii=False), None, self._moderator, log_label="文書要約",
+            )
+            if not summaries_accepted:
+                await wait_for_cleanup(
+                    self._send_and_complete(task_id, message, summary_notice, [], author_id,
+                                            question, summary_notice, False),
+                    label="文書返信の送信と完了記録",
+                )
+                return
 
             prompt_file = response_settings.prompt_file
             prompt = await load_persona_template(prompt_file)
             memory_category = await self._memory.route_category(question)
             memory_context, document_context = await self._memory.build_contexts(
                 memory_category, author_id, limit=max(DOCUMENT_MEMORY_CONTEXT_LIMIT, len(attachments)),
+                pending_summaries=summaries,
             )
             # 元の投稿は履歴から除く。受付後に編集された本文が履歴経由でプロンプトへ入ると、
             # 保存済みの質問だけを使っても入力検査を迂回できてしまう（#203）。
@@ -252,6 +267,7 @@ class DocumentService:
                 self._client.user,
                 HISTORY_LIMIT,
                 exclude_message_id=message.id,
+                is_blocked=self._is_blocked,
             )
             full_prompt = build_full_prompt(
                 prompt,
@@ -287,11 +303,13 @@ class DocumentService:
             response_text, accepted = await screen_bot_response_with_status(
                 response_text, self._ng_filter, self._moderator, log_label="文書応答"
             )
+            if accepted:
+                await self._memory.store_document_summaries(author_id, summaries)
 
             # 参考リンクは送信用テキストにのみ追記する（長期記憶にはノイズになるため含めない）
             reply_text = response_text
             if accepted and grounding_sources:
-                reply_text += format_grounding_sources(grounding_sources)
+                reply_text += format_grounding_sources(grounding_sources, self._ng_filter)
 
             # DiscordとDBは同じトランザクションにできない。送信開始を先に記録し、
             # 強制終了で配送結果が不明なら自動再送を止める。通常のキャンセルは記録開始から
@@ -324,6 +342,18 @@ class DocumentService:
                 except Exception as reply_error:
                     print(f"文書タスク失敗通知エラー: {reply_error}")
             return
+
+    def _mask_summary_data(self, value: Any) -> Any:
+        """要約と補足項目を保存前にマスクし、JSONのキーと構造は保つ。"""
+        if isinstance(value, str) and self._ng_filter is not None:
+            return self._ng_filter.mask_with_log(value, label="文書要約")
+        if isinstance(value, list):
+            return [self._mask_summary_data(item) for item in value]
+        if isinstance(value, dict):
+            # ハッシュは本文ではなく重複排除の識別子なので、元の指紋を保持する。
+            return {key: item if key == "document_hash" else self._mask_summary_data(item)
+                    for key, item in value.items()}
+        return value
 
     async def _send_and_complete(
         self, task_id: str, message: discord.Message, reply_text: str, grounding_sources: list,

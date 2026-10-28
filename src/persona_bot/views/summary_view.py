@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 import discord
 from discord import ui
@@ -77,6 +78,7 @@ async def generate_channel_summary(
     moderator: ContentModerator,
     ng_filter: NgWordFilter,
     usage: UsageTracker,
+    is_blocked: Callable[[int], bool] | None = None,
 ) -> tuple[bool, str]:
     """チャンネルの会話を議事録として要約する。
 
@@ -103,7 +105,7 @@ async def generate_channel_summary(
             "より短い期間を選んで再実行してください。"
         )
 
-    source_text = build_summary_source_text(messages, bot_user)
+    source_text = build_summary_source_text(messages, bot_user, is_blocked=is_blocked)
     line_count = len(source_text.splitlines()) if source_text.strip() else 0
     if line_count == 0:
         return False, f"この期間（{period.name}）には要約できる会話がありませんでした。"
@@ -230,6 +232,7 @@ class RunSummaryButton(ui.Button):
                 moderator=view.moderator,
                 ng_filter=view.ng_filter,
                 usage=view.usage,
+                is_blocked=view.blocked_user_check,
             )
 
             if not panel_operation_is_current(view, interaction):

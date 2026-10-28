@@ -41,12 +41,17 @@ def extract_affinity_changes(text: str) -> tuple[str, tuple[int, int] | None]:
         (本文, (機嫌の変化量, テンションの変化量))。タグが無ければ変化量は None を返し、
         本文は元のまま（余計な strip をしない）。
     """
-    # 本文がタグの表記を引用していても、末尾側に付いたメタデータを採用する。
+    # 本文中の引用は残し、末尾に連続するタグだけをメタデータとして扱う。
     matches = list(_AFFINITY_TAG_PATTERN.finditer(text))
-    if not matches:
+    if not matches or text[matches[-1].end():].strip():
         return text, None
     match = matches[-1]
-    cleaned = _AFFINITY_TAG_PATTERN.sub("", text).strip()
+    start = match.start()
+    for previous in reversed(matches[:-1]):
+        if text[previous.end():start].strip():
+            break
+        start = previous.start()
+    cleaned = text[:start].strip()
     return cleaned, (int(match.group(1)), int(match.group(2)))
 
 

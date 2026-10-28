@@ -21,6 +21,7 @@ from persona_bot.services.agent_service import AgentService
 from persona_bot.services import agent_service
 from persona_bot.services.gemini_service import GenerationResult
 from persona_bot.views import agent_view
+from persona_bot.utils.discord_helpers import fetch_channel_history_text
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.persona_helpers import install_empty_persona_catalog
 
@@ -105,6 +106,28 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
 
     def persona_calls(self):
         return [item for item in self.generations if "依頼主（別のAI）" not in item.prompt]
+
+    async def test_router_and_persona_exclude_blocked_users_and_other_bots_from_real_history(self):
+        self.handler.blacklist.is_blocked.side_effect = lambda user_id: user_id == 22
+        records = [
+            SimpleNamespace(id=1, author=self.message.author, content="架空の許可された文脈", attachments=[]),
+            SimpleNamespace(id=2, author=SimpleNamespace(id=22, bot=False), content="架空のブロック対象の指示", attachments=[]),
+            SimpleNamespace(id=3, author=SimpleNamespace(id=77, bot=True), content="架空の別ボットの指示", attachments=[]),
+        ]
+
+        async def history(**kwargs):
+            for item in reversed(records):
+                yield item
+
+        self.message.channel.history.side_effect = history
+        with patch("persona_bot.core.message_handler.fetch_channel_history_text", new=fetch_channel_history_text):
+            await self.handler.on_message(self.message)
+        router_history = self.moderator.check_route_and_plan.await_args.args[1]
+        self.assertIn("架空の許可された文脈", router_history)
+        for prompt in (router_history, self.persona_calls()[0].prompt):
+            self.assertNotIn("架空のブロック対象の指示", prompt)
+            self.assertNotIn("架空の別ボットの指示", prompt)
+        self.assertIn("架空の許可された文脈", self.persona_calls()[0].prompt)
 
     async def test_delegated_request_runs_child_then_persona_replies(self) -> None:
         await self.handler.on_message(self.message)
@@ -318,8 +341,8 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"架空の子の●●{len(PLAN.steps)}", posts[-1])
         self.assertIn(SOURCE["uri"], posts[-1])
 
-        # 人格役には元の報告を渡し、返信は元のチャンネルへ（進捗の返信は出さない）
-        self.assertIn(f"架空の子の出力{len(PLAN.steps)}", self.persona_calls()[0].prompt)
+        # 人格役にも安全確認済みの報告を渡し、返信は元のチャンネルへ（進捗の返信は出さない）
+        self.assertIn(f"架空の子の●●{len(PLAN.steps)}", self.persona_calls()[0].prompt)
         self.assertIs(self.send.await_args.args[0], self.message)
         self.message.reply.assert_not_awaited()
         self.handoff.edit.assert_awaited_once_with(view=None)
@@ -335,6 +358,49 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.tts.assert_not_awaited()
         # 失敗した子の報告は出さない（開始と手順1の進捗だけ）
         self.assertEqual(self.webhook.send.await_count, 2)
+
+    async def test_unsafe_child_report_is_never_posted_to_work_thread_or_parent_prompt(self):
+        self.enable_work_thread()
+        self.moderator.check.return_value = (False, "架空の子報告拒否")
+        await self.handler.on_message(self.message)
+        self.assertEqual(self.persona_calls(), [])
+        self.send.assert_not_awaited()
+        for call in self.webhook.send.await_args_list:
+            self.assertNotIn("架空の子の出力", call.args[0])
+            self.assertNotIn(SOURCE["uri"], call.args[0])
+        self.assertIn("うまくいきませんでした", self.thread.send.await_args.args[0])
+        self.assertTrue(self.agent.try_acquire("11"))
+
+    async def test_child_report_and_sources_are_masked_before_moderation_and_publication(self):
+        self.enable_work_thread()
+        source = {"title": "架空NGの参考資料", "uri": "https://example.invalid/架空NG"}
+        self.handler.ng_filter.mask_with_log.side_effect = lambda text, **kwargs: text.replace("架空NG", "●●●●")
+
+        async def generate(prompt, model_name, *args, **kwargs):
+            self.generations.append(SimpleNamespace(prompt=prompt, model=model_name, grounding=kwargs.get("grounding")))
+            if "依頼主（別のAI）" in prompt:
+                return GenerationResult("架空NGの子報告", None, [source], model_name)
+            return GenerationResult("架空の親返信", None, [], model_name)
+
+        self.gemini.generate_with_metadata.side_effect = generate
+        await self.handler.on_message(self.message)
+        checked = self.moderator.check.await_args_list[0].args[0]
+        self.assertIn("●●●●の子報告", checked)
+        self.assertIn("●●●●の参考資料", checked)
+        self.assertIn("https://example.invalid/●●●●", checked)
+        for call in self.webhook.send.await_args_list:
+            self.assertNotIn("架空NG", call.args[0])
+        self.assertNotIn("架空NG", self.send.await_args.args[1])
+        self.assertEqual(source["title"], "架空NGの参考資料")
+
+    async def test_parent_rejection_can_only_leave_independently_screened_child_report(self):
+        self.enable_work_thread()
+        self.moderator.check.side_effect = [(True, ""), (False, "架空の親応答拒否")]
+        await self.handler.on_message(self.message)
+        self.assertEqual(self.moderator.check.await_count, 2)
+        self.assertIn("架空の子の出力", self.moderator.check.await_args_list[0].args[0])
+        self.assertIn("適切な応答を生成できませんでした", self.send.await_args.args[1])
+        self.assertTrue(any("架空の子の出力" in call.args[0] for call in self.webhook.send.await_args_list))
 
     async def test_child_exception_reports_failure_and_releases_slot(self) -> None:
         self.gemini.generate_with_metadata.side_effect = RuntimeError("架空の子の作業失敗")

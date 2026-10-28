@@ -7,10 +7,13 @@ import discord
 
 from persona_bot.core.background import TaskOwner, run_in_thread, spawn, task_scope, wait_for_task
 from persona_bot.services.genai_client import close_genai_client
+from persona_bot.utils.discord_helpers import REPLY_ALLOWED_MENTIONS
 
 
 class PersonaClient(discord.Client):
     def __init__(self, *, genai_client: Any, database: Any = None, **options: Any) -> None:
+        # 個別の通知先を明示しない送信でも、本文中のメンションでは通知しない。
+        options.setdefault("allowed_mentions", REPLY_ALLOWED_MENTIONS)
         super().__init__(**options)
         self._genai_client = genai_client
         self._database = database

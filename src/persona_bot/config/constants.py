@@ -569,6 +569,8 @@ TTS_CHANNELS = 2
 # gTTS への退避も対象。期限超過・キャンセル時も同期処理の回収を待つため、
 # 複数のHTTP要求を含む退避処理では、この秒数を超えて終了を待つ場合がある。
 TTS_TIMEOUT_SECONDS = 30.0
+# 主エンジン単独の待機上限。全体期限までに gTTS へ退避する時間を残す。
+TTS_EDGE_TIMEOUT_SECONDS = 10.0
 # gTTS の各HTTP要求に渡す接続・読み取り待ちの上限（秒）。
 # 外側の合成期限だけでは同期通信を中断できないため、通信自体にも期限を設ける。
 TTS_GTTS_CONNECT_TIMEOUT_SECONDS = 5.0

@@ -6,6 +6,12 @@ from unittest.mock import AsyncMock, Mock
 import discord
 
 
+def make_owner_client(*, owner_id: int = 11) -> SimpleNamespace:
+    """ログイン時と再取得時のアプリ所有者を、実通信なしで切り替えられるようにする。"""
+    application = SimpleNamespace(owner=SimpleNamespace(id=owner_id), team=None)
+    return SimpleNamespace(application=application, application_info=AsyncMock(return_value=application))
+
+
 def make_member(*, admin: bool, fresh_admin: bool | None = None, user_id: int = 11) -> Mock:
     """ボタンを押した時点の Member（写し）と、取り直すと返る別インスタンスの Member を作る。
 

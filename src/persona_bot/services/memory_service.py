@@ -61,10 +61,44 @@ def default_projects_memory() -> dict[str, Any]:
     return {"_schema": _PROJECTS_SCHEMA, "users": {}}
 
 
-def merge_anniversary_profile(snapshot: dict[str, Any], compacted: dict[str, Any]) -> dict[str, Any]:
-    """入力を変更せず、圧縮結果へ既存の記念日をラベル単位で引き継ぐ。"""
+def _anniversaries_by_label(profile: dict[str, Any]) -> dict[str, Any]:
+    """生成待機中の更新を比較するため、有効な記念日をラベルで束ねる。"""
+    entries = profile.get(ANNIVERSARY_PROFILE_KEY)
+    result = {}
+    if isinstance(entries, list):
+        for entry in entries:
+            anniversary = parse_anniversary(entry)
+            if anniversary is not None:
+                result[anniversary[0]] = entry
+    return result
+
+
+def merge_anniversary_profile(
+    snapshot: dict[str, Any], compacted: dict[str, Any], *, previous_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """入力を変更せず既存の記念日を引き継ぎ、生成待機中の編集を優先する。"""
     result = copy.deepcopy(compacted)
     incoming = compacted.get(ANNIVERSARY_PROFILE_KEY)
+    if previous_snapshot is not None and isinstance(incoming, list):
+        # モデルは入力時の古い日付も出力するため、最新値との単純な統合では訂正が戻る。
+        # 未変更ラベルへのモデルの訂正は採用し、同時に編集されたラベルだけを保護する。
+        previous = _anniversaries_by_label(previous_snapshot)
+        current = _anniversaries_by_label(snapshot)
+        changed_labels = {
+            label for label in previous.keys() | current.keys()
+            if previous.get(label) != current.get(label)
+        }
+        if not isinstance(snapshot.get(ANNIVERSARY_PROFILE_KEY), list) and (
+            snapshot.get(ANNIVERSARY_PROFILE_KEY) != previous_snapshot.get(ANNIVERSARY_PROFILE_KEY)
+            or (ANNIVERSARY_PROFILE_KEY in snapshot) != (ANNIVERSARY_PROFILE_KEY in previous_snapshot)
+        ):
+            # キー全体の削除や手書き途中の値も、古い生成結果で元へ戻さない。
+            incoming = None
+        else:
+            incoming = [
+                entry for entry in incoming
+                if (anniversary := parse_anniversary(entry)) is None or anniversary[0] not in changed_labels
+            ]
     if not isinstance(incoming, list):
         if ANNIVERSARY_PROFILE_KEY in snapshot:
             result[ANNIVERSARY_PROFILE_KEY] = copy.deepcopy(snapshot[ANNIVERSARY_PROFILE_KEY])
@@ -159,12 +193,15 @@ class MemoryService:
 
     async def build_contexts(
         self, category: str, user_id: str, limit: int = DOCUMENT_MEMORY_CONTEXT_LIMIT,
+        *, pending_summaries: list[dict[str, Any]] | None = None,
     ) -> tuple[str, str]:
         """同じスナップショットから通常記憶と文書記憶を作り、JSONを1回だけ読む。"""
         async with self.io_lock:
-            return await run_in_thread(self._build_contexts, category, str(user_id), limit)
+            return await run_in_thread(self._build_contexts, category, str(user_id), limit, pending_summaries)
 
-    def _build_contexts(self, category: str, user_id: str, limit: int) -> tuple[str, str]:
+    def _build_contexts(
+        self, category: str, user_id: str, limit: int, pending_summaries: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, str]:
         self.ensure_storage()
         wrapper = self._load_projects_wrapper()
         projects = self._user_projects(wrapper, user_id)
@@ -177,6 +214,9 @@ class MemoryService:
                 ensure_ascii=False, indent=2,
             )
         summaries = projects.get("document_summaries", [])
+        if pending_summaries:
+            # 今回の文書は応答の安全確認が済むまで保存せず、この依頼だけの文脈へ足す。
+            summaries = self._merge_document_summaries(summaries, pending_summaries)
         lines = []
         if isinstance(summaries, list) and limit > 0:
             for summary in summaries[-limit:]:
@@ -263,9 +303,17 @@ class MemoryService:
         if not isinstance(user_projects, dict):
             user_projects = {}
             wrapper["users"][user_id] = user_projects
-        summaries = user_projects.get("document_summaries", [])
+        summaries = self._merge_document_summaries(user_projects.get("document_summaries", []), incoming)
+        user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
+        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
+
+    @staticmethod
+    def _merge_document_summaries(summaries: Any, incoming: list[dict[str, Any]]) -> list:
+        """保存前の文脈と保存時で、同名・同内容の置換規則を揃える。"""
         if not isinstance(summaries, list):
             summaries = []
+        else:
+            summaries = list(summaries)
         for summary_data in incoming:
             # 再試行で同じファイルを再解析しても、同名・同内容の要約を重複させない。
             digest = summary_data.get("document_hash")
@@ -276,8 +324,7 @@ class MemoryService:
                     != (digest, summary_data.get("document_name"))
                 ]
             summaries.append(summary_data)
-        user_projects["document_summaries"] = summaries[-DOCUMENT_SUMMARY_LIMIT:]
-        write_json_file(PROJECTS_MEMORY_PATH, wrapper)
+        return summaries
 
     # ---- 記憶圧縮（ユーザー単位） -------------------------------------------
 
@@ -351,8 +398,9 @@ class MemoryService:
 
         **Gemini 呼び出し（`_compact_memory`）の間は io_lock を手放す**（他ユーザーの
         会話ログ追記を数十秒ブロックしないため）。そのぶん「待っている間に増えたもの」を
-        巻き込まないよう、次の2点を守ること:
+        巻き込まないよう、次の3点を守ること:
           - pending_log の削除は圧縮に使った行の最大 id までに限定する。
+          - 記念日は保存直前のプロフィールと統合し、待機中の追加や訂正を引き継ぐ。
           - projects.json は書き込み直前に読み直し、文書要約はその最新の一覧を引き継ぐ。
 
         **文書要約（document_summaries）は LLM へ渡さない。** 圧縮プロンプトは
@@ -406,14 +454,20 @@ class MemoryService:
             )
             return
 
-        profile_data = merge_anniversary_profile(profile_snapshot, profile_data)
         async with self.io_lock:
-            await run_in_thread(self._save_compacted_memory, user_id, profile_data, projects_data, max_entry_id)
+            await run_in_thread(
+                self._save_compacted_memory, user_id, profile_data, projects_data, max_entry_id, profile_snapshot,
+            )
 
     def _save_compacted_memory(
         self, user_id: str, profile_data: dict[str, Any], projects_data: dict[str, Any], max_entry_id: int,
+        profile_snapshot: dict[str, Any],
     ) -> None:
         """io_lock の下で全保存を完了し、途中のキャンセルでは分断しない。"""
+        # 生成を待つ間に更新された記念日を、古いスナップショットで巻き戻さない。
+        profile_data = merge_anniversary_profile(
+            self._db.profile_load(user_id), profile_data, previous_snapshot=profile_snapshot,
+        )
         # 最新の文書要約と他ユーザーの記憶を引き継ぐ。DB確定失敗時の復元用にも残す。
         wrapper = self._load_projects_wrapper()
         original = copy.deepcopy(wrapper)

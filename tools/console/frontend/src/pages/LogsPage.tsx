@@ -5,7 +5,7 @@ import { Button, ConnectedButtonGroup, IconButton, InlineError, StatusChip, type
 import { formatClock } from "../format";
 import type { LogStream } from "../hooks";
 import { LEVEL_LABELS, classifyEntries, displayMessage, type LogLevel } from "../logs";
-import { conversationLines, redactLogLine, redactOperationalMessages, usePrivacy } from "../privacy";
+import { conversationLines, redactError, redactLogLine, redactOperationalMessages, usePrivacy } from "../privacy";
 import type { Profile } from "../types";
 import { NotConnected } from "./shared";
 
@@ -96,7 +96,7 @@ export function LogsPage({
 
       {(stream.status === "error" || stream.status === "ended") && (
         <div className="log-reconnect">
-          <InlineError>{privacy.redact(stream.message) || "ログの接続が終了しました。"}</InlineError>
+          <InlineError>{redactError(stream.message, stream.messageSafe, privacy) || "ログの接続が終了しました。"}</InlineError>
           <Button icon="refresh" onClick={stream.retry}>ログを再接続</Button>
         </div>
       )}
@@ -163,13 +163,13 @@ function StreamIndicator({ stream }: { stream: LogStream }) {
       return <StatusChip tone="info" label="接続中…" />;
     case "error":
       return (
-        <span title={privacy.redact(stream.message) || undefined}>
+        <span title={redactError(stream.message, stream.messageSafe, privacy) || undefined}>
           <StatusChip tone="critical" label="接続エラー" />
         </span>
       );
     case "ended":
       return (
-        <span title={privacy.redact(stream.message) || undefined}>
+        <span title={redactError(stream.message, stream.messageSafe, privacy) || undefined}>
           <StatusChip tone="serious" label="受信終了" />
         </span>
       );

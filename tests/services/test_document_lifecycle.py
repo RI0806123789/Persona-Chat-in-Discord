@@ -91,6 +91,54 @@ class DocumentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         for attachment in self.message.attachments:
             self.assertIn(f"架空の要約 {attachment.filename}", prompt)
 
+    async def test_final_response_rejection_keeps_document_memory_unchanged(self):
+        await self.memory.store_document_summary("11", {"document_name": "old.txt", "summary": "架空の既存要約"})
+        path = memory_service.PROJECTS_MEMORY_PATH
+        before = path.read_bytes()
+        self.service._moderator = SimpleNamespace(check=AsyncMock(side_effect=[(True, ""), (False, "架空の拒否")]))
+        with patch.object(self.memory, "store_document_summaries", wraps=self.memory.store_document_summaries) as store:
+            await self.service._process_task(self.task)
+        store.assert_not_awaited()
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn("適切な応答を生成できませんでした", self.sent.await_args.args[1])
+        self.assertEqual(self.db.pending_fetch_entries("11"), [])
+
+    async def test_unsafe_summary_is_not_saved_or_passed_to_final_generation(self):
+        self.service._moderator = SimpleNamespace(check=AsyncMock(return_value=(False, "架空の要約拒否")))
+        with patch.object(self.memory, "store_document_summaries", wraps=self.memory.store_document_summaries) as store:
+            await self.service._process_task(self.task)
+        store.assert_not_awaited()
+        self.gemini.generate.assert_not_awaited()
+        self.assertIn("適切な応答を生成できませんでした", self.sent.await_args.args[1])
+        self.assertFalse(memory_service.PROJECTS_MEMORY_PATH.exists())
+
+    async def test_safe_masked_summaries_are_available_before_save_and_persist_after_screening(self):
+        self.service._ng_filter = SimpleNamespace(mask_with_log=Mock(
+            side_effect=lambda text, **kwargs: text.replace("架空NG", "●●●●"),
+        ))
+        self.service._process_attachment.side_effect = None
+        self.service._process_attachment.return_value = {
+            "document_name": "fictional.txt", "summary": "架空NGの要約", "key_points": ["架空NGの補足"],
+            "document_hash": "fictional-hash",
+        }
+        self.message.attachments = self.message.attachments[:1]
+        checked = []
+
+        async def check(text, **kwargs):
+            path = memory_service.PROJECTS_MEMORY_PATH
+            if path.exists():
+                self.assertNotIn("fictional.txt", path.read_text(encoding="utf-8"))
+            checked.append(text)
+            return True, ""
+
+        self.service._moderator = SimpleNamespace(check=AsyncMock(side_effect=check))
+        await self.service._process_task(self.task)
+        self.assertEqual(len(checked), 2)
+        self.assertIn("●●●●の要約", self.gemini.generate.await_args.args[0])
+        saved = memory_service.PROJECTS_MEMORY_PATH.read_text(encoding="utf-8")
+        self.assertIn("●●●●の補足", saved)
+        self.assertNotIn("架空NG", saved)
+
     async def test_log_failure_after_answer_still_saves_completed_state(self) -> None:
         with patch.object(self.memory, "append_pending_log", side_effect=OSError("架空の記憶追記失敗")), patch.object(
             self.service, "_update_task", wraps=self.service._update_task,

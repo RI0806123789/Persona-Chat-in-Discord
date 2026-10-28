@@ -43,7 +43,7 @@ def make_guild(*, stages: int = 2, voices: int = 2):
 
 
 def make_interaction(*, admin: bool = True, fresh_admin: bool | None = None, guild=None):
-    return SimpleNamespace(
+    interaction = SimpleNamespace(
         user=make_member(admin=admin, fresh_admin=fresh_admin),
         guild=guild,
         extras={},
@@ -53,6 +53,10 @@ def make_interaction(*, admin: bool = True, fresh_admin: bool | None = None, gui
         edit_original_response=AsyncMock(),
         original_response=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())),
     )
+    async def defer(**kwargs):
+        interaction.response.is_done.return_value = True
+    interaction.response.defer.side_effect = defer
+    return interaction
 
 
 def child(view, item_type):
@@ -115,6 +119,31 @@ class SettingsEntryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(panel.is_admin, admin)
                 self.assertIs(any(isinstance(item, OpenAutonomousChannelButton) for item in panel.children), admin)
 
+    async def test_revoked_administrator_cannot_open_channel_panel(self) -> None:
+        view = self.settings_view(is_admin=True)
+        interaction = make_interaction(guild=self.guild, fresh_admin=False)
+        with patch("persona_bot.views.settings_view.AutonomousChannelView") as panel:
+            await child(view, OpenAutonomousChannelButton).callback(interaction)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        interaction.user.guild.fetch_member.assert_awaited_once_with(interaction.user.id)
+        panel.assert_not_called()
+        edited = interaction.edit_original_response.await_args.kwargs
+        self.assertIsNone(edited["view"])
+        self.assertIn("管理者のみ", edited["content"])
+        self.assertTrue(view.is_finished())
+
+    async def test_member_lookup_failure_denies_channel_panel_after_defer(self) -> None:
+        view = self.settings_view(is_admin=True)
+        interaction = make_interaction(guild=self.guild)
+        async def unavailable(user_id):
+            interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+            raise RuntimeError("架空の取得失敗")
+        interaction.user.guild.fetch_member.side_effect = unavailable
+        with patch("builtins.print"), patch("persona_bot.views.settings_view.AutonomousChannelView") as panel:
+            await child(view, OpenAutonomousChannelButton).callback(interaction)
+        panel.assert_not_called()
+        self.assertIsNone(interaction.edit_original_response.await_args.kwargs["view"])
+
     async def test_administrator_swaps_to_panel_and_keeps_blacklist_check(self) -> None:
         view = self.settings_view(is_admin=True)
         blocked = Mock(return_value=False)
@@ -122,13 +151,15 @@ class SettingsEntryTests(unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(guild=self.guild)
         await child(view, OpenAutonomousChannelButton).callback(interaction)
 
-        panel = interaction.response.edit_message.await_args.kwargs["view"]
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        interaction.user.guild.fetch_member.assert_awaited_once_with(interaction.user.id)
+        panel = interaction.edit_original_response.await_args.kwargs["view"]
         self.addCleanup(panel.stop)
         self.assertIsInstance(panel, AutonomousChannelView)
         self.assertIs(panel.blocked_user_check, blocked)
         self.assertIs(panel.guild, self.guild)
         self.assertTrue(view.is_finished())
-        self.assertIn("配信先パネル", interaction.response.edit_message.await_args.kwargs["content"])
+        self.assertIn("配信先パネル", interaction.edit_original_response.await_args.kwargs["content"])
 
 
 class AutonomousChannelPanelTests(unittest.IsolatedAsyncioTestCase):

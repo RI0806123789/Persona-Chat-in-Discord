@@ -5,9 +5,98 @@ data/ng/NG_WORD.txt と data/ng/NG_WORD_private.txt から1行ずつNGワード�
 """
 
 import re
+import unicodedata
 from pathlib import Path
 
 from persona_bot.config.constants import NG_WORD_PATH, NG_WORD_PRIVATE_PATH
+
+
+def _is_ignored_character(character: str) -> bool:
+    """ゼロ幅・非表示の制御文字を除く。タブ・改行などの空白は語の境界に残す。"""
+    codepoint = ord(character)
+    return (
+        (unicodedata.category(character) in {"Cc", "Cf"} and not character.isspace())
+        or codepoint == 0x034F  # 結合書記素接合子も照合の境界にしない。
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x180B <= codepoint <= 0x180D
+        or codepoint == 0x180F
+    )
+
+
+def _fold_kana(text: str) -> str:
+    """全半角を揃えた後のカタカナを、対応するひらがなへ統一する。"""
+    folded: list[str] = []
+    for character in text.casefold():
+        codepoint = ord(character)
+        if 0x30A1 <= codepoint <= 0x30F6 or codepoint in {0x30FD, 0x30FE}:
+            folded.append(chr(codepoint - 0x60))
+        elif 0x30F7 <= codepoint <= 0x30FA:
+            # ヷ〜ヺには合成済みのひらがながないので、基底文字と結合濁点に分ける。
+            folded.append("わゐゑを"[codepoint - 0x30F7] + "\u3099")
+        else:
+            folded.append(character)
+    return "".join(folded)
+
+
+def _normalize_for_matching(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """照合文と、各文字が由来する元本文の区間を返す。
+
+    NFKCは文字ごとに行うと半角カナ＋濁点や分解済み文字を合成できない。
+    合成に関わる単位をstdlibの正規化でまとめ、単位の全出力へ元の区間を付ける。
+    展開された文字の一部だけが一致した場合も、元の文字を丸ごと伏せられる。
+    """
+    normalized_parts: list[str] = []
+    source_spans: list[tuple[int, int]] = []
+    pending: list[str] = []
+    start = end = 0
+
+    def append_pending(normalized: str) -> None:
+        folded = _fold_kana(normalized)
+        normalized_parts.append(folded)
+        source_spans.extend([(start, end)] * len(folded))
+
+    for index, character in enumerate(text):
+        if _is_ignored_character(character):
+            continue
+        if not pending:
+            pending = [character]
+            start, end = index, index + 1
+            continue
+        # 非スターターは後から並び替え・合成されるため、まとめて一度だけ正規化する。
+        if unicodedata.combining(unicodedata.normalize("NFKD", character)[0]):
+            pending.append(character)
+            end = index + 1
+            continue
+        previous = unicodedata.normalize("NFKC", "".join(pending))
+        following = unicodedata.normalize("NFKC", character)
+        together = previous + following
+        if unicodedata.normalize("NFKC", together) != together:
+            # Hangulや、結合クラスが0の文字同士の合成もstdlibに任せる。
+            pending.append(character)
+            end = index + 1
+            continue
+        append_pending(previous)
+        pending = [character]
+        start, end = index, index + 1
+    if pending:
+        append_pending(unicodedata.normalize("NFKC", "".join(pending)))
+    return "".join(normalized_parts), source_spans
+
+
+def _source_ranges(text: str, pattern: re.Pattern[str]) -> list[tuple[int, int]]:
+    """正規化後の一致を、ゼロ幅文字も含む元本文の連続した区間へ戻す。"""
+    normalized, spans = _normalize_for_matching(text)
+    return [(spans[match.start()][0], spans[match.end() - 1][1])
+            for match in pattern.finditer(normalized)]
+
+
+def _mask_ranges(text: str, ranges: list[tuple[int, int]]) -> str:
+    """展開で重複する区間を含め、元の文字数・周囲の文面を変えずに伏せる。"""
+    characters = list(text)
+    for start, end in ranges:
+        characters[start:end] = ["●"] * (end - start)
+    return "".join(characters)
 
 
 def _load_words_from_file(file_path: Path) -> list[str]:
@@ -40,23 +129,25 @@ def load_ng_words() -> list[str]:
     seen: set[str] = set()
     merged: list[str] = []
     for word in public_words + private_words:
-        lower = word.lower()
-        if lower not in seen:
-            seen.add(lower)
+        normalized, _spans = _normalize_for_matching(word)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
             merged.append(word)
     return merged
 
 
 def _build_pattern(ng_words: list[str]) -> re.Pattern[str] | None:
-    """NGワードリストから大文字小文字を無視した正規表現パターンを構築する。
+    """登録語も本文と同じ正規化を通し、大文字小文字を無視したパターンを構築する。
 
     `|` は左の選択肢から順にマッチするため、長い語を先に並べて最長一致を
     優先する（短い語が先だと「ワード」と「ワード表現」の両方がある場合に
     「ワード表現」が部分マスクされてしまう）。
     """
-    if not ng_words:
+    normalized_words = dict.fromkeys(_normalize_for_matching(word)[0] for word in ng_words)
+    normalized_words.pop("", None)
+    if not normalized_words:
         return None
-    escaped = [re.escape(word) for word in sorted(ng_words, key=len, reverse=True)]
+    escaped = [re.escape(word) for word in sorted(normalized_words, key=len, reverse=True)]
     return re.compile("|".join(escaped), re.IGNORECASE)
 
 
@@ -90,7 +181,8 @@ class NgWordFilter:
         pattern = self._snapshot[1]
         if pattern is None:
             return False
-        return bool(pattern.search(text))
+        normalized, _spans = _normalize_for_matching(text)
+        return bool(pattern.search(normalized))
 
     def find_ng_words(self, text: str) -> list[str]:
         """テキスト中に含まれるNGワードの一覧を、重複を除いて最初に現れた順で返す。
@@ -101,14 +193,14 @@ class NgWordFilter:
         pattern = self._snapshot[1]
         if pattern is None:
             return []
-        return list(dict.fromkeys(match.group() for match in pattern.finditer(text)))
+        return list(dict.fromkeys(text[start:end] for start, end in _source_ranges(text, pattern)))
 
     def mask_ng_words(self, text: str) -> str:
         """テキスト中のNGワードを伏字(●)に置換して返す。"""
         pattern = self._snapshot[1]
         if pattern is None:
             return text
-        return pattern.sub(lambda m: "●" * len(m.group()), text)
+        return _mask_ranges(text, _source_ranges(text, pattern))
 
     def mask_with_log(self, text: str, *, label: str) -> str:
         """NGワードが含まれていればログに出したうえでマスクし、無ければ元のテキストを返す。
@@ -125,8 +217,13 @@ class NgWordFilter:
         Returns:
             NGワードを含む場合はマスク済みのテキスト。含まない場合は加工しない元のテキスト。
         """
-        if not self.contains_ng_word(text):
+        # ログとマスクを同じスナップショット・同じ一致区間から作る。
+        pattern = self._snapshot[1]
+        if pattern is None:
             return text
-        detected = self.find_ng_words(text)
+        ranges = _source_ranges(text, pattern)
+        if not ranges:
+            return text
+        detected = list(dict.fromkeys(text[start:end] for start, end in ranges))
         print(f"NGワード検出 ({label}): {detected}")
-        return self.mask_ng_words(text)
+        return _mask_ranges(text, ranges)

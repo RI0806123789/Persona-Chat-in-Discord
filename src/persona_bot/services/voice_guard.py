@@ -245,7 +245,12 @@ class VoiceGuard:
             if voice_client.is_connected():
                 return voice_client
         guild = self._client.get_guild(guild_id)
-        if guild is not None and voice_client is not None and home is not None:
+        if (guild is not None and voice_client is not None and home is not None
+                and guild.voice_client is voice_client and self._homes.get(guild_id) is home):
+            # 未接続でも配信の締めと所有ステージ枠の回収を先に行う。
+            # 開始待機中など配信側が処理しない場合は、残った同じ接続だけを切断する。
+            if self._autonomous.manages_connection(guild_id):
+                await self._autonomous.handle_external_move(guild)
             await self._leave(
                 guild, voice_client, "移動後の接続が安定しなかった", expected_home=home,
             )

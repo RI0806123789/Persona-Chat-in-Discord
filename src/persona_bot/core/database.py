@@ -631,7 +631,10 @@ class Database:
                 return
 
             write_json_file(path, {})
-            print(f"データベース: profile.json の内容 {absorbed} を profile テーブルへ追加しました。")
+            print(
+                f"データベース: profile.json から {len(absorbed)} 人分・"
+                f"{sum(len(keys) for keys in absorbed.values())} 項目を profile テーブルへ追加しました。"
+            )
         except json.JSONDecodeError as error:
             print(f"データベース: profile.json が JSON として読めないため取り込みをスキップします: {error}")
         except Exception as error:

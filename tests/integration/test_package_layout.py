@@ -105,6 +105,9 @@ class PackageLayoutTests(unittest.TestCase):
                     assert {command.name for command in namespace['tree'].get_commands()} == {'functions', 'join', 'leave'}
                     assert Path('../data/memory/bot.db').is_file()
                     assert not Path('../memory').exists()
+                    # 履歴の除外判定を、実際に配線した全サービスへ同じインスタンスから渡す。
+                    for name in ('documents', 'auto_topic', 'autonomous'):
+                        assert namespace[name]._is_blocked.__self__ is namespace['blacklist']
                     connect.assert_not_called()
                     dns.assert_not_called()
                 finally:

@@ -20,10 +20,9 @@ from persona_bot.config.constants import (
     AGENT_TASK_MAX_CHARS,
     AGENT_TRIGGER_PATTERN,
 )
+from persona_bot.utils.normalization import normalize_extracted_text
 
 _TRIGGER = re.compile(AGENT_TRIGGER_PATTERN, re.IGNORECASE)
-# ロールや手順名は進捗メッセージ（1行）に差し込むため、改行や連続した空白を1つにまとめる。
-_WHITESPACE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
@@ -48,13 +47,6 @@ def requests_subagent(text: str) -> bool:
     （「サブエージェントって何？」など）ため、最終的な判断はルーターが行う。
     """
     return AGENT_ENABLED and bool(text) and _TRIGGER.search(text) is not None
-
-
-def _clean_text(value: Any, limit: int, *, single_line: bool = False) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = _WHITESPACE.sub(" ", value).strip() if single_line else value.strip()
-    return text[:limit].rstrip()
 
 
 def _normalize_flag(value: Any) -> bool | None:
@@ -83,14 +75,14 @@ def normalize_agent_plan(value: Any) -> AgentPlan | None:
         return None
     if not delegate:
         return AgentPlan(delegate=False)
-    role = _clean_text(value.get("role"), AGENT_ROLE_MAX_CHARS, single_line=True)
-    task = _clean_text(value.get("task"), AGENT_TASK_MAX_CHARS)
+    role = normalize_extracted_text(value.get("role"), AGENT_ROLE_MAX_CHARS)
+    task = normalize_extracted_text(value.get("task"), AGENT_TASK_MAX_CHARS)
     if not task:
         return None
     raw_steps = value.get("steps")
     steps = tuple(
         step for step in (
-            _clean_text(item, AGENT_STEP_NAME_MAX_CHARS, single_line=True)
+            normalize_extracted_text(item, AGENT_STEP_NAME_MAX_CHARS)
             for item in (raw_steps if isinstance(raw_steps, list) else [])
         ) if step
     )[:AGENT_MAX_STEPS]
@@ -98,6 +90,6 @@ def normalize_agent_plan(value: Any) -> AgentPlan | None:
         delegate=True,
         role=role or "調査担当",
         task=task,
-        expected_output=_clean_text(value.get("expected_output"), AGENT_EXPECTED_OUTPUT_MAX_CHARS),
+        expected_output=normalize_extracted_text(value.get("expected_output"), AGENT_EXPECTED_OUTPUT_MAX_CHARS),
         steps=steps or ("依頼された作業",),
     )

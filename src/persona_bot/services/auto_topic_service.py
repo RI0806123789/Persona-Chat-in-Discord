@@ -1,6 +1,6 @@
 import calendar
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import discord
 
@@ -63,6 +63,8 @@ class AutoTopicService:
         ng_filter: NgWordFilter,
         usage: UsageTracker,
         db: Database,
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> None:
         self._client = client
         self._state = state
@@ -72,6 +74,7 @@ class AutoTopicService:
         self._ng_filter = ng_filter
         self._usage = usage
         self._db = db
+        self._is_blocked = is_blocked
         self._tz = resolve_timezone(ANNIVERSARY_TIMEZONE, purpose="記念日の判定")
 
     # ==========================================================================
@@ -189,6 +192,7 @@ class AutoTopicService:
             guild_settings.channel_reset_points.get(channel.id),
             self._client.user,
             AUTO_TOPIC_HISTORY_LIMIT,
+            is_blocked=self._is_blocked,
         )
         # 記憶はユーザー別に分離されており、特定ユーザーの個人記憶（profile）を
         # 共有チャンネルへの話題提供に使うと、その人の私的な情報が他の参加者へ
@@ -478,6 +482,7 @@ class AutoTopicService:
             guild_settings.channel_reset_points.get(channel.id),
             self._client.user,
             ANNIVERSARY_HISTORY_LIMIT,
+            is_blocked=self._is_blocked,
         )
         full_prompt = build_anniversary_prompt(persona_prompt, member.display_name, label, history_text)
 

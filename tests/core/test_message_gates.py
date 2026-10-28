@@ -160,6 +160,25 @@ class MessageGateTests(unittest.IsolatedAsyncioTestCase):
 
     # ---- 文書の受付 ------------------------------------------------------------
 
+    async def test_reminder_confirmation_only_notifies_the_request_author(self) -> None:
+        body = "@everyone @here <@&22> <@33> 架空のNG表現"
+        request = {"at": "2026-01-02T09:00:00", "message": body}
+        confirmation = f"⏰ に「{body}」をお知らせします。"
+        masked = confirmation.replace("架空のNG表現", "●●●")
+        self.moderator.check_and_route.return_value = (True, "", "none", request)
+        self.handler.reminders.create_from_request.return_value = confirmation
+        self.handler.ng_filter.mask_with_log = Mock(return_value=masked)
+
+        await self.handler.on_message(self.message)
+
+        self.handler.reminders.create_from_request.assert_awaited_once_with(self.message, request)
+        self.handler.ng_filter.mask_with_log.assert_called_once_with(confirmation, label="リマインダー登録確認")
+        self.message.reply.assert_awaited_once()
+        self.assertEqual(self.message.reply.await_args.args, (masked,))
+        mentions = self.message.reply.await_args.kwargs["allowed_mentions"].to_dict()
+        self.assertEqual(mentions, {"parse": [], "replied_user": True})
+        self.gemini.generate_with_metadata.assert_not_awaited()
+
     async def test_document_reply_depends_on_queue_admission(self) -> None:
         # 未処理件数の上限で断った文書に「受付完了」を返さない（#202）。
         self.message.attachments = [self.attachment("fictional.pdf", "application/pdf")]

@@ -88,6 +88,18 @@ class AnniversaryProfileMergeTests(unittest.TestCase):
         result = merge_anniversary_profile(self.snapshot, compacted)
         self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], [corrected, self.other])
 
+    def test_concurrently_added_label_takes_priority_over_generated_date(self):
+        added = {"label": "架空の新しい記念日", "month": 2, "day": 29}
+        latest = {ANNIVERSARY_PROFILE_KEY: [self.birthday, added]}
+        generated = {ANNIVERSARY_PROFILE_KEY: [self.birthday, {**added, "day": 28}]}
+        original_latest, original_generated = deepcopy(latest), deepcopy(generated)
+        result = merge_anniversary_profile(latest, generated, previous_snapshot={
+            ANNIVERSARY_PROFILE_KEY: [self.birthday],
+        })
+        self.assertEqual(result[ANNIVERSARY_PROFILE_KEY], [self.birthday, added])
+        self.assertEqual(latest, original_latest)
+        self.assertEqual(generated, original_generated)
+
 
 class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -107,6 +119,72 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.db.initialize()
         self.addCleanup(self.db.close)
         self.service = MemoryService(None, None, self.db)
+
+    async def test_anniversaries_use_latest_profile_after_compaction_wait(self):
+        birthday = {"label": "誕生日", "month": 5, "day": 1}
+        corrected = {**birthday, "day": 2}
+        added = {"label": "架空の記念日", "month": 8, "day": 15}
+        other_profile = {ANNIVERSARY_PROFILE_KEY: [birthday], "趣味": "別の趣味"}
+        self.db.profile_replace_all("test-user", {ANNIVERSARY_PROFILE_KEY: [birthday]})
+        self.db.profile_replace_all("other-user", other_profile)
+        await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
+        started = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def compact(*args):
+            self.assertFalse(self.service.io_lock.locked())
+            started.set()
+            await resume.wait()
+            return {"職業": "架空の職業"}, {}
+
+        self.service._compact_memory = AsyncMock(side_effect=compact)
+        task = asyncio.create_task(self.service.flush_if_needed(force=True))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            async with self.service.io_lock:
+                self.db.profile_replace_all("test-user", {ANNIVERSARY_PROFILE_KEY: [corrected, added]})
+            resume.set()
+            await asyncio.wait_for(task, timeout=2)
+        finally:
+            resume.set()
+            await task
+        self.assertEqual(self.db.profile_load("test-user"), {
+            ANNIVERSARY_PROFILE_KEY: [corrected, added], "職業": "架空の職業",
+        })
+        self.assertEqual(self.db.profile_load("other-user"), other_profile)
+        self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
+
+    async def test_concurrent_anniversary_edits_win_over_stale_generated_entries(self):
+        birthday = {"label": "誕生日", "month": 5, "day": 1}
+        changed = {**birthday, "day": 2}
+        other = {"label": "架空の記念日", "month": 8, "day": 15}
+        generated_correction = {**other, "day": 16}
+        for latest in (
+            {ANNIVERSARY_PROFILE_KEY: [changed, other]},
+            {ANNIVERSARY_PROFILE_KEY: [other]},
+            {ANNIVERSARY_PROFILE_KEY: None},
+            {},
+        ):
+            with self.subTest(latest=latest):
+                self.db.profile_replace_all("test-user", {ANNIVERSARY_PROFILE_KEY: [birthday, other]})
+                await self.service.append_pending_log("test-user", "架空の質問", "架空の応答")
+
+                async def compact(*args):
+                    self.assertFalse(self.service.io_lock.locked())
+                    async with self.service.io_lock:
+                        self.db.profile_replace_all("test-user", latest)
+                    return {ANNIVERSARY_PROFILE_KEY: [birthday, generated_correction]}, {}
+
+                self.service._compact_memory = AsyncMock(side_effect=compact)
+                await self.service.flush_if_needed(force=True)
+                saved = self.db.profile_load("test-user")
+                if isinstance(latest.get(ANNIVERSARY_PROFILE_KEY), list):
+                    expected = [entry for entry in latest[ANNIVERSARY_PROFILE_KEY] if entry["label"] != other["label"]]
+                    expected.append(generated_correction)
+                    self.assertEqual(saved[ANNIVERSARY_PROFILE_KEY], expected)
+                else:
+                    self.assertEqual(saved, latest)
+                self.assertEqual(self.db.pending_fetch_entries("test-user"), [])
 
     async def test_compaction_preserves_anniversaries_before_replacing_profile(self):
         birthday = {"label": "誕生日", "month": 5, "day": 1}
@@ -181,6 +259,20 @@ class DocumentSummaryCompactionTests(unittest.IsolatedAsyncioTestCase):
                     {"document_name": "second.txt", "summary": "新規2"},
                 ])
         self.assertEqual(self.projects_path.read_bytes(), original)
+
+    async def test_pending_document_summaries_only_replace_current_context_without_persistence(self):
+        old = {"document_name": "same.txt", "summary": "架空の古い要約", "document_hash": "same-hash"}
+        await self.service.store_document_summary("test-user", old)
+        await self.service.store_document_summary("other-user", {"summary": "架空の別ユーザーの要約"})
+        before = self.projects_path.read_bytes()
+        pending = [{**old, "summary": "架空の今回の要約"}]
+        ordinary, documents = await self.service.build_contexts("none", "test-user", pending_summaries=pending)
+        self.assertEqual(ordinary, "")
+        self.assertIn("架空の今回の要約", documents)
+        self.assertNotIn("架空の古い要約", documents)
+        self.assertNotIn("別ユーザー", documents)
+        self.assertEqual(self.projects_path.read_bytes(), before)
+        self.assertIn("架空の古い要約", (await self.service.build_contexts("none", "test-user"))[1])
 
     async def test_existing_users_survive_missing_or_incorrect_schema_and_repeated_load(self) -> None:
         for schema in (None, "誤った識別子"):

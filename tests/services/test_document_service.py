@@ -254,10 +254,12 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         self.gemini = SimpleNamespace(generate=AsyncMock())
         self.moderator = SimpleNamespace(check=AsyncMock(return_value=(True, "")))
         self.usage = SimpleNamespace(log_snapshot=Mock())
+        self.is_blocked = Mock(return_value=False)
         self.service = DocumentService(
             SimpleNamespace(user=SimpleNamespace(id=99)),
             BotState(), self.memory, self.gemini, self.usage, None,
             moderator=self.moderator,
+            is_blocked=self.is_blocked,
         )
         self.message = SimpleNamespace(
             id=30,
@@ -268,7 +270,9 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
             reply=AsyncMock(),
         )
         self.service._fetch_message_from_task = AsyncMock(return_value=self.message)
-        self.service._process_attachment = AsyncMock()
+        self.service._process_attachment = AsyncMock(return_value={
+            "document_name": "fictional.txt", "summary": "架空の文書要約",
+        })
         self.service._update_task = AsyncMock()
         self.sent = AsyncMock()
         self.tasks = []
@@ -331,11 +335,13 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
                 # 元の投稿は履歴からも除く（編集後の本文が履歴経由で入らないように）。
                 history = document_service.fetch_channel_history_text.await_args
                 self.assertEqual(history.kwargs["exclude_message_id"], self.message.id)
+                self.assertIs(history.kwargs["is_blocked"], self.is_blocked)
 
     async def test_affinity_tag_is_removed_before_screening_and_storage(self) -> None:
         await self.process_response("要約です。[V:1, A:2]")
         self.assert_clean_response("要約です。")
-        self.moderator.check.assert_awaited_once_with("要約です。", direction="Bot応答")
+        self.assertEqual(self.moderator.check.await_args.args[0], "要約です。")
+        self.assertEqual(self.moderator.check.await_count, 2)
         self.assertEqual(self.usage.log_snapshot.call_args.args[4], "要約です。")
 
     async def test_multiple_tags_with_spaces_are_removed(self) -> None:
@@ -347,11 +353,12 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assert_clean_response("**要点**\n- 架空の文書の内容です。")
 
     async def test_rejected_response_is_sent_without_memory_or_sources_and_completes(self) -> None:
-        self.moderator.check.return_value = (False, "架空の不適切判定")
+        self.moderator.check.side_effect = [(True, ""), (False, "架空の不適切判定")]
         await self.process_response("架空の不適切な回答", [{"title": "架空の資料", "uri": "https://example.com/source"}])
         self.sent.assert_awaited_once()
         self.assertEqual(self.sent.call_args.args[1], "申し訳ありませんが、適切な応答を生成できませんでした。")
         self.memory.append_pending_log.assert_not_awaited()
+        self.memory.store_document_summaries.assert_not_awaited()
         self.memory.flush_if_needed.assert_not_awaited()
         self.assertEqual(self.service._update_task.await_args.kwargs["status"], "completed")
         self.message.reply.assert_not_awaited()
@@ -371,7 +378,9 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         await self.process_response(" [V:1, A:2] ", sources)
         self.sent.assert_not_awaited()
         self.memory.append_pending_log.assert_not_awaited()
-        self.moderator.check.assert_not_awaited()
+        self.moderator.check.assert_awaited_once()
+        self.assertIn("架空の文書要約", self.moderator.check.await_args.args[0])
+        self.memory.store_document_summaries.assert_not_awaited()
         self.assertEqual(self.service._update_task.await_args.kwargs["status"], "failed")
         self.message.reply.assert_awaited_once()
         self.assertTrue(self.message.reply.await_args.args[0].strip())

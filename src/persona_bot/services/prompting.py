@@ -12,12 +12,42 @@
 """
 
 
+def sanitize_prompt_data(text: str, *, preserve_history_roles: bool = False) -> str:
+    """データ内の見出し・ロール行を、プロンプトの構造と同じ表記にしない。
+
+    履歴整形では発言本文ごとに既定のまま通してから、コード側でロールを付ける。
+    組み立て済みの履歴・議事録ログだけは preserve_history_roles=True で再確認し、
+    正規のロール表記を維持する。生の履歴を直接このモードへ渡す入口は作らないこと。
+    全角化後は同じ処理を重ねても変わらず、本文の改行・通常文は維持する。
+    """
+    lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        index = 0
+        while index < len(line) and (line[index].isspace() or line[index] in "\ufeff\u200b\u200c\u200d\u2060"):
+            index += 1
+        content = line[index:]
+        prefix = line[:index]
+        if content.startswith("---"):
+            content = "－－－" + content[3:]
+        elif content.startswith("#"):
+            # 子の作業用など、Markdown見出しで区画を作るプロンプトにも同じ境界を使う。
+            count = len(content) - len(content.lstrip("#"))
+            content = "＃" * count + content[count:]
+        elif not preserve_history_roles:
+            for role in ("ユーザーの質問:", "BOTの回答:"):
+                if content.startswith(role):
+                    content = role[:-1] + "：" + content[len(role):]
+                    break
+        lines.append(prefix + content)
+    return "".join(lines)
+
+
 def build_memory_sections(memory_category: str, memory_context: str, document_context: str = "") -> str:
     sections: list[str] = []
     if memory_context:
-        sections.append(f"\n--- 選択された長期記憶 ({memory_category}) ---\n{memory_context}")
+        sections.append(f"\n--- 選択された長期記憶 ({memory_category}) ---\n{sanitize_prompt_data(memory_context)}")
     if document_context:
-        sections.append(f"\n--- 圧縮されたドキュメント要約 ---\n{document_context}")
+        sections.append(f"\n--- 圧縮されたドキュメント要約 ---\n{sanitize_prompt_data(document_context)}")
     return "".join(sections)
 
 
@@ -33,9 +63,9 @@ def build_full_prompt(
         + memory_sections
         + delegation_section
         + "\n--- 過去の会話履歴 ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 今回の質問 ---\n"
-        + question
+        + sanitize_prompt_data(question)
     )
 
 
@@ -58,7 +88,7 @@ def build_auto_topic_prompt(persona_prompt: str, memory_sections: str, history_t
         + "- 感情タグ（[V:.., A:..] の形式）は絶対に付けないこと。\n"
         + memory_sections
         + "\n--- 過去の会話履歴 ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 会話履歴ここまで ---\n"
         + "\n上記を踏まえて、あなたからの話しかけの一言だけを出力してください。"
     )
@@ -71,6 +101,8 @@ def build_anniversary_prompt(persona_prompt: str, user_display_name: str, label:
     個人の長期記憶（profile）はここでは渡さない（プライバシー保護のため、
     共有チャンネルには「今日が記念日である」という事実以上の個人情報を出さない）。
     """
+    user_display_name = sanitize_prompt_data(user_display_name)
+    label = sanitize_prompt_data(label)
     return (
         persona_prompt
         + "\n\n--- タスク: 記念日のお祝い ---\n"
@@ -81,7 +113,7 @@ def build_anniversary_prompt(persona_prompt: str, user_display_name: str, label:
         + "- 過去の会話履歴に関連する話題があれば軽く絡めてもよいが、必須ではない。\n"
         + "- 感情タグ（[V:.., A:..] の形式）は絶対に付けないこと。\n"
         + "\n--- 過去の会話履歴（参考。無くてもよい） ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 履歴ここまで ---\n"
         + "\n上記を踏まえて、お祝いメッセージの一言だけを出力してください。"
     )
@@ -118,6 +150,7 @@ def build_autonomous_opening_prompt(persona_prompt: str, channel_name: str, hist
     「誰か話し相手が欲しい」という意図をペルソナの口調で伝えさせるのが目的
     （固定文だけだとキャラクターが死ぬため、看板の文言とは別に生成する）。
     """
+    channel_name = sanitize_prompt_data(channel_name)
     return (
         persona_prompt
         + "\n\n--- タスク: 自分から始めた通話の第一声 ---\n"
@@ -129,7 +162,7 @@ def build_autonomous_opening_prompt(persona_prompt: str, channel_name: str, hist
         + "- 話し相手を待っていること、気軽に話しかけてほしいこと。\n"
         + _AUTONOMOUS_SPEECH_RULES
         + "\n--- このチャンネルの過去の会話（参考。無くてもよい） ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 履歴ここまで ---\n"
         + "\n上記を踏まえて、第一声だけを出力してください。"
     )
@@ -161,7 +194,7 @@ def build_autonomous_monologue_prompt(persona_prompt: str, history_text: str, tu
         + "- ときどきは、聞いている人が答えやすい問いかけで終えてもよい。\n"
         + _AUTONOMOUS_SPEECH_RULES
         + "\n--- このチャンネルの会話（直前までのあなたの発言を含む） ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 履歴ここまで ---\n"
         + "\n上記を踏まえて、独り言だけを出力してください。"
     )
@@ -181,6 +214,7 @@ def build_autonomous_reply_prompt(
     特定ユーザーの私的な記憶を読み上げると本人以外にも漏れるため
     （自発的な話題提供・記念日のお祝いと同じ方針）。
     """
+    commenter_name = sanitize_prompt_data(commenter_name)
     return (
         persona_prompt
         + "\n\n--- タスク: 配信中のコメントへの応答 ---\n"
@@ -192,10 +226,10 @@ def build_autonomous_reply_prompt(
         + "- 会話を続けたいので、必要に応じて聞き返してもよい。\n"
         + _AUTONOMOUS_SPEECH_RULES
         + "\n--- このチャンネルの会話 ---\n"
-        + history_text
+        + sanitize_prompt_data(history_text, preserve_history_roles=True)
         + "\n--- 履歴ここまで ---\n"
         + f"\n--- 今回のコメント（{commenter_name} さん） ---\n"
-        + comment
+        + sanitize_prompt_data(comment)
         + "\n\n上記のコメントへの応答だけを出力してください。"
     )
 
@@ -206,6 +240,7 @@ def build_summary_prompt(persona_prompt: str, period_label: str, source_text: st
     正確さ（誰が何を言ったか）を最優先しつつ、冒頭と締めだけペルソナの口調を
     残す構成。感情タグの付与は明示的に禁止する。
     """
+    period_label = sanitize_prompt_data(period_label)
     return (
         persona_prompt
         + "\n\n--- タスク: 会話の議事録作成 ---\n"
@@ -234,7 +269,7 @@ def build_summary_prompt(persona_prompt: str, period_label: str, source_text: st
         + "・…（無ければ「なし」）\n"
         + "\n（ここにペルソナ口調の締めを1〜2行）\n"
         + "\n--- 会話ログ ---\n"
-        + source_text
+        + sanitize_prompt_data(source_text, preserve_history_roles=True)
         + "\n--- 会話ログここまで ---\n"
         + "\n上記を議事録として要約してください。"
     )
@@ -249,7 +284,7 @@ def build_router_prompt(question: str) -> str:
     return (
         "以下の質問に答えるために、ユーザーのプロフィール情報(profile)、進行中のプロジェクト情報(projects)、"
         "または過去の情報は不要(none)のどれが適切ですか？ JSONで category だけを返してください。\n"
-        f"質問: {question}\n"
+        f"質問: {sanitize_prompt_data(question)}\n"
         '出力形式: {"category": "profile|projects|none"}'
     )
 
@@ -286,9 +321,9 @@ def build_memory_compaction_prompt(
         '[{"label": "呼び名(例: 誕生日)", "month": 1〜12の整数, "day": 1〜31の整数}]。'
         "既存の記念日エントリがあれば失わないようマージし（同じ label は上書き、それ以外は保持）、"
         "月日が確定できない情報や単発の出来事（例: 今日の予定）は記念日として保存しないでください。\n\n"
-        f"--- 一時ログ (pending_log) ---\n{pending_text}\n\n"
-        f"--- プロフィール記憶 (profile) ---\n{profile_text}\n\n"
-        f"--- プロジェクト記憶 (projects) ---\n{projects_text}"
+        f"--- 一時ログ (pending_log) ---\n{sanitize_prompt_data(pending_text)}\n\n"
+        f"--- プロフィール記憶 (profile) ---\n{sanitize_prompt_data(profile_text)}\n\n"
+        f"--- プロジェクト記憶 (projects) ---\n{sanitize_prompt_data(projects_text)}"
     )
 
 
@@ -299,11 +334,15 @@ def build_document_summary_prompt(document_name: str) -> str:
     Gemini へ渡し、`summary` / `key_points` / `warnings` / `usage_notes` の各キーを
     読み出す。キー名を変えるとその読み出しが黙って空になる。
     """
+    # ファイル名は識別用の1行データ。改行・制御文字・区切り表記を命令の構造にしない。
+    safe_name = " ".join(
+        "".join(character if character.isprintable() else " " for character in document_name).split()
+    ).replace("---", "－－－").replace("#", "＃")
     return (
         "このドキュメントの核となる要点とルールを、日本語で構造化して抽出してください。"
         "出力は必ずJSONのみで、次の形式にしてください: "
         '{"summary":"...","key_points":["..."],"warnings":["..."],"usage_notes":["..."]}'
-        f"\nファイル名: {document_name}"
+        f"\nファイル名: {safe_name}"
     )
 
 
@@ -317,7 +356,7 @@ def build_stats_analysis_prompt(samples: list[str], topic_count: int) -> str:
     出力の `topics` / `big_five` / `personality` は描画側がそのままキー参照するため、
     キー名と構造を変えないこと。
     """
-    joined = "\n".join(f"- {s}" for s in samples)
+    joined = "\n".join(f"- {sanitize_prompt_data(s)}" for s in samples)
     return f"""以下は、あるユーザーが Discord でボットに送った発言の一覧です。
 この発言だけを根拠に、(1) よく話す話題 と (2) ビッグファイブ性格特性の推定 を行ってください。
 
@@ -396,6 +435,11 @@ def build_agent_worker_prompt(
         notes: これまでの手順で書いたメモ（古い順）。
         now_text: 現在日時の表記（「今日」「来週」などを正しく扱わせるため）。
     """
+    role = sanitize_prompt_data(role)
+    task = sanitize_prompt_data(task)
+    expected_output = sanitize_prompt_data(expected_output)
+    steps = tuple(sanitize_prompt_data(step) for step in steps)
+    notes = [sanitize_prompt_data(note) for note in notes]
     step_lines = "\n".join(
         f"{index + 1}. {name}" + ("（今回）" if index == step_index else "")
         for index, name in enumerate(steps)
@@ -445,9 +489,10 @@ def build_agent_report_section(role: str, report: str) -> str:
     利用者へ返答するのは常に人格役。報告の具体的な事実を落とさず、ペルソナの口調で
     会話として言い直させる（見出しや表をそのまま貼らせない）。
     """
+    role = sanitize_prompt_data(role)
     return (
         f"\n--- サブエージェント（{role}）からの報告 ---\n"
-        + report
+        + sanitize_prompt_data(report)
         + "\n--- 報告ここまで ---\n"
         "上の報告は、利用者の依頼を受けてあなたがサブエージェントに任せた作業の結果です。\n"
         "- 報告にある具体的な事実（固有名詞・数値・日付）は落とさずに、あなたの口調で利用者へ伝えること。\n"

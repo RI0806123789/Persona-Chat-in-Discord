@@ -247,6 +247,28 @@ class AgentLinesTests(PersonaFolderTestCase):
             self.assertEqual(dict(self.load().agent_lines("../prompts/a.txt")), constants.AGENT_DEFAULT_LINES)
             self.assertIsNone(self.load().agent_avatar_url("../prompts/a.txt"))
 
+    def test_format_specs_and_conversions_fall_back_without_formatting(self) -> None:
+        self.write("a.txt")
+        for text in ("{current:100d}", "{current:999999999d}", "{role!r}", "{step!s}",
+                     "{role!a}", "{current:{total}d}", "{role.__class__}", "{role[0]}"):
+            with self.subTest(text=text):
+                self.write_settings({"personas": {"a.txt": {"agent": {"progress": text}}}})
+                with patch("builtins.print") as logging:
+                    lines = self.load().agent_lines("../prompts/a.txt")
+                self.assertEqual(lines["progress"], constants.AGENT_DEFAULT_LINES["progress"])
+                self.assertEqual(logging.call_count, 1)
+                self.assertNotIn(text, str(logging.call_args))
+
+    def test_plain_fields_and_escaped_braces_remain_valid(self) -> None:
+        self.write("a.txt")
+        text = "{{調査}} {role}: {step}（{current}/{total}）"
+        self.write_settings({"personas": {"a.txt": {"agent": {"progress": text}}}})
+        with patch("builtins.print") as logging:
+            lines = self.load().agent_lines("../prompts/a.txt")
+        logging.assert_not_called()
+        self.assertEqual(lines["progress"].format(role="担当", step="検索", current=1, total=2),
+                         "{調査} 担当: 検索（1/2）")
+
     def test_avatar_url_is_read_apart_from_lines(self) -> None:
         """作業スレッドで子が使うアイコン（#267）。文面としては扱わない。"""
         self.write("a.txt")
@@ -383,7 +405,7 @@ class SettingsPanelTests(unittest.IsolatedAsyncioTestCase):
             response = SimpleNamespace(is_done=Mock(return_value=False), defer=AsyncMock(side_effect=defer))
             interaction = SimpleNamespace(
                 # 管理者でない利用者（Member でないため 🎙️ 配信先 は出ない）
-                user=SimpleNamespace(),
+                user=SimpleNamespace(id=11),
                 response=response, edit_original_response=AsyncMock(side_effect=edit),
                 original_response=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())), extras={},
             )
