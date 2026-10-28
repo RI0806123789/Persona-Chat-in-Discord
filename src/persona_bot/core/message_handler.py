@@ -257,6 +257,7 @@ class MessageHandler:
                         guild_settings.channel_reset_points.get(message.channel.id),
                         self.client.user,
                         AGENT_ROUTER_HISTORY_LIMIT,
+                        is_blocked=self.blacklist.is_blocked,
                     )
                     is_safe, _reason, memory_category, reminder_request, agent_plan = (
                         await self.moderator.check_route_and_plan(question, router_history)
@@ -484,6 +485,7 @@ class MessageHandler:
                     guild_settings.channel_reset_points.get(message.channel.id),
                     self.client.user,
                     HISTORY_LIMIT,
+                    is_blocked=self.blacklist.is_blocked,
                 )
                 # 記憶カテゴリは on_message のモデレーション統合判定で既に決まっている
                 # （追加の Gemini 呼び出しはしない）。ユーザー別の記憶スペースを読み込む。

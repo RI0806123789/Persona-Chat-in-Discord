@@ -219,6 +219,7 @@ class LongMessageTests(unittest.IsolatedAsyncioTestCase):
                 for key, value in {
                     "temp_private": private, "temp_period": 1, "guild_settings": None,
                     "gemini": None, "moderator": None, "ng_filter": None, "usage": None,
+                    "blocked_user_check": None,
                 }.items():
                     setattr(view, key, value)
                 button = summary_view.RunSummaryButton()

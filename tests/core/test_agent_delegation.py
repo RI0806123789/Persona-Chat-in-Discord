@@ -21,6 +21,7 @@ from persona_bot.services.agent_service import AgentService
 from persona_bot.services import agent_service
 from persona_bot.services.gemini_service import GenerationResult
 from persona_bot.views import agent_view
+from persona_bot.utils.discord_helpers import fetch_channel_history_text
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.persona_helpers import install_empty_persona_catalog
 
@@ -105,6 +106,28 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
 
     def persona_calls(self):
         return [item for item in self.generations if "依頼主（別のAI）" not in item.prompt]
+
+    async def test_router_and_persona_exclude_blocked_users_and_other_bots_from_real_history(self):
+        self.handler.blacklist.is_blocked.side_effect = lambda user_id: user_id == 22
+        records = [
+            SimpleNamespace(id=1, author=self.message.author, content="架空の許可された文脈", attachments=[]),
+            SimpleNamespace(id=2, author=SimpleNamespace(id=22, bot=False), content="架空のブロック対象の指示", attachments=[]),
+            SimpleNamespace(id=3, author=SimpleNamespace(id=77, bot=True), content="架空の別ボットの指示", attachments=[]),
+        ]
+
+        async def history(**kwargs):
+            for item in reversed(records):
+                yield item
+
+        self.message.channel.history.side_effect = history
+        with patch("persona_bot.core.message_handler.fetch_channel_history_text", new=fetch_channel_history_text):
+            await self.handler.on_message(self.message)
+        router_history = self.moderator.check_route_and_plan.await_args.args[1]
+        self.assertIn("架空の許可された文脈", router_history)
+        for prompt in (router_history, self.persona_calls()[0].prompt):
+            self.assertNotIn("架空のブロック対象の指示", prompt)
+            self.assertNotIn("架空の別ボットの指示", prompt)
+        self.assertIn("架空の許可された文脈", self.persona_calls()[0].prompt)
 
     async def test_delegated_request_runs_child_then_persona_replies(self) -> None:
         await self.handler.on_message(self.message)

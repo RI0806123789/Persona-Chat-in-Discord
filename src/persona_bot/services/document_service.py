@@ -4,7 +4,7 @@ import codecs
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import discord
 
@@ -80,6 +80,8 @@ class DocumentService:
         db: Database,
         ng_filter: NgWordFilter | None = None,
         moderator: ContentModerator | None = None,
+        *,
+        is_blocked: Callable[[int], bool] | None = None,
     ) -> None:
         self._client = client
         self._state = state
@@ -89,6 +91,7 @@ class DocumentService:
         self._db = db
         self._ng_filter = ng_filter
         self._moderator = moderator
+        self._is_blocked = is_blocked
         self._worker: asyncio.Task[Any] | None = None
         self._stopping = False
 
@@ -252,6 +255,7 @@ class DocumentService:
                 self._client.user,
                 HISTORY_LIMIT,
                 exclude_message_id=message.id,
+                is_blocked=self._is_blocked,
             )
             full_prompt = build_full_prompt(
                 prompt,

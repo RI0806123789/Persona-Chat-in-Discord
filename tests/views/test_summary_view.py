@@ -49,6 +49,12 @@ class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
     def last_panel(self) -> str:
         return self.interaction.edit_original_response.await_args.kwargs["content"]
 
+    async def test_summary_uses_the_block_check_inherited_from_the_hub(self) -> None:
+        check = Mock(return_value=False)
+        self.view.blocked_user_check = check
+        await self.button.callback(self.interaction)
+        self.assertIs(self.generate.await_args.kwargs["is_blocked"], check)
+
     async def test_blank_summary_finishes_panel_without_public_or_private_post(self) -> None:
         for private in (False, True):
             with self.subTest(private=private):
