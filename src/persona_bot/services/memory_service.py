@@ -1,3 +1,4 @@
+import logging
 import asyncio
 import copy
 import json
@@ -37,6 +38,8 @@ from persona_bot.utils.storage import (
     safe_response_text,
     write_json_file,
 )
+
+logger = logging.getLogger(__name__)
 
 # projects.json のユーザー別スキーマ識別子。users 辞書がある場合は識別子欠落時も保護する。
 _PROJECTS_SCHEMA = "per_user_v1"
@@ -178,7 +181,7 @@ class MemoryService:
                     migrated["users"][LEGACY_MEMORY_OWNER_ID] = legacy
                 data = migrated
             write_json_file(PROJECTS_MEMORY_PATH, data)
-            print("記憶: projects.json をユーザー別構造へ移行しました。")
+            logger.info("記憶: projects.json をユーザー別構造へ移行しました。")
 
         if not isinstance(data.get("users"), dict):
             data["users"] = {}
@@ -279,7 +282,7 @@ class MemoryService:
             parsed = extract_json_object(safe_response_text(response) or "", required_keys=("category",))
             return normalize_memory_category((parsed or {}).get("category"))
         except Exception as error:
-            print(f"ルーティング判定エラー: {error}")
+            logger.error("ルーティング判定に失敗しました。", exc_info=error)
         return "none"
 
     async def store_document_summary(self, user_id: str, summary_data: dict[str, Any]) -> None:
@@ -372,9 +375,9 @@ class MemoryService:
                     if not counted:
                         processed += 1
                     consecutive_errors += 1
-                    print(f"記憶圧縮: ユーザー処理に失敗しました (user_id={user_id}, {type(error).__name__})。ログを保持します。")
+                    logger.error("記憶圧縮: ユーザー処理に失敗しました。ログを保持します。", exc_info=error)
                     if consecutive_errors >= MEMORY_FLUSH_MAX_CONSECUTIVE_ERRORS:
-                        print("記憶圧縮: 読込・保存の失敗が続いたため、この巡回を終了し、次回に再試行します。")
+                        logger.warning("記憶圧縮: 読込・保存の失敗が続いたため、この巡回を終了し、次回に再試行します。", exc_info=error)
                         break
                 else:
                     consecutive_errors = 0
@@ -432,8 +435,8 @@ class MemoryService:
         except _PromptBlockedError as error:
             # pending_log に不適切な内容が含まれており永久に処理できない
             # → このユーザーの pending_log をクリアして無限ループを防止
-            print(f"記憶圧縮: プロンプトがブロックされました (user_id={user_id}, {error})")
-            print(f"記憶圧縮: 処理不能な pending_log をクリアします (user_id={user_id})。")
+            logger.warning("記憶圧縮: プロンプトがブロックされました。", exc_info=error)
+            logger.warning("記憶圧縮: 処理不能な pending_log をクリアします。")
             async with self.io_lock:
                 await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             # 失敗回数は「今のログ」を何回圧縮し損ねたか。消したログの分を持ち越すと、
@@ -442,14 +445,14 @@ class MemoryService:
             return
         except Exception as error:
             await self._register_compact_failure(
-                user_id, f"記憶圧縮エラー (user_id={user_id}): {error}", max_entry_id
+                user_id, error, max_entry_id
             )
             return
 
         if profile_data is None or projects_data is None:
             await self._register_compact_failure(
                 user_id,
-                f"記憶圧縮エラー (user_id={user_id}): JSONの生成またはパースに失敗したため、pending_log は保持します。",
+                None,
                 max_entry_id,
             )
             return
@@ -485,7 +488,7 @@ class MemoryService:
                 try:
                     write_json_file(PROJECTS_MEMORY_PATH, original)
                 except Exception as error:
-                    print(f"記憶圧縮: JSONの復元に失敗しました: {type(error).__name__}")
+                    logger.error("記憶圧縮: JSONの復元に失敗しました。", exc_info=error)
             raise
         # キャンセルを伝播する前も、全保存が成功した場合だけリセットする。
         self._compact_fail_count[user_id] = 0
@@ -535,18 +538,24 @@ class MemoryService:
             lines.append(f"[{entry['created_at']}] Bot: {entry['response']}")
         return "\n".join(lines)
 
-    async def _register_compact_failure(self, user_id: str, log_message: str, max_entry_id: int) -> None:
+    async def _register_compact_failure(
+        self, user_id: str, error: BaseException | None, max_entry_id: int,
+    ) -> None:
         """記憶圧縮の失敗を記録する。基本は pending_log を保持してリトライするが、
         連続失敗が上限に達したらそのユーザーの分をクリアして無限リトライを防ぐ。
 
         `max_entry_id` は圧縮対象だった行の最大 id。クリアはそこまでに限定する
         （Gemini 呼び出し中に追記された新しい会話ログまで消さないため）。
         """
-        print(log_message)
+        # 例外本文や利用者IDを事前整形せず、診断は共通formatterへ渡す。
+        if error is not None:
+            logger.error("記憶圧縮: 処理に失敗したため pending_log を保持します。", exc_info=error)
+        else:
+            logger.warning("記憶圧縮: JSONの生成またはパースに失敗したため pending_log を保持します。")
         count = self._compact_fail_count.get(user_id, 0) + 1
         self._compact_fail_count[user_id] = count
         if count >= MEMORY_COMPACT_MAX_FAILURES:
-            print(f"記憶圧縮: 連続失敗のため pending_log をクリアします (user_id={user_id})。")
+            logger.warning("記憶圧縮: 連続失敗のため pending_log をクリアします。")
             async with self.io_lock:
                 await run_in_thread(self._db.pending_clear_upto, user_id, max_entry_id)
             self._compact_fail_count[user_id] = 0

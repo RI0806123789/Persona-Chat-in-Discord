@@ -46,13 +46,13 @@ class GenaiClientTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(genai_client.httpx, "AsyncHTTPTransport", return_value=httpx.MockTransport(handle)):
                     client = create_genai_client("YOUR_GEMINI_API_KEY")
                 try:
-                    with patch("builtins.print") as logging:
+                    with self.assertLogs("persona_bot.services.gemini_service", level="INFO") as logging:
                         result = await GeminiService(client).generate("架空の質問", "selected-model", grounding=True, timeout=2)
                     self.assertEqual(len(requests), 1)
                     self.assertEqual(requests[0].headers["x-goog-api-key"], "YOUR_GEMINI_API_KEY")
                     self.assertNotIn("key", requests[0].url.params)
                     self.assertNotIn("YOUR_GEMINI_API_KEY", str(requests[0].url))
-                    self.assertNotIn("YOUR_GEMINI_API_KEY", str(logging.call_args_list))
+                    self.assertNotIn("YOUR_GEMINI_API_KEY", "\n".join(record.getMessage() for record in logging.records))
                     self.assertIn(b"googleSearch", requests[0].content)
                     self.assertEqual(result[0], "架空の検索結果" if failure is None else None)
                 finally:

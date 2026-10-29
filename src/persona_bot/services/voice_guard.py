@@ -32,6 +32,7 @@ discord.py の接続復旧も同じチャンネルへつなぎ直す。いずれ
 
 from __future__ import annotations
 
+import logging
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
@@ -50,6 +51,8 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.background import spawn
 from persona_bot.services.autonomous_stage import enable_stage_speaker
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from persona_bot.services.autonomous_service import AutonomousService
@@ -76,7 +79,7 @@ def _stop_playback(voice_client: Any) -> None:
         if voice_client.is_playing():
             voice_client.stop()
     except Exception as error:
-        print(f"ボイス接続の保護: 再生の停止に失敗しました: {type(error).__name__}")
+        logger.error("ボイス接続の保護: 再生の停止に失敗しました。", exc_info=error)
 
 
 class VoiceGuard:
@@ -148,10 +151,7 @@ class VoiceGuard:
             # このモジュールが戻した移動か、誰かが元のチャンネルへ戻した。
             return
 
-        print(
-            f"ボイス接続の保護: 別のチャンネルへ移動されたことを検知しました"
-            f"（guild={guild.id} / 移動前={before_id} / 移動後={after_id}）。"
-        )
+        logger.warning("ボイス接続の保護: 別のチャンネルへ移動されたことを検知しました。")
         _stop_playback(guild.voice_client)
         spawn(self._protect(guild.id), label="ボイス接続先の保護")
 
@@ -186,7 +186,7 @@ class VoiceGuard:
                 return
 
             home.returned_at.append(monotonic())
-            print(f"ボイス接続の保護: 元のチャンネル「{home_channel.name}」へ戻ります（guild={guild_id}）。")
+            logger.info("ボイス接続の保護: 元のチャンネルへ戻ります。")
             try:
                 # discord.py の move_to は、時間切れでも例外を出さずに戻ることがある。
                 # 成否は戻った後の接続先で確かめる。
@@ -210,7 +210,7 @@ class VoiceGuard:
                     guild, voice_client, "元のチャンネルへ戻れなかった", expected_home=home,
                 )
                 return
-            print(f"ボイス接続の保護: 元のチャンネル「{home_channel.name}」へ戻りました（guild={guild_id}）。")
+            logger.info("ボイス接続の保護: 元のチャンネルへ戻りました。")
             if isinstance(home_channel, discord.StageChannel):
                 # ステージは入り直すと観客に戻るため、/join と同じく発言者へ昇格し直す。
                 try:
@@ -218,10 +218,7 @@ class VoiceGuard:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    print(
-                        f"ボイス接続の保護: ステージの発言者へ戻れませんでした"
-                        f"（guild={guild_id}）: {type(error).__name__}: {error}"
-                    )
+                    logger.error("ボイス接続の保護: ステージの発言者へ戻れませんでした。", exc_info=error)
                     await self._leave(
                         guild, voice_client, "ステージの発言者へ戻れなかった", expected_home=home,
                     )
@@ -299,8 +296,8 @@ class VoiceGuard:
             return
         # 照合から解除・切断開始までは待機を挟まない。
         self.release(guild.id)
-        print(f"ボイス接続の保護: {reason}ため、移動先のチャンネルから退出します（guild={guild.id}）。")
+        logger.warning("ボイス接続の保護: 保護の継続条件を満たさないため、移動先のチャンネルから退出します。")
         try:
             await voice_client.disconnect(force=True)
         except Exception as error:
-            print(f"ボイス接続の保護: 退出に失敗しました（guild={guild.id}）: {type(error).__name__}: {error}")
+            logger.error("ボイス接続の保護: 退出に失敗しました。", exc_info=error)

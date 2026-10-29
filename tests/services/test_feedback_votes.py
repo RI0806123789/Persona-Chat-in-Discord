@@ -222,14 +222,14 @@ class FeedbackVoteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_write_releases_lock_and_next_event_writes_latest_state(self) -> None:
         entered, release, _ = self.block_first_write("feedback_record", error=OSError("架空の書き込み失敗"))
-        with patch("builtins.print") as log:
+        with self.assertLogs("persona_bot.services.feedback_service", level="ERROR") as log:
             first = asyncio.create_task(self.add(GOOD))
             await asyncio.wait_for(entered.wait(), 2)
             second = asyncio.create_task(self.remove(GOOD))
             await asyncio.sleep(0.05)
             release.set()
             await asyncio.wait_for(asyncio.gather(first, second), 5)
-        self.assertIn("評価の記録に失敗しました", str(log.call_args_list))
+        self.assertTrue(any("評価の記録に失敗しました" in record.getMessage() for record in log.records))
         self.assertEqual(self.db.feedback_summary(GUILD_ID), [])
         self.assertFalse(self.vote().lock.locked())
         await self.add(BAD)

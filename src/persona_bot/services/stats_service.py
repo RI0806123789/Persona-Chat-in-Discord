@@ -1,3 +1,4 @@
+import logging
 import asyncio
 import io
 import math
@@ -31,6 +32,8 @@ from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_stats_analysis_prompt
 from persona_bot.utils.storage import extract_json_object
 from persona_bot.utils.timeutil import parse_iso_datetime, resolve_timezone, timezone_label, utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 # ビッグファイブの軸（英語キー → 日本語表示名）。レーダーチャートの軸ラベルに使う。
 BIG_FIVE_LABELS = {
@@ -140,7 +143,7 @@ class StatsService:
         try:
             self.cache: dict[str, dict] = db.stats_load_all()
         except Exception as error:
-            print(f"会話統計の読み込みに失敗: {error}")
+            logger.error("会話統計の読み込みに失敗しました。", exc_info=error)
             self.cache = {}
         self._save_lock = asyncio.Lock()
         # 削除・収集設定の変更より前に開始した解析結果を書き戻さないための世代。
@@ -209,7 +212,7 @@ class StatsService:
                 self.cache[user_id] = entry
                 return True
         except Exception as error:
-            print(f"会話統計の記録に失敗: {error}")
+            logger.error("会話統計の記録に失敗しました。", exc_info=error)
             return False
 
     async def save_background(self, user_id: str) -> bool:
@@ -233,7 +236,7 @@ class StatsService:
             )
             raise
         except Exception as error:
-            print(f"会話統計の保存に失敗: {error}")
+            logger.error("会話統計の保存に失敗しました。", exc_info=error)
             return False
         return True
 
@@ -247,7 +250,7 @@ class StatsService:
         except Exception as error:
             # 保存先自体に障害があれば完全な復元は保証できない。成功とは扱わず、
             # 呼出元には元のキャンセルを伝え、復元失敗を運用ログに残す。
-            print(f"会話統計の中断後の復元に失敗: {error}")
+            logger.error("会話統計の中断後の復元に失敗しました。", exc_info=error)
 
     # ---- 収集停止（opt-out） ----------------------------------------------
 
@@ -445,9 +448,9 @@ class StatsService:
             )
             parsed = extract_json_object(text or "", required_keys=("topics", "big_five", "personality"))
             if not parsed:
-                print("会話統計の解析結果を JSON として解釈できませんでした。")
+                logger.warning("会話統計の解析結果を JSON として解釈できませんでした。")
         except Exception as error:
-            print(f"会話統計の解析呼び出しに失敗: {error}")
+            logger.error("会話統計の解析呼び出しに失敗しました。", exc_info=error)
 
         analysis = None
         if parsed:
@@ -463,7 +466,7 @@ class StatsService:
                 "computed_at": utc_now_iso(),
             }
             if not self._analysis_usable(analysis, len(samples)):
-                print("会話統計: 話題または性格値が不足したため解析結果を保存しません。")
+                logger.warning("会話統計: 話題または性格値が不足したため解析結果を保存しません。")
                 analysis = None
         async with self._save_lock:
             entry = self.cache.get(user_id)

@@ -382,7 +382,8 @@ class SharedMaskTests(unittest.IsolatedAsyncioTestCase):
         autonomous._ng_filter = ng_filter
         channel = SimpleNamespace(send=AsyncMock())
         reminder = ReminderService(SimpleNamespace(get_channel=Mock(return_value=channel)), None, ng_filter)
-        with patch.object(ng_filter, "mask_with_log", wraps=ng_filter.mask_with_log) as masking, patch("builtins.print") as logging:
+        with patch.object(ng_filter, "mask_with_log", wraps=ng_filter.mask_with_log) as masking, \
+                self.assertLogs("persona_bot.services.ng_word_service", level="WARNING") as logging:
             text = await content_moderator.screen_bot_response("架空NGの本文", ng_filter, moderator)
             automatic, _ = await auto._screen_auto_post("架空NGの本文[V:1, A:2]", "自発的な会話")
             speech = autonomous._screen_speech("架空NGの本文[V:1, A:2]", "自律行動の独り言")
@@ -391,13 +392,13 @@ class SharedMaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("架空NG", channel.send.call_args.args[0])
         labels = [call.kwargs["label"] for call in masking.call_args_list]
         self.assertEqual(labels, ["Bot応答", "自発的な会話", "自律行動の独り言", "リマインダー"])
-        self.assertEqual([call.args[0] for call in logging.call_args_list],
-                         [f"NGワード検出 ({label}): ['架空NG']" for label in labels])
+        self.assertEqual([record.getMessage() for record in logging.records],
+                         ["NGワード検出: 1件をマスクしました。"] * len(labels))
         self.assertTrue(all(call.args == ("●●●●の本文",) for call in moderator.check.call_args_list))
 
     async def test_safe_text_is_unchanged_and_does_not_log(self) -> None:
         ng_filter = make_filter()
-        with patch("builtins.print") as logging:
+        with patch("persona_bot.services.ng_word_service.logger.warning") as logging:
             self.assertEqual(ng_filter.mask_with_log("安全な本文", label="架空"), "安全な本文")
         logging.assert_not_called()
 

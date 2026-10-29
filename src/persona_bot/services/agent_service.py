@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, NamedTuple
 
@@ -27,6 +28,8 @@ from persona_bot.services.affinity_service import strip_affinity_tag
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.prompting import build_agent_worker_prompt
 from persona_bot.utils.timeutil import format_weekday, resolve_timezone, timezone_label
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from persona_bot.services.gemini_service import GeminiService
@@ -109,9 +112,9 @@ class AgentService:
             # 子には感情タグを禁じているが、混ざっても人格役へ渡す前に取り除く。
             text = strip_affinity_tag(result.text or "").strip()
             if not text:
-                print(f"サブエージェント: 手順{index + 1}/{len(plan.steps)}の生成に失敗したため中止します。")
+                logger.error("サブエージェント: 手順%d/%dの生成に失敗したため中止します。", index + 1, len(plan.steps))
                 return None
-            print(f"サブエージェント: 手順{index + 1}/{len(plan.steps)}を終えました（モデル: {result.model_name}）。")
+            logger.info("サブエージェント: 手順%d/%dを終えました。", index + 1, len(plan.steps))
             report = text
             notes.append(text[:AGENT_STEP_NOTE_MAX_CHARS])
             for source in result.sources:

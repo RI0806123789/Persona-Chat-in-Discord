@@ -93,13 +93,13 @@ class AutonomousSessionPermissionTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(stage=stage, permission=permission):
                     self.prepare_channel(stage=stage)
                     setattr(self.permissions, permission, False)
-                    with patch("builtins.print") as output:
+                    with self.assertLogs("persona_bot.services.autonomous_service", level="INFO") as output:
                         await self.service._tend_session(self.guild, self.settings)
                     self.assert_stopped_without_generation()
                     self.notice.assert_not_awaited()
                     self.channel.permissions_for.assert_called_with(self.guild.me)
-                    self.assertTrue(any(label in str(call) for call in output.call_args_list))
-                    self.assertTrue(any("チャンネルの権限不足" in str(call) for call in output.call_args_list))
+                    self.assertTrue(any(label in record.getMessage() for record in output.records))
+                    self.assertTrue(any("配信を終了しました" in record.getMessage() for record in output.records))
                     if stage:
                         self.instance.delete.assert_awaited_once()
                     else:

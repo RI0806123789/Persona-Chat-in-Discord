@@ -1,3 +1,4 @@
+import logging
 import asyncio
 import hashlib
 import codecs
@@ -44,6 +45,8 @@ from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
 from persona_bot.utils.usage_graph import UsageTracker
 
+logger = logging.getLogger(__name__)
+
 
 # 処理が終わった（もう再処理しない）タスクのステータス
 _TERMINAL_STATUSES = {"completed", "failed"}
@@ -54,7 +57,8 @@ class DocumentUserError(ValueError):
 
     返信は公開チャンネルに出るため、文面は固定の案内と利用者自身の添付のファイル名だけで作り、
     例外の本文・内部のパス・接続先を含めないこと。これ以外の例外（一般の ValueError を含む）は
-    内容に関わらず定型文だけを返し、詳細はログと失敗記録（queue_tasks.error）にだけ残す。
+    内容に関わらず定型文だけを返し、本文は失敗記録（queue_tasks.error）にだけ残す。
+    運用ログには共通formatterで例外の型と発生位置だけを残す。
     """
 
 
@@ -66,7 +70,7 @@ def build_failure_notice(error: BaseException) -> str:
 
 
 def describe_error(error: BaseException) -> str:
-    """ログと失敗記録へ残す内部向けの診断（例外の型と本文）。利用者への返信には使わない。"""
+    """保護された失敗記録へ残す診断（例外の型と本文）。返信や運用ログには使わない。"""
     return f"{type(error).__name__}: {error}"
 
 
@@ -145,7 +149,7 @@ class DocumentService:
         )
         if result != "accepted":
             scope = "利用者別" if result == "user_limit" else "全体"
-            print(f"文書キュー: 処理待ちの上限（{scope}）に達したため、新しい文書を受け付けませんでした。")
+            logger.warning("文書キュー: 処理待ちの上限（%s）に達したため、新しい文書を受け付けませんでした。", scope)
             return None
         return task_id
 
@@ -155,7 +159,7 @@ class DocumentService:
             try:
                 await self._recover_stuck_tasks()
             except Exception as error:
-                print(f"文書ワーカー: 中断タスクの復旧に失敗しました。待機後に再試行します: {error}")
+                logger.warning("文書ワーカー: 中断タスクの復旧に失敗しました。待機後に再試行します。", exc_info=error)
                 await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
             else:
                 break
@@ -170,7 +174,7 @@ class DocumentService:
                     continue
                 await self._process_task(task)
             except Exception as error:
-                print(f"文書ワーカー: 予期しないエラー: {error}")
+                logger.error("文書ワーカー: 予期しないエラーが発生しました。", exc_info=error)
                 await asyncio.sleep(DOCUMENT_WORKER_IDLE_SECONDS)
 
     async def _recover_stuck_tasks(self) -> None:
@@ -181,7 +185,7 @@ class DocumentService:
         now_iso = utc_now_iso()
         recovered = await run_in_thread(self._db.queue_recover_stuck, now_iso)
         if recovered:
-            print(f"文書ワーカー: 中断された processing タスク {recovered} 件を pending に戻しました。")
+            logger.info("文書ワーカー: 中断された processing タスク %d 件を pending に戻しました。", recovered)
 
     async def _enqueue(self, task: dict[str, Any]) -> str:
         # 件数の確認と追加は DB 側で1つのトランザクションにまとめる（並行した受付でも上限を超えない）。
@@ -199,7 +203,7 @@ class DocumentService:
                 await run_in_thread(self._db.queue_prune_finished, QUEUE_MAX_FINISHED_TASKS)
             except Exception as error:
                 # 終端状態の保存は成功済み。掃除の失敗で二重返信やfailedへの転落を起こさない。
-                print(f"文書ワーカー: 終了タスクの掃除に失敗しました: {error}")
+                logger.error("文書ワーカー: 終了タスクの掃除に失敗しました。", exc_info=error)
 
     async def _claim_next_task(self) -> dict[str, Any] | None:
         now_iso = utc_now_iso()
@@ -228,7 +232,7 @@ class DocumentService:
             # 添付は編集で外すことしかできず差し替えられないので、再取得した一覧を使ってよい。
             question = str(task.get("question", "")).strip()
             if clean_message_content(message, self._client.user) != question:
-                print("文書タスク: 受付後に本文が編集されたため、受付時に検査した質問で回答します。")
+                logger.info("文書タスク: 受付後に本文が編集されたため、受付時に検査した質問で回答します。")
             question = question or DOCUMENT_ONLY_QUESTION
 
             # ペルソナ/モデル/グラウンディングはメッセージが投稿されたサーバー（DM ならDM共有設定）のものを使う。
@@ -323,9 +327,9 @@ class DocumentService:
             if self._stopping:
                 # 終了中の中断は processing のまま残し、次回起動時に復旧する。
                 return
-            # 診断（例外の型と本文）はログと失敗記録にだけ残し、公開の返信とは分ける（#220）。
+            # 診断本文は保護された失敗記録だけに残し、運用ログと公開の返信には含めない。
             diagnosis = describe_error(error)
-            print(f"文書タスク処理エラー: {diagnosis}")
+            logger.error("文書タスク処理エラーが発生しました。", exc_info=error)
             try:
                 await self._update_task(
                     task_id,
@@ -334,13 +338,13 @@ class DocumentService:
                     error=diagnosis,
                 )
             except Exception as update_error:
-                print(f"文書タスク: 失敗状態の保存に失敗しました: {type(update_error).__name__}")
+                logger.error("文書タスク: 失敗状態の保存に失敗しました。", exc_info=update_error)
             if message is not None:
                 try:
                     # 返信に載せるファイル名は利用者の入力なので、返信先の本人以外へは通知させない。
                     await message.reply(build_failure_notice(error), allowed_mentions=REPLY_ALLOWED_MENTIONS)
                 except Exception as reply_error:
-                    print(f"文書タスク失敗通知エラー: {reply_error}")
+                    logger.error("文書タスク失敗通知に失敗しました。", exc_info=reply_error)
             return
 
     def _mask_summary_data(self, value: Any) -> Any:
@@ -365,13 +369,13 @@ class DocumentService:
         try:
             await self._update_task(task_id, status="completed", finished_at=utc_now_iso())
         except Exception as error:
-            print(f"文書タスク: 回答後の完了状態の保存に失敗しました: {type(error).__name__}")
+            logger.error("文書タスク: 回答後の完了状態の保存に失敗しました。", exc_info=error)
         try:
             if accepted:
                 await self._memory.append_pending_log(author_id, question, response_text)
                 spawn(self._memory.flush_if_needed(), label="記憶圧縮（文書処理便乗）")
         except Exception as error:
-            print(f"文書タスク: 回答後の記憶追記に失敗しました: {type(error).__name__}")
+            logger.error("文書タスク: 回答後の記憶追記に失敗しました。", exc_info=error)
 
     async def _fetch_message_from_task(self, task: dict[str, Any]) -> discord.Message:
         channel_id = int(task.get("channel_id", 0))
@@ -443,7 +447,7 @@ class DocumentService:
         try:
             temp_path.unlink(missing_ok=True)
         except OSError as error:
-            print(f"一時ファイル削除エラー: {error}")
+            logger.error("文書タスク: 一時ファイルの削除に失敗しました。", exc_info=error)
 
 
 def validate_pdf_file(temp_path: Path) -> None:

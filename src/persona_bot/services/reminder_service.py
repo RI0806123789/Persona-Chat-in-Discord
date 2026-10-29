@@ -15,6 +15,7 @@
 DB のクレームと同一トランザクションの中から呼ばれる。
 """
 
+import logging
 import asyncio
 import calendar
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,8 @@ from persona_bot.utils.discord_helpers import can_bot_send_messages, send_long_m
 from persona_bot.services.ng_word_service import NgWordFilter
 from persona_bot.utils.timeutil import parse_iso_datetime, format_weekday, resolve_timezone, utc_now
 from persona_bot.utils.normalization import normalize_recurrence
+
+logger = logging.getLogger(__name__)
 
 # LLM が返す日時のゆらぎを吸収するため、複数の形式を順に試す。
 _AT_FORMATS = (
@@ -176,7 +179,7 @@ def next_occurrence(
 
     current_local = _to_local_naive(remind_at, tz)
     if current_local is None:
-        print(f"リマインダー: 繰り返しの基準日時を読めませんでした: {remind_at!r}")
+        logger.warning("リマインダー: 繰り返しの基準日時を読めませんでした。")
         return None
 
     # アンカーが読めない行は今回の予定時刻を基準にする（繰り返しを止めない）。
@@ -209,10 +212,7 @@ def next_occurrence(
 
     # ここに来るのは「進めても未来に届かない」＝計算が前進していない不具合のとき。
     # 無限ループになるより、系列を止めて気づけるようにする。
-    print(
-        f"リマインダー: 次回時刻の計算が {max_steps} 回で追い付きませんでした"
-        f" (種別={kind}, 予定={remind_at})"
-    )
+    logger.error("リマインダー: 次回時刻の計算が %d 回で追い付きませんでした。", max_steps)
     return None
 
 
@@ -264,10 +264,10 @@ class ReminderService:
 
         now = _utc_now()
         if remind_at <= now:
-            print(f"リマインダー: 過去の日時のため登録しません ({request.get('at')})")
+            logger.warning("リマインダー: 過去の日時のため登録しません。")
             return None
         if remind_at > now + timedelta(days=REMINDER_MAX_DAYS_AHEAD):
-            print(f"リマインダー: 遠すぎる日時のため登録しません ({request.get('at')})")
+            logger.warning("リマインダー: 遠すぎる日時のため登録しません。")
             return None
 
         body = request.get("message", "").strip()
@@ -298,7 +298,7 @@ class ReminderService:
                 max_pending=REMINDER_MAX_PENDING_PER_USER,
             )
         except Exception as error:
-            print(f"リマインダー: 登録に失敗しました: {error}")
+            logger.error("リマインダー: 登録に失敗しました。", exc_info=error)
             return "⏰ リマインダーの登録に失敗しました。もう一度お試しください。"
 
         if reminder_id is None:
@@ -336,7 +336,7 @@ class ReminderService:
                 parsed = parsed.replace(tzinfo=self._tz)
             return parsed.astimezone(timezone.utc).replace(microsecond=0)
         except (ValueError, OverflowError):
-            print(f"リマインダー: 日時を解釈できませんでした: {text!r}")
+            logger.warning("リマインダー: 日時を解釈できませんでした。", exc_info=True)
             return None
 
     # ---- 一覧・取り消し（/functions の ⏰ リマインダーパネルから使う） ----------
@@ -346,7 +346,7 @@ class ReminderService:
         try:
             return await run_in_thread(self._db.reminder_list_pending, str(user_id))
         except Exception as error:
-            print(f"リマインダー: 一覧の取得に失敗しました: {error}")
+            logger.error("リマインダー: 一覧の取得に失敗しました。", exc_info=error)
             return []
 
     async def cancel(self, reminder_id: int, user_id: str) -> dict[str, Any] | None:
@@ -356,7 +356,7 @@ class ReminderService:
             async with self._delivery_lock(reminder_id):
                 return await run_in_thread(self._db.reminder_cancel, reminder_id, str(user_id))
         except Exception as error:
-            print(f"リマインダー: 取り消しに失敗しました: {error}")
+            logger.error("リマインダー: 取り消しに失敗しました。", exc_info=error)
             return None
 
     def describe(self, record: dict[str, Any]) -> str:
@@ -400,7 +400,7 @@ class ReminderService:
                 self._db.reminder_claim_due, now.isoformat(), self._build_next_at(now)
             )
         except Exception as error:
-            print(f"リマインダー: 期限の確認に失敗しました: {error}")
+            logger.error("リマインダー: 期限の確認に失敗しました。", exc_info=error)
             return
 
         if not due:
@@ -415,21 +415,18 @@ class ReminderService:
 
         for record in due:
             if self._is_stale(record, stale_before):
-                print(
-                    f"リマインダー: 予定時刻を大きく過ぎているため通知を見送りました"
-                    f" (id={record.get('reminder_id')}, 予定={record.get('remind_at')})"
-                )
+                logger.warning("リマインダー: 予定時刻を大きく過ぎているため通知を見送りました。")
                 continue
             try:
                 await self._notify(record)
             except Exception as error:
-                print(f"リマインダー: 通知エラー (id={record.get('reminder_id')}): {error}")
+                logger.error("リマインダー: 通知に失敗しました。", exc_info=error)
 
         # 通知済みレコードが際限なく溜まらないよう、古いものから捨てる。
         try:
             await run_in_thread(self._db.reminder_prune_finished, REMINDER_MAX_FINISHED)
         except Exception as error:
-            print(f"リマインダー: 古い記録の掃除に失敗しました: {error}")
+            logger.error("リマインダー: 古い記録の掃除に失敗しました。", exc_info=error)
 
     @staticmethod
     def _is_stale(record: dict[str, Any], stale_before: datetime) -> bool:
@@ -454,37 +451,37 @@ class ReminderService:
             try:
                 channel = await self._client.fetch_channel(channel_id)
             except Exception as error:
-                print(f"リマインダー: チャンネル({channel_id})を取得できませんでした: {error}")
+                logger.error("リマインダー: チャンネルを取得できませんでした。", exc_info=error)
                 return
 
         # カテゴリなど投稿できない種類のチャンネルが返ることがあるため確認する
         if not hasattr(channel, "send"):
-            print(f"リマインダー: チャンネル({channel_id})へは投稿できません。")
+            logger.warning("リマインダー: チャンネルへは投稿できません。")
             return
 
         guild = getattr(channel, "guild", None)
         if guild is not None:
             # 判定は自発会話・記念日と同じ共通関数で行う（スレッドは「スレッドで送信」を見る）。
             if guild.me is None:
-                print("リマインダー: ボットの権限を確認できないため通知を見送りました。")
+                logger.warning("リマインダー: ボットの権限を確認できないため通知を見送りました。")
                 return
             if not can_bot_send_messages(channel, guild.me):
-                print("リマインダー: 閲覧・送信権限が不足しているため通知を見送りました。")
+                logger.warning("リマインダー: 閲覧・送信権限が不足しているため通知を見送りました。")
                 return
 
         if isinstance(channel, discord.Thread) and channel.archived:
             # 宛先を親へ変えると、非公開スレッドの内容を別の参加者へ漏らしうる。
             # 元のスレッドだけを再開し、ロック解除や代替配送は行わない。
             if channel.locked and not channel.permissions_for(guild.me).manage_threads:
-                print("リマインダー: ロックされたスレッドを再開する権限がありません。")
+                logger.warning("リマインダー: ロックされたスレッドを再開する権限がありません。")
                 return
             try:
                 channel = await channel.edit(archived=False, reason="登録済みリマインダーの通知")
             except discord.HTTPException as error:
-                print(f"リマインダー: スレッドを再開できませんでした: {type(error).__name__}")
+                logger.error("リマインダー: スレッドを再開できませんでした。", exc_info=error)
                 return
             if not can_bot_send_messages(channel, guild.me):
-                print("リマインダー: スレッド再開後の送信権限が不足しています。")
+                logger.warning("リマインダー: スレッド再開後の送信権限が不足しています。")
                 return
 
         text = str(record.get("message", ""))

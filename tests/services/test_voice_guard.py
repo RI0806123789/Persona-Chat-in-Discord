@@ -179,12 +179,13 @@ class VoiceGuardTests(unittest.IsolatedAsyncioTestCase):
                 self.voice_client = self.make_voice_client(self.home)
                 self.guild.voice_client = self.voice_client
                 promote = AsyncMock()
-                with patch.object(voice_guard_module, "enable_stage_speaker", promote), patch("builtins.print") as log:
+                with patch.object(voice_guard_module, "enable_stage_speaker", promote), \
+                        self.assertLogs(voice_guard_module.logger, level="WARNING") as log:
                     await self.connect_then_move()
                 self.assert_left_without_return()
                 promote.assert_not_awaited()
                 self.home.permissions_for.assert_called_once_with(self.guild.me)
-                self.assertTrue(any("チャンネルを見る" in str(call) for call in log.call_args_list))
+                self.assertTrue(any("保護の継続条件を満たさない" in record.getMessage() for record in log.records))
 
     async def test_failed_stage_promotion_leaves_and_releases_protection(self) -> None:
         errors = (
@@ -262,11 +263,11 @@ class VoiceGuardTests(unittest.IsolatedAsyncioTestCase):
         self.prepare_stage_return()
         self.voice_client.disconnect.side_effect = RuntimeError("架空の切断失敗")
         with patch.object(voice_guard_module, "enable_stage_speaker", AsyncMock(side_effect=RuntimeError("架空の昇格失敗"))), \
-                patch("builtins.print") as log:
+                self.assertLogs(voice_guard_module.logger, level="ERROR") as log:
             await self.connect_then_move()
         self.voice_client.disconnect.assert_awaited_once_with(force=True)
         self.assertIsNone(self.guard.home_channel_id(1))
-        self.assertTrue(any("退出に失敗" in str(call) for call in log.call_args_list))
+        self.assertTrue(any("退出に失敗" in record.getMessage() for record in log.records))
 
     # ---- 戻れない場合は退出し、無限に再試行しない ------------------------------
 
