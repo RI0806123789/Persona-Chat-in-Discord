@@ -60,7 +60,10 @@ BUILTIN_PERSONA_DISPLAY_NAME = "標準（組み込み）"
 # （音は出るのでキャラ差が消えたことに気づきにくい）ため、読み込み時に点検する。
 _EDGE_RATE_PATTERN = re.compile(r"^[+-]\d+%$")
 _EDGE_PITCH_PATTERN = re.compile(r"^[+-]\d+Hz$")
-_VOICE_KEYS = ("voice", "pitch", "rate", "eq")
+# Gemini Live の事前定義ボイス名（"Kore" など。#268）。英字で始まる短い名前だけを通す
+# （接続の設定にそのまま載るため、記号や改行を含む値を渡さない）。
+_LIVE_VOICE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_VOICE_KEYS = ("voice", "pitch", "rate", "eq", "live_voice")
 # サブエージェントの進捗の定型文（personas.json の "agent"）に書ける差し込み（#170）。
 _AGENT_LINE_FIELDS = frozenset({"role", "step", "current", "total"})
 # personas.json の "agent" のうち、定型文ではない項目（子のアイコン。#267）。
@@ -312,6 +315,9 @@ def _build_voice(file_name: str, voice: Any) -> dict[str, Any]:
             continue
         if key == "pitch" and not _EDGE_PITCH_PATTERN.match(value):
             logger.warning(f"警告: personas.json の「<設定値>」の pitch が不正です（<設定値>）。'+10Hz' のような形式で指定してください。既定値を使います。")
+            continue
+        if key == "live_voice" and not _LIVE_VOICE_PATTERN.match(value):
+            logger.warning("警告: personas.json の「<設定値>」の live_voice が不正です（<設定値>）。'Kore' のような英字の名前で指定してください。既定の声を使います。")
             continue
         profile[key] = value
     return profile

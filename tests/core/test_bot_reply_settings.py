@@ -182,7 +182,8 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.feedback.track_reply.call_args.kwargs, {
             "target_user_id": "11", "model_name": model, "prompt_file": prompt_file,
         })
-        self.assertEqual(self.voice.await_args.args, (self.message, "架空の応答です。", prompt_file))
+        # テキストの返信は読み上げない（#268。声の会話は /join の Gemini Live が担う）。
+        self.voice.assert_not_awaited()
 
     async def check_old_settings_are_used(self) -> None:
         await self.on_message(self.message)
@@ -296,11 +297,11 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.stage = "images"
         await self.check_old_settings_are_used()
 
-    async def test_moderation_change_does_not_relabel_feedback_or_voice(self) -> None:
+    async def test_moderation_change_does_not_relabel_feedback(self) -> None:
         self.stage = "moderate"
         await self.check_old_settings_are_used()
 
-    async def test_send_change_does_not_relabel_feedback_or_voice(self) -> None:
+    async def test_send_change_does_not_relabel_feedback(self) -> None:
         self.stage = "send"
         await self.check_old_settings_are_used()
 
@@ -386,12 +387,12 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
                 self.feedback.track_reply.assert_not_called()
                 self.namespace["memory"].append_pending_log.assert_not_awaited()
 
-    async def test_affinity_failure_after_send_keeps_memory_feedback_and_voice(self) -> None:
+    async def test_affinity_failure_after_send_keeps_memory_and_feedback(self) -> None:
         self.response = "架空の応答です。[V:1, A:2]"
         self.namespace["affinity"].update_emotion.side_effect = RuntimeError("架空の更新失敗")
         with self.assertLogs("persona_bot.core.message_handler", level="WARNING"):
             await self.on_message(self.message)
-        self.voice.assert_awaited_once_with(self.message, "架空の応答です。", "../prompts/prompt_default.txt")
+        self.voice.assert_not_awaited()
         self.feedback.track_reply.assert_called_once()
         self.namespace["memory"].append_pending_log.assert_awaited_once()
         self.namespace["send_long_reply"].assert_awaited_once()
@@ -425,7 +426,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.feedback.track_reply.assert_not_called()
         apology = "申し訳ありませんが、適切な応答を生成できませんでした。"
         self.namespace["send_long_reply"].assert_awaited_once_with(self.message, apology, suppress_embeds=False)
-        self.voice.assert_awaited_once_with(self.message, apology, "../prompts/prompt_default.txt")
+        self.voice.assert_not_awaited()
 
     async def test_tag_only_reply_does_not_change_affinity_or_memory(self) -> None:
         self.response = " [V:1, A:2] "
@@ -489,29 +490,28 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
 
     # ---- 送信後の付随処理の失敗境界（#157） --------------------------------------
 
-    def assert_sent_once_and_spoken(self) -> None:
+    def assert_sent_once(self) -> None:
         from persona_bot.core import message_handler
         message_handler.send_long_reply.assert_awaited_once()
         self.assertEqual(len(self.generations), 1)  # 再生成しない
-        self.assertEqual(
-            self.voice.await_args.args, (self.message, "架空の応答です。", "../prompts/prompt_default.txt"),
-        )
+        # テキストの返信は読み上げない（#268）。
+        self.voice.assert_not_awaited()
 
-    async def test_saved_reply_is_remembered_compacted_and_spoken(self) -> None:
+    async def test_saved_reply_is_remembered_and_compacted(self) -> None:
         memory = self.namespace["memory"]
         await self.on_message(self.message)
         await asyncio.gather(*self.tasks)
         memory.append_pending_log.assert_awaited_once_with("11", "架空の質問です。", "架空の応答です。")
         memory.flush_if_needed.assert_awaited_once()
-        self.assert_sent_once_and_spoken()
+        self.assert_sent_once()
 
-    async def test_memory_save_failure_after_send_still_speaks_the_sent_reply(self) -> None:
+    async def test_memory_save_failure_after_send_keeps_the_sent_reply(self) -> None:
         memory = self.namespace["memory"]
         memory.append_pending_log.side_effect = OSError("架空の記憶保存失敗")
         with self.assertLogs("persona_bot.core.message_handler", level="ERROR") as logs:
             await self.on_message(self.message)
         await asyncio.gather(*self.tasks)
-        self.assert_sent_once_and_spoken()
+        self.assert_sent_once()
         self.feedback.track_reply.assert_called_once()
         # 保存できなかった会話を成功扱いにせず、記憶圧縮も起動しない
         memory.flush_if_needed.assert_not_awaited()
@@ -522,13 +522,13 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("架空の記憶保存失敗", messages)
         self.assertTrue(any(record.exc_info and record.exc_info[1] is memory.append_pending_log.side_effect for record in logs.records))
 
-    async def test_feedback_registration_failure_does_not_skip_memory_or_voice(self) -> None:
+    async def test_feedback_registration_failure_does_not_skip_memory(self) -> None:
         self.feedback.track_reply.side_effect = RuntimeError("架空の登録失敗")
         with self.assertLogs("persona_bot.core.message_handler", level="ERROR"):
             await self.on_message(self.message)
         await asyncio.gather(*self.tasks)
         self.namespace["memory"].append_pending_log.assert_awaited_once()
-        self.assert_sent_once_and_spoken()
+        self.assert_sent_once()
 
     async def test_send_failure_is_not_spoken_remembered_or_tracked(self) -> None:
         from persona_bot.core import message_handler
@@ -592,7 +592,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("https://example.com/discarded", call.args[0])
         self.assertEqual(self.namespace["memory"].append_pending_log.await_args.args[2], answer)
         self.assertEqual(self.namespace["usage"].log_snapshot.call_args.args[4], answer)
-        self.voice.assert_awaited_once_with(self.message, answer, "../prompts/prompt_default.txt")
+        self.voice.assert_not_awaited()
         self.feedback.track_reply.assert_called_once()
         return sent_text
 

@@ -667,8 +667,82 @@ VOICE_EQ_PROFILES = {
 #   pitch : 声の高さ。edge-tts のネイティブ形式（"+10Hz" のような符号つき整数）。
 #   rate  : 話す速さ。同じくネイティブ形式（"+5%"）。長さは 1/(1+rate/100) 倍になる。
 #   eq    : 音色。VOICE_EQ_PROFILES のキー。
+#   live_voice : /join の音声会話（Gemini Live）で使う事前定義ボイスの名前（例: "Kore"）。
+#                空文字はモデルの既定の声。上の4項目は読み上げ（edge-tts）専用。
 # 書かなかった項目・形式の誤った項目は、下の既定値を使う。
 VOICE_PROFILE_FALLBACK = {
     "voice": EDGE_TTS_VOICE_FEMALE, "pitch": "+0Hz", "rate": "+0%", "eq": "flat",
+    "live_voice": "",
 }
+
+# --- Gemini Live による音声会話（/join。#268） ---
+# /join でボイスチャンネルへ入ったボットと、声で会話する。参加者の声を受信して
+# Gemini Live へ流し、返ってきた音声をそのまま再生する（テキスト返信の読み上げは行わない）。
+# 自律行動の配信は従来どおり TTS（上の TTS_* / edge-tts）で読み上げる。
+# False にすると /join は接続するだけになる（声の会話もテキスト返信の読み上げも行わない）。
+LIVE_ENABLED = True
+# 使うモデル。Google AI Studio の表示名は「Gemini 3.8 Live」（Issue #268 の実験で接続を確認）。
+LIVE_MODEL_NAME = "gemini-3.8-live"
+# 同時に Live 会話を行える VC の上限（試験運用は最大2VC。#268 の決定事項）。
+# TPM などの割当は VC ごとではなく Google Cloud のプロジェクト全体で共有される。
+LIVE_MAX_CONCURRENT_SESSIONS = 2
+# Live へ送る音声（16kHz・モノラル・16bit）と、Live が返す音声（24kHz・モノラル・16bit）。
+LIVE_INPUT_SAMPLE_RATE = 16000
+LIVE_OUTPUT_SAMPLE_RATE = 24000
+LIVE_INPUT_MIME_TYPE = "audio/pcm;rate=16000"
+# 48kHz → 16kHz の間引きの前に掛けるローパスフィルタ（タップ数と遮断周波数）。
+# 16kHz の上限（8kHz）の手前で切り、折り返し雑音で聞き取りの精度を落とさない。
+LIVE_DOWNSAMPLE_TAPS = 47
+LIVE_DOWNSAMPLE_CUTOFF_HZ = 7200.0
+# Live へ音声を送るときのまとまり（ミリ秒）。小さいほど遅延が減り、送信回数が増える。
+LIVE_INPUT_CHUNK_MS = 60
+# 送信待ちの音声の上限（まとまりの数）。Live が詰まったときに古い音声から捨てる。
+LIVE_INPUT_QUEUE_MAX_CHUNKS = 50
+# ローカルの発話検出（VAD）。Discord のクライアントは話している間だけ音声を送るため、
+# 届いたフレームの音量（実効値）がしきい値以上なら「話している」とみなす。
+LIVE_VAD_ENERGY_THRESHOLD = 400.0
+# 発話とみなすまでに続く必要がある有声の長さ（ミリ秒）。咳払いや雑音で話者を取らない。
+LIVE_VAD_START_MS = 200
+# 有声のフレームがこの間途切れたら、続きの発話とはみなさない（START_MS の数え直し）。
+LIVE_VAD_START_GAP_MS = 200
+# 話し終わりとみなす無音の長さ（ミリ秒）。ここで Live へ発話の終わりを伝える。
+LIVE_VAD_SILENCE_MS = 800
+# 発話の開始と判定する前の音声も送る長さ（ミリ秒）。語頭が欠けないようにする。
+LIVE_VAD_PREROLL_MS = 400
+# ボットが話している最中の割り込みとみなす有声の長さ（ミリ秒）。相槌程度では止めない。
+LIVE_BARGE_IN_MS = 500
+# 1回の発話の上限（秒）。話し続けても、ここで区切って Live に応答させる。
+LIVE_MAX_UTTERANCE_SECONDS = 30.0
+# 話者を待っている人（発話希望）を覚えておく人数と時間（秒）。音声そのものは溜めない。
+LIVE_SPEAKER_QUEUE_MAX = 3
+LIVE_SPEAKER_REQUEST_TTL_SECONDS = 3.0
+# 話し終わりの判定・接続の確認などを行う見回りの間隔（秒）。
+LIVE_TICK_SECONDS = 0.1
+# 応答音声を再生し始めるまでに溜める長さ（ミリ秒）。出力の文字起こしの NG ワード判定に
+# 少しだけ先行させるための短いバッファ（判定の前に一部が再生されうることは仕様上許容する）。
+LIVE_OUTPUT_BUFFER_MS = 400
+# 応答の途中で音声が届かなくなったとき、再生を打ち切るまでの時間（秒）。
+LIVE_PLAYBACK_STALL_SECONDS = 5.0
+# 話し終わってから、入力の文字起こしが出そろうのを待つ時間（秒）。
+# 文字起こしがこの時間増えなければ、確定とみなして入力の AI モデレーションへ回す。
+LIVE_INPUT_TRANSCRIPT_SETTLE_SECONDS = 0.8
+# 文字起こしを待つ上限（秒）。届かなければ、あるところまでで判定する。
+LIVE_INPUT_TRANSCRIPT_MAX_WAIT_SECONDS = 4.0
+# 1ターン分の文字起こしとして保持する最大文字数（記憶・判定に渡す長さの上限）。
+LIVE_TRANSCRIPT_MAX_CHARS = 2000
+# Live への接続の待ち時間の上限（秒）。
+LIVE_CONNECT_TIMEOUT_SECONDS = 15.0
+# Live の接続が切れたときに、続けて再接続を試す回数の上限と、各回の待ち時間（秒）。
+# 利用枠の超過（429 など）では再接続しない（#268 の決定事項）。
+LIVE_RECONNECT_MAX_ATTEMPTS = 3
+LIVE_RECONNECT_BACKOFF_SECONDS = (1.0, 3.0, 10.0)
+# 文脈の圧縮（Context Window Compression）。文脈がトリガーのトークン数を超えたら、
+# 古い部分を目標のトークン数まで削る。無料枠の TPM（65,000）を1ターンで使い切らないよう、
+# 既定（文脈上限の80%）よりかなり小さくしている。値は実機での計測で調整する。
+LIVE_COMPRESSION_TRIGGER_TOKENS = 16000
+LIVE_COMPRESSION_TARGET_TOKENS = 8000
+# 出力判定に相乗りさせる感情の変化量の上限（機嫌・テンションそれぞれ ±この値）。
+LIVE_EMOTION_DELTA_MAX = 20
+# 同意パネルの表示を更新する最短の間隔（秒）。参加者の出入りが続いても編集を連打しない。
+LIVE_CONSENT_PANEL_UPDATE_SECONDS = 2.0
 

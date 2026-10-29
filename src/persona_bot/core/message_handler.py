@@ -352,22 +352,21 @@ class MessageHandler:
                     return
 
             response_settings = guild_settings.snapshot_response()
+            # テキストの返信は読み上げない（#268）。/join のボイスチャンネルでは Gemini Live が
+            # 声で会話するため、テキストの返信まで読み上げると声が重なる。読み上げ（TTS）は
+            # 自律行動の配信（上の配信コメントへの応答）だけで使う。
             if agent_plan is not None and agent_plan.delegate:
-                response_text = await self._handle_agent_request(
+                await self._handle_agent_request(
                     message, question, memory_category, agent_plan, response_settings,
                     image_objects=image_objects,
                 )
             else:
                 # サブエージェントを求められたが不要と判断した場合は、人格役がその旨を一言添えて直接答える。
-                response_text = await self.handle_chat_message(
+                await self.handle_chat_message(
                     message, question, memory_category, response_settings=response_settings,
                     image_objects=image_objects,
                     delegation_section=build_agent_declined_section() if agent_plan is not None else "",
                 )
-            if response_text:
-                # ボイス接続中なら、自律行動による参加中も読み上げる（未接続なら no-op）。
-                # 設定が生成中に変わっても、今回の応答に使ったペルソナの声で読み上げる。
-                await play_tts_response(message, response_text, response_settings.prompt_file)
         finally:
             if normal_slot_acquired:
                 self._chat_admission.release(guild_id)
@@ -465,7 +464,7 @@ class MessageHandler:
         delegated_sources: list[dict[str, str]] | None = None,
         image_objects: list | None = None,
     ) -> str | None:
-        """人格役として返信し、送った本文を返す（読み上げに使う）。
+        """人格役として返信し、送った本文を返す。
 
         Args:
             delegation_section: サブエージェントの報告・委任しなかった旨の差し込み（#170）。
@@ -565,15 +564,15 @@ class MessageHandler:
                     response_text, self.ng_filter, self.moderator, log_label="Bot応答",
                 )
                 # 参考リンクは送信用テキストにのみ追記する
-                # （TTS 読み上げと長期記憶には URL の列挙はノイズになるため含めない）。
+                # （長期記憶には URL の列挙はノイズになるため含めない）。
                 reply_text = response_text
                 if accepted and grounding_sources:
                     reply_text += format_grounding_sources(grounding_sources, self.ng_filter)
 
-                # 送信の失敗は呼出元へ伝える（送れていない返信を読み上げない）。
+                # 送信の失敗は呼出元へ伝える。
                 sent = await send_long_reply(message, reply_text, suppress_embeds=bool(grounding_sources))
                 # ★ ここから先は送信済みの返信に付随する処理。どれが失敗しても、送った本文は
-                # 呼出元の読み上げへ返す（#157）。再生成・再送はしない（二重返信になるため）。
+                # 呼出元へ返す（#157）。再生成・再送はしない（二重返信になるため）。
                 if accepted and emotion_changes is not None:
                     try:
                         v_change, a_change = emotion_changes
@@ -596,7 +595,7 @@ class MessageHandler:
         """送った返信を 👍👎 の評価対象として登録する（リアクション付与は裏で走る）。
 
         実際の生成モデルと今回のペルソナを渡し、待機中の設定変更を混ぜない。登録の失敗は
-        評価を取りこぼすだけなので、ログに残して記憶・読み上げへ進む。
+        評価を取りこぼすだけなので、ログに残して記憶へ進む。
         """
         try:
             self.feedback.track_reply(

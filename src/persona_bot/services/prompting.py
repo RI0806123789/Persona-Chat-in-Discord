@@ -234,6 +234,31 @@ def build_autonomous_reply_prompt(
     )
 
 
+# --- Gemini Live による音声会話（/join。#268）用 ---
+#
+# Live はペルソナを system_instruction として接続の最初に1回だけ受け取り、返答をそのまま
+# 音声で再生する。テキスト向けのペルソナの指示（感情タグなど）がそのまま声に出ないよう、
+# 音声通話での話し方をここで上書きする。
+# 共有のボイスチャンネルなので、個人の長期記憶・親密度は渡さない（自律行動のコメント応答と同じ方針）。
+_LIVE_SPEECH_RULES = (
+    "\n\n--- 音声通話での話し方（厳守） ---\n"
+    "いまは Discord のボイスチャンネルで、参加者と声で会話しています。あなたの返答はそのまま音声で再生されます。\n"
+    "- 1回の返答は短く（2〜3文程度）、自然な話し言葉で返すこと。長い説明や列挙はしない。\n"
+    "- 感情タグ（[V:.., A:..] の形式）・絵文字・記号・URL・Markdown・箇条書きは使わないこと（声に出てしまうため）。\n"
+    "- ボイスチャンネルには複数の人が参加していて、話している人が入れ替わることがある。"
+    "特定の参加者の個人的な情報を推測して話題にしないこと。\n"
+    "- 聞き取れなかったときや、意味が分からなかったときは、短く聞き返すこと。\n"
+    "- ト書き・状況説明・自分の名前の前置きは話さないこと。\n"
+)
+
+_LIVE_GROUNDING_RULE = "- 最新の情報が必要な質問には、検索で確かめてから答えること。\n"
+
+
+def build_live_system_instruction(persona_prompt: str, *, grounding: bool) -> str:
+    """Live 会話の system_instruction（ペルソナ＋音声通話での話し方）を組み立てる。"""
+    return persona_prompt + _LIVE_SPEECH_RULES + (_LIVE_GROUNDING_RULE if grounding else "")
+
+
 def build_summary_prompt(persona_prompt: str, period_label: str, source_text: str) -> str:
     """会話ログを議事録として要約するためのプロンプトを組み立てる。
 

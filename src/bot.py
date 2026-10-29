@@ -47,6 +47,7 @@ from persona_bot.config.personas import reload_persona_catalog
 from persona_bot.config.data_paths import ensure_data_directory_ready
 from persona_bot.config.settings_loader import load_settings
 from persona_bot.services.stats_service import StatsService
+from persona_bot.services.voice_conversation import VoiceConversationService
 from persona_bot.services.voice_guard import VoiceGuard
 from persona_bot.utils.usage_graph import UsageTracker
 
@@ -109,6 +110,13 @@ feedback = FeedbackService(client, database)
 set_default_service(feedback)
 # 会話の中でサブエージェントの使用を明記された依頼を、子に委任する（#170）。
 agent = AgentService(gemini, usage)
+# /join のボイスチャンネルで、Gemini Live と声で会話する（#268）。
+voice_conversation = VoiceConversationService(
+    client, genai_client,
+    moderator=moderator, ng_filter=ng_filter, blacklist=blacklist,
+    memory=memory, affinity=affinity, usage=usage, voice_guard=voice_guard,
+)
+client.add_shutdown_callback(voice_conversation.stop_all)
 
 message_handler = MessageHandler(
     client=client, state=state, auto_topic=auto_topic, autonomous=autonomous,
@@ -121,6 +129,7 @@ register_commands(
     tree, state, usage, ng_filter, blacklist, gemini, moderator, stats, reminders, autonomous,
     voice_guard=voice_guard,
     task_owner=client.background_tasks,
+    voice_conversation=voice_conversation,
 )
 
 
@@ -251,7 +260,7 @@ async def on_guild_join(guild: discord.Guild) -> None:
 
 @client.event
 async def on_guild_remove(guild: discord.Guild) -> None:
-    await remove_guild_state(guild.id, state, autonomous, voice_guard)
+    await remove_guild_state(guild.id, state, autonomous, voice_guard, voice_conversation)
 
 
 @client.event
@@ -266,6 +275,7 @@ async def on_voice_state_update(
     """ボット自身が別のボイスチャンネルへ移されたら、接続先を保護する（#171）。
 
     判断と保護動作は voice_guard が担う（ボット以外の利用者の更新はそこで無視する）。
+    参加者の出入りは音声会話（#268）へ伝え、同意の確認と発話権を更新させる。
     想定外の失敗でイベント処理を落とさないよう、ここで受け止めてログだけ残す。
     必要な voice_states インテントは上で有効にしている。
     """
@@ -273,6 +283,10 @@ async def on_voice_state_update(
         voice_guard.handle_voice_state_update(member, before, after)
     except Exception as error:
         logger.error("ボイス接続の保護の処理エラー。", exc_info=True)
+    try:
+        voice_conversation.handle_voice_state_update(member, before, after)
+    except Exception as error:
+        logger.error("音声会話の参加者の更新エラー。", exc_info=True)
 
 
 @client.event

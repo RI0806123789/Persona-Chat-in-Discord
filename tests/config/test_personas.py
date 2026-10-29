@@ -138,6 +138,22 @@ class PersonaSettingsTests(PersonaFolderTestCase):
             self.assertIn(word, logs)
         self.assertNotIn("pich", logs)
 
+    def test_live_voice_name_is_checked_before_reaching_the_connection(self) -> None:
+        """音声会話（#268）のボイス名は接続の設定にそのまま載るため、英字の名前だけを通す。"""
+        self.write("a.txt")
+        self.write("b.txt")
+        self.write_settings({"personas": {
+            "a.txt": {"voice": {"live_voice": "Kore"}},
+            "b.txt": {"voice": {"live_voice": "Kore\n{\"tools\": []}"}},
+        }})
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
+            catalog = self.load()
+        self.assertEqual(catalog.voice_profile("../prompts/a.txt")["live_voice"], "Kore")
+        self.assertEqual(catalog.voice_profile("../prompts/b.txt")["live_voice"], VOICE_PROFILE_FALLBACK["live_voice"])
+        logs = "\n".join(LOG_FORMATTER.format(record) for record in captured.records)
+        self.assertIn("live_voice", logs)
+        self.assertNotIn("tools", logs)  # 書かれた値そのものはログに出さない
+
     def test_missing_files_and_default_are_warned(self) -> None:
         self.write("a.txt")
         self.write_settings({"default": "転送忘れ.txt", "personas": {"転送忘れ.txt": {"name": "架空"}}})

@@ -151,11 +151,11 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"架空の子の出力{len(PLAN.steps)}", persona[0].prompt)
         self.assertFalse(persona[0].grounding)
 
-        # 返信は人格役だけが送り、子の出典を添える。読み上げも人格役の返信
+        # 返信は人格役だけが送り、子の出典を添える。テキストの返信は読み上げない（#268）
         reply_text = self.send.await_args.args[1]
         self.assertTrue(reply_text.startswith("架空の人格役の返信です。"))
         self.assertIn(SOURCE["uri"], reply_text)
-        self.assertEqual(self.tts.await_args.args[1], "架空の人格役の返信です。")
+        self.tts.assert_not_awaited()
 
         # 進捗は定型文の1通を書き換え、終わったら中止ボタンを外す
         self.assertIn("架空の調査担当", self.message.reply.await_args_list[0].args[0])
