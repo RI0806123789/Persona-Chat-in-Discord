@@ -44,6 +44,22 @@ test("例外の Traceback は空行・コード・例外本文まで同じレベ
   assert.deepEqual(classifyEntries(rows), ["error", "error", "error", "error", "error", "info"]);
 });
 
+test("#283 本文を含まない例外の発生位置は直前の警告・エラーレベルを引き継ぐ", () => {
+  const prefix = "[2026-10-29T07:32:26+0900]";
+  const rows = [
+    `${prefix} [WARNING] [persona_bot.audio.voice] 代替処理を使います。`,
+    "例外: TimeoutError", "  voice.py:150 (_fetch_mp3)", "",
+    `${prefix} [ERROR] [persona_bot.core.background] 背景処理が失敗しました。`,
+    "例外: ValueError", "  background.py:120 (runner)",
+    `${prefix} [INFO] [__main__] 処理を継続しました。`,
+    "通常のログ",
+  ];
+  assert.deepEqual(classifyEntries(rows.map((text) => entry(text))),
+    ["warn", "warn", "warn", "warn", "error", "error", "error", "info", "info"]);
+  assert.deepEqual(classifyEntries([entry("例外: RuntimeError"), entry("  example.py:1 (run)")]),
+    ["error", "error"]);
+});
+
 test("heartbeat のスタックは警告を引き継ぎ、次の通常ログでは終了する", () => {
   const rows = ["[2026-10-18 01:02:03] [WARNING ] discord.gateway: heartbeat blocked",
     "Loop thread traceback (most recent call last):", '  File "example.py", line 1', "    call()", "ログイン成功"];
