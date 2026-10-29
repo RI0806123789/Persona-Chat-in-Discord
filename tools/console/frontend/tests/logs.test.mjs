@@ -23,10 +23,41 @@ test("discord.py のレベルを使い、UTC の前置きを表示から外す",
   assert.equal(displayMessage(rows[0]), "discord.client: Error という単語を含む情報");
 });
 
+test("#283 ボット共通loggingの時差付き時刻とレベルを認識しモジュール名を残す", () => {
+  const prefix = "[2026-10-29T07:32:26+0900]";
+  const rows = [
+    entry(`${prefix} [INFO] [persona_bot.core.database] Errorという語を含む情報`),
+    entry(`${prefix} [WARNING] [persona_bot.core.database] 処理を継続します`),
+    entry(`${prefix} [ERROR] [persona_bot.core.database] 処理を停止しました`),
+    entry("[2026-10-28T22:32:26-0900] [CRITICAL] [__main__] 処理を停止しました"),
+  ];
+  assert.deepEqual(classifyEntries(rows), ["info", "warn", "error", "error"]);
+  assert.equal(displayMessage(rows[0]), "[persona_bot.core.database] Errorという語を含む情報");
+  assert.deepEqual(classifyEntries([
+    entry("Traceback (most recent call last):"), entry('  File "example.py", line 1'), rows[0],
+  ]), ["error", "error", "info"]);
+});
+
 test("例外の Traceback は空行・コード・例外本文まで同じレベルにする", () => {
   const rows = ["Traceback (most recent call last):", '  File "example.py", line 1', "    call()", "",
     "ValueError: 架空の例外", "ログイン成功"].map((text) => entry(text));
   assert.deepEqual(classifyEntries(rows), ["error", "error", "error", "error", "error", "info"]);
+});
+
+test("#283 本文を含まない例外の発生位置は直前の警告・エラーレベルを引き継ぐ", () => {
+  const prefix = "[2026-10-29T07:32:26+0900]";
+  const rows = [
+    `${prefix} [WARNING] [persona_bot.audio.voice] 代替処理を使います。`,
+    "例外: TimeoutError", "  voice.py:150 (_fetch_mp3)", "",
+    `${prefix} [ERROR] [persona_bot.core.background] 背景処理が失敗しました。`,
+    "例外: ValueError", "  background.py:120 (runner)",
+    `${prefix} [INFO] [__main__] 処理を継続しました。`,
+    "通常のログ",
+  ];
+  assert.deepEqual(classifyEntries(rows.map((text) => entry(text))),
+    ["warn", "warn", "warn", "warn", "error", "error", "error", "info", "info"]);
+  assert.deepEqual(classifyEntries([entry("例外: RuntimeError"), entry("  example.py:1 (run)")]),
+    ["error", "error"]);
 });
 
 test("heartbeat のスタックは警告を引き継ぎ、次の通常ログでは終了する", () => {

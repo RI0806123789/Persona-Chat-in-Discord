@@ -243,7 +243,7 @@ class LegacyDataEdgeCaseTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        quiet = patch("builtins.print")
+        quiet = patch("persona_bot.core.database.logger")
         quiet.start()
         self.addCleanup(quiet.stop)
 
@@ -444,7 +444,7 @@ class ReminderClaimStatusTests(unittest.TestCase):
         ).fetchone())
 
     def claim(self, next_at) -> dict[int, dict]:
-        with patch("builtins.print"):
+        with patch("persona_bot.core.database.logger"):
             claimed = self.db.reminder_claim_due("2026-01-01T00:00:00+00:00", next_at)
         return {record["reminder_id"]: record for record in claimed}
 

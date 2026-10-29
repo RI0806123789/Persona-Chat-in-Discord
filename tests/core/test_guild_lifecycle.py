@@ -29,7 +29,7 @@ class GuildRemoveTests(unittest.IsolatedAsyncioTestCase):
 
                 autonomous = SimpleNamespace(stop_session=AsyncMock(side_effect=stop))
                 guard = SimpleNamespace(release=Mock())
-                with patch("builtins.print"):
+                with patch("persona_bot.core.guild_lifecycle.logger"):
                     if isinstance(error, asyncio.CancelledError):
                         with self.assertRaises(asyncio.CancelledError):
                             await remove_guild_state(1, state, autonomous, guard)

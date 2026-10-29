@@ -6,12 +6,23 @@ function isSystemEntry(entry: LogEntry): boolean {
   return entry.pid === 1 && entry.source === "systemd";
 }
 
+const LOGGING_PREFIX = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}\] \[(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)\] /;
+const LOGGER_NAME = /^\[[A-Za-z_][A-Za-z0-9_.]*\] /;
+
+/** 旧print・loggingの原文・時刻を除いた表示文から、隠すための会話見出しだけを認識する。 */
+export function conversationHeader(message: string): "user" | "ai" | null {
+  const body = message.replace(LOGGING_PREFIX, "").replace(LOGGER_NAME, "");
+  if (/^User \(.*?\)[：:]/.test(body)) return "user";
+  if (/^AI[：:]/.test(body)) return "ai";
+  return null;
+}
+
 /** 取得先頭は会話途中かもしれない。受信時に分類し、表示クリアや保持上限から独立させる。 */
 export function createLogPrivacyTracker(): (entry: LogEntry) => LogEntry {
   let state: "unknown" | "conversation" = "unknown";
   return (entry) => {
     if (isSystemEntry(entry)) return { ...entry, messagePrivacy: "system" };
-    if (/^(?:User \(.*?\)：|AI：)/.test(entry.message)) state = "conversation";
+    if (conversationHeader(entry.message)) state = "conversation";
     // 既知の運用ログに似た本文や、別PIDの行でも公開可能とは判断しない。
     return { ...entry, messagePrivacy: state };
   };

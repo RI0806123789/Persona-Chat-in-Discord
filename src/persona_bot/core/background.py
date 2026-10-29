@@ -22,6 +22,8 @@ asyncio のイベントループは実行中のタスクを**弱参照**でし�
 以前は同じ形が4組コピーされていた。
 """
 
+import logging
+
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,6 +31,9 @@ from typing import Any, Callable, Coroutine
 
 import discord
 from discord.ext import tasks
+
+
+logger = logging.getLogger(__name__)
 
 # 実行中タスクへの強参照。完了時にコールバックで取り除くため溜まり続けることはない。
 _background_tasks: set[asyncio.Task[Any]] = set()
@@ -141,7 +146,7 @@ def _on_task_done(task: asyncio.Task[Any], label: str) -> None:
 
     error = task.exception()
     if error is not None:
-        print(f"バックグラウンド処理エラー ({label}): {type(error).__name__}: {error}")
+        logger.error(f'バックグラウンド処理エラー ({label}): {type(error).__name__}', exc_info=error)
 
 
 async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -171,7 +176,7 @@ async def run_in_thread(function: Callable[..., Any], *args: Any, **kwargs: Any)
                 close()
         except Exception as cleanup_error:
             # 回収の失敗で、本来のキャンセルを別の例外に置き換えない。
-            print(f"キャンセル時の同期処理結果の回収に失敗しました: {type(cleanup_error).__name__}")
+            logger.error(f'キャンセル時の同期処理結果の回収に失敗しました: {type(cleanup_error).__name__}', exc_info=cleanup_error)
         raise asyncio.CancelledError
     if error is not None:
         raise error
@@ -216,7 +221,7 @@ def make_guarded_loop(
     1. `discord.ext.tasks.loop` で指定間隔のループにする。
     2. `before_loop` で `client.wait_until_ready()` を待つ。接続完了前に走らせると、
        チャンネルの取得やメッセージ送信が失敗するため。
-    3. 本体を `try/except Exception` で包み、`f"{label}: {error}"` の形でログに出す。
+    3. 本体を `try/except Exception` で包み、固定ラベル・例外型と発生箇所をログへ出す。
        tasks.Loop は本体が送出した例外でループ自体が停止するため、握りつぶさないと
        一度きりの失敗（API の一時エラーなど）で以降の見回りが二度と走らなくなる。
 
@@ -225,8 +230,7 @@ def make_guarded_loop(
             のようにバウンドメソッドをそのまま渡す。**コルーチンオブジェクトではなく
             「呼ぶとコルーチンを返すもの」を渡すこと**（コルーチンは1度しか await
             できず、2回目の実行で RuntimeError になるため）。
-        label: エラーログでコロンの前に出す文字列。`print(f"{label}: {error}")` を
-            そのまま組み立てるので、"リマインダー確認エラー" のように**末尾まで含めた
+        label: エラーログでコロンの前に出す固定の文字列。"リマインダー確認エラー" のように**末尾まで含めた
             文言**を渡すこと（"リマインダー" だけを渡すとログの文言が変わる）。
         client: 接続完了を待つ対象の Discord クライアント。
         minutes: 実行間隔（分）。`seconds` とはどちらか一方だけを指定する。
@@ -257,7 +261,7 @@ def make_guarded_loop(
                 with owner.scope():
                     await coro_factory()
         except Exception as error:
-            print(f"{label}: {error}")
+            logger.error(f'{label}: {type(error).__name__}', exc_info=error)
 
     @guarded_loop.before_loop
     async def before_guarded_loop() -> None:

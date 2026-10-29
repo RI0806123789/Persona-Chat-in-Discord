@@ -66,6 +66,17 @@ test("#219 配信終了後とインサイトなしでも過去の配信先を隠
   }
 });
 
+test("#283 logging接頭辞付きの運用文も名前と識別子を隠し、会話ログは全体を保護する", () => {
+  const prefix = "[2026-10-29T07:32:26+0900] [INFO] [persona_bot.services.autonomous_service] ";
+  for (const text of [prefix + start(), prefix + move]) {
+    hidden(privacy.redactLogLine(text, false, current(true)));
+    assert.equal(privacy.redactLogLine(text, false, current(false)), text);
+    const row = entry(text);
+    assert.deepEqual(privacy.conversationLines([row]), [true]);
+    assert.equal(privacy.redactLogLine(text, true, current(true)), privacy.MASK);
+  }
+});
+
 test("#219 接続失敗・準備失敗・復帰のチャンネル名も書式から隠す", () => {
   const text = [
     `自律行動: ${oldName} への接続を拒否されました（権限不足）。`,

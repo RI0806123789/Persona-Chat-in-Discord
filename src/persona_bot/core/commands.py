@@ -57,7 +57,7 @@ async def handle_command_error(
 ) -> None:
     """コマンドの失敗を応答状態に合わせて本人へ通知する。例外本文は公開しない。"""
     original = getattr(error, "original", error)
-    print(f"スラッシュコマンドの実行に失敗しました: {type(original).__name__}")
+    logger.error(f'スラッシュコマンドの実行に失敗しました: {type(original).__name__}', exc_info=original)
     if isinstance(error, app_commands.NoPrivateMessage):
         notice = "このコマンドはサーバー内で実行してください。"
     elif (
@@ -77,7 +77,7 @@ async def handle_command_error(
         else:
             await interaction.response.send_message(notice, ephemeral=True)
     except Exception as send_error:
-        print(f"スラッシュコマンドの失敗通知を送信できませんでした: {type(send_error).__name__}")
+        logger.error(f'スラッシュコマンドの失敗通知を送信できませんでした: {type(send_error).__name__}', exc_info=send_error)
 
 
 async def announce_voice_join(
@@ -89,7 +89,7 @@ async def announce_voice_join(
         try:
             await enable_stage_speaker(interaction.guild, channel)
         except Exception as error:
-            print(f"ステージの発言者への昇格に失敗しました: {type(error).__name__}: {error}")
+            logger.error(f'ステージの発言者への昇格に失敗しました: {type(error).__name__}', exc_info=error)
             await interaction.followup.send(
                 f"⚠️ {channel.name} へ接続していますが、ステージの発言者になれませんでした。"
                 "ボットを発言者へ招待するか、管理者にステージの「メンバーをミュート」権限を確認してください。",
@@ -359,6 +359,6 @@ def register_commands(
                 )
             await interaction.followup.send("退出しました。")
         except Exception as error:
-            print(f"切断エラー: {error}")
+            logger.error(f'切断エラー: {type(error).__name__}', exc_info=error)
             await interaction.followup.send("退出に失敗しました。")
 

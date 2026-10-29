@@ -18,6 +18,10 @@ from persona_bot.core.bot_client import PersonaClient
 from persona_bot.core.voice_commands import VoiceCommandCoordinator
 from persona_bot.services import autonomous_stage
 from tests.helpers.network_guard import block_network
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -147,7 +151,10 @@ class JoinCommandTests(unittest.IsolatedAsyncioTestCase):
                     reply = await self.join()
                 self.assertNotIn("架空の内部設定情報", reply)
                 self.assertNotIn(type(error).__name__, reply)
-                self.assertIn("架空の内部設定情報", "\n".join(logs.output))
+                log_text = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
+                self.assertNotIn("架空の内部設定情報", log_text)
+                self.assertIn(type(error).__name__, log_text)
+                self.assertTrue(any(record.exc_info and record.exc_info[1] is error for record in logs.records))
 
     def use_sdk_voice_cache(self):
         """Discord SDKの登録・解除を通し、外部への接続だけを差し替える。"""

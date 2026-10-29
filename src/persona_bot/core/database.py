@@ -40,6 +40,8 @@ _CREATE_TABLE_STATEMENTS は初版（バージョン1）の形のまま変更し
 両方を書き換えると二重適用でエラーになる）。
 """
 
+import logging
+
 import hashlib
 import json
 import re
@@ -57,6 +59,9 @@ from persona_bot.config.constants import (
     STATS_OPT_OUT_DEFAULT,
 )
 from persona_bot.utils.storage import write_json_file
+
+
+logger = logging.getLogger(__name__)
 
 # 現在のスキーマバージョン。スキーマを変更したら 1 つ上げる。
 SCHEMA_VERSION = 15
@@ -384,7 +389,7 @@ class Database:
             applied_versions = self._apply_migrations()
         # 途中失敗で取り消された移行を、成功したように記録しない。
         for version in applied_versions:
-            print(f"データベース: スキーマをバージョン {version} へ移行しました。")
+            logger.info(f'データベース: スキーマをバージョン {version} へ移行しました。')
         self._migrate_legacy_profile_rows()
         self._import_legacy_files()
         self._absorb_profile_json()
@@ -439,21 +444,21 @@ class Database:
                         " SELECT ?, key, value FROM profile_legacy_v2",
                         (owner,),
                     )
-                    print(f"データベース: 旧・全体共有プロフィールを user_id={owner} へ移行しました。")
+                    logger.info(f'データベース: 旧・全体共有プロフィールを user_id=<ID> へ移行しました。')
                 self._conn.execute("DROP TABLE profile_legacy_v2")
             if owner:
                 cursor = self._conn.execute(
                     "UPDATE pending_log SET user_id = ? WHERE user_id = ''", (owner,)
                 )
                 if cursor.rowcount:
-                    print(f"データベース: pending_log の未割当 {cursor.rowcount} 件を user_id={owner} へ振り直しました。")
+                    logger.info(f'データベース: pending_log の未割当 {cursor.rowcount} 件を user_id=<ID> へ振り直しました。')
             else:
                 # 引き継ぎ先が無いときは、旧・全体共有の会話ログも破棄する（profile と同じ方針）。
                 # 残すと user_id='' の「誰でもない利用者」として記憶圧縮の対象に数えられ、
                 # 誰も読まない記憶を作るために Gemini を呼び続ける。
                 cursor = self._conn.execute("DELETE FROM pending_log WHERE user_id = ''")
                 if cursor.rowcount:
-                    print(f"データベース: 引き継ぎ先が無いため、pending_log の未割当 {cursor.rowcount} 件を破棄しました。")
+                    logger.warning(f'データベース: 引き継ぎ先が無いため、pending_log の未割当 {cursor.rowcount} 件を破棄しました。')
 
     # ---- 旧 JSON / テキストファイルの取り込み --------------------------------
 
@@ -472,10 +477,10 @@ class Database:
                 importer(path)
                 backup_path = path.with_name(path.name + ".imported.bak")
                 path.replace(backup_path)
-                print(f"データベース: {filename} を取り込み、{backup_path.name} に改名しました。")
+                logger.info(f'データベース: {filename} を取り込み、{backup_path.name} に改名しました。')
             except Exception as error:
                 # 取り込み失敗でも起動は続ける（ファイルが残るので次回起動時に再試行される）
-                print(f"データベース: {filename} の取り込みに失敗しました: {error}")
+                logger.error(f'データベース: {filename} の取り込みに失敗しました: {type(error).__name__}', exc_info=error)
 
     def _import_affinity_json(self, path: Path) -> None:
         data = _load_legacy_json_object(path)
@@ -568,7 +573,7 @@ class Database:
             # 引き継ぎ先が無ければ取り込まない（_migrate_legacy_profile_rows と同じく破棄する）。
             # ファイルは呼び出し元が .imported.bak へ改名して残すため、内容は失われない。
             if entries:
-                print(f"データベース: 引き継ぎ先が無いため、pending_log.txt の {len(entries)} 件は取り込みません。")
+                logger.info(f'データベース: 引き継ぎ先が無いため、pending_log.txt の {len(entries)} 件は取り込みません。')
             return
         with self._lock, self._conn:
             imported = self._conn.execute(
@@ -626,19 +631,15 @@ class Database:
                 absorbed[self._legacy_owner_id] = list(data.keys())
 
             if not absorbed:
-                print("データベース: profile.json に取り込めるプロフィールがありません。"
-                      "ユーザー別形式と旧形式の引継ぎ先を確認してください。ファイルを保持します。")
+                logger.warning('データベース: profile.json に取り込めるプロフィールがありません。ユーザー別形式と旧形式の引継ぎ先を確認してください。ファイルを保持します。')
                 return
 
             write_json_file(path, {})
-            print(
-                f"データベース: profile.json から {len(absorbed)} 人分・"
-                f"{sum(len(keys) for keys in absorbed.values())} 項目を profile テーブルへ追加しました。"
-            )
+            logger.info(f'データベース: profile.json から {len(absorbed)} 人分・{sum((len(keys) for keys in absorbed.values()))} 項目を profile テーブルへ追加しました。')
         except json.JSONDecodeError as error:
-            print(f"データベース: profile.json が JSON として読めないため取り込みをスキップします: {error}")
+            logger.error(f'データベース: profile.json が JSON として読めないため取り込みをスキップします: {type(error).__name__}', exc_info=error)
         except Exception as error:
-            print(f"データベース: profile.json の取り込みに失敗しました: {error}")
+            logger.error(f'データベース: profile.json の取り込みに失敗しました: {type(error).__name__}', exc_info=error)
 
     # ---- profile（プロフィール記憶） ------------------------------------------
 
@@ -921,20 +922,14 @@ class Database:
                 try:
                     next_iso = next_at(record)
                 except Exception as error:
-                    print(
-                        f"データベース: リマインダーの次回時刻を計算できませんでした"
-                        f" (id={reminder_id}): {error}"
-                    )
+                    logger.error('データベース: リマインダーの次回時刻を計算できませんでした。', exc_info=error)
                     next_iso = None
 
                 # 次回時刻が現在以前だと pending のまま残り、上の SELECT と同じ条件で
                 # 次の見回りが同じ系列を取り直し続ける（#222）。計算側の不具合として
                 # 「作れなかった」扱いにし、下の分岐で系列を止める。
                 if next_iso and str(next_iso) <= str(now_iso):
-                    print(
-                        f"データベース: リマインダーの次回時刻が現在以前のため系列を止めます"
-                        f" (id={reminder_id}, 次回={next_iso})"
-                    )
+                    logger.warning('データベース: リマインダーの次回時刻が現在以前のため系列を止めます。')
                     next_iso = None
 
                 if next_iso:

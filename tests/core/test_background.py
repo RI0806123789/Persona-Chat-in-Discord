@@ -70,7 +70,7 @@ class RunInThreadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_close_error_does_not_replace_cancellation(self):
         close = Mock(side_effect=OSError("架空の回収エラー"))
-        with patch("builtins.print"):
+        with self.assertLogs("persona_bot.core.background", level="ERROR"):
             await self.assert_canceled_after_worker(lambda: SimpleNamespace(close=close))
         close.assert_called_once_with()
 
@@ -80,7 +80,7 @@ class RunInThreadTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 raise OSError("架空の属性取得エラー")
 
-        with patch("builtins.print"):
+        with self.assertLogs("persona_bot.core.background", level="ERROR"):
             await self.assert_canceled_after_worker(Result)
 
     async def test_worker_error_does_not_replace_cancellation(self):

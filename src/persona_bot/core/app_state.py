@@ -1,3 +1,5 @@
+
+import logging
 import asyncio
 from weakref import WeakValueDictionary
 from dataclasses import dataclass, field
@@ -17,6 +19,9 @@ from persona_bot.config.constants import (
 )
 from persona_bot.config.personas import FOLLOW_DEFAULT_PERSONA, current_persona_catalog, persona_file_name
 from persona_bot.core.background import run_in_thread
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -175,7 +180,7 @@ class GuildSettings:
             if valid:
                 setattr(self, attribute, value)
             else:
-                print(f"サーバー設定: 保存済みの {key} が無効なため既定値へ戻します。")
+                logger.warning(f'サーバー設定: 保存済みの {key} が無効なため既定値へ戻します。')
                 setattr(self, attribute, default)
         if values.get("grounding_enabled") is not None:
             self.grounding_enabled = bool(values["grounding_enabled"])
@@ -188,7 +193,7 @@ class GuildSettings:
                 and any(choice.value == interval for choice in AUTO_TOPIC_INTERVAL_CHOICES)):
             self.auto_topic_interval_hours = interval
         elif interval is not None:
-            print("サーバー設定: 保存済みの auto_topic_interval_hours が無効なため既定値へ戻します。")
+            logger.warning('サーバー設定: 保存済みの auto_topic_interval_hours が無効なため既定値へ戻します。')
             self.auto_topic_interval_hours = DEFAULT_AUTO_TOPIC_INTERVAL_HOURS
         for key in ("autonomous_stage_channel_id", "autonomous_voice_channel_id"):
             if key in values:
@@ -205,15 +210,12 @@ class GuildSettings:
             return
         file_name = persona_file_name(value)
         if file_name is None:
-            print("サーバー設定: 保存済みの prompt_file が無効なため既定値へ戻します。")
+            logger.warning('サーバー設定: 保存済みの prompt_file が無効なため既定値へ戻します。')
             self.current_prompt_file = FOLLOW_DEFAULT_PERSONA
             return
         self.current_prompt_file = value
         if not current_persona_catalog().contains(value):
-            print(
-                f"サーバー設定: 保存済みのペルソナ（{file_name}）が prompts/ に見つかりません。"
-                "ファイルを戻すまで既定のペルソナで応答します。"
-            )
+            logger.warning('サーバー設定: 保存済みのペルソナが prompts/ に見つかりません。ファイルを戻すまで既定のペルソナで応答します。')
 
     async def persist(self) -> None:
         """現在の設定値を DB へ保存する。設定を変更した UI 側が変更確定後に呼ぶ。
@@ -246,7 +248,7 @@ class GuildSettings:
                     autonomous_voice_channel_id=self.autonomous_voice_channel_id,
                 )
             except Exception as error:
-                print(f"ギルド設定の保存に失敗しました (guild_id={self.guild_id}): {error}")
+                logger.error(f'ギルド設定の保存に失敗しました (guild_id=<ID>): {type(error).__name__}', exc_info=error)
 
     async def record_anniversary_post(self, user_id: str, label: str, posted_date: str) -> None:
         """記念日のお祝いを投稿したことを、メモリと DB の両方へ記録する。
@@ -263,7 +265,7 @@ class GuildSettings:
                 self._db.anniversary_post_record, self.persist_key, user_id, label, posted_date
             )
         except Exception as error:
-            print(f"記念日の投稿記録の保存に失敗しました (guild_id={self.guild_id}): {error}")
+            logger.error(f'記念日の投稿記録の保存に失敗しました (guild_id=<ID>): {type(error).__name__}', exc_info=error)
 
 
 def _persisted_channel_id(key: str, value: Any) -> int | None:
@@ -276,7 +278,7 @@ def _persisted_channel_id(key: str, value: Any) -> int | None:
         return None
     if type(value) is int and value > 0:
         return value
-    print(f"サーバー設定: 保存済みの {key} が無効なため「指定なし」へ戻します。")
+    logger.warning(f'サーバー設定: 保存済みの {key} が無効なため「指定なし」へ戻します。')
     return None
 
 
@@ -393,7 +395,7 @@ class BotState:
             saved_settings = db.guild_settings_load_all()
             saved_posts = db.anniversary_posts_load_all()
         except Exception as error:
-            print(f"保存済みのギルド設定の読み込みに失敗しました: {error}")
+            logger.error(f'保存済みのギルド設定の読み込みに失敗しました: {type(error).__name__}', exc_info=error)
             return
 
         for guild_key, values in saved_settings.items():
@@ -402,7 +404,7 @@ class BotState:
             self._settings_for_key(guild_key).anniversary_posted_dates.update(posted)
 
         if saved_settings:
-            print(f"データベース: {len(saved_settings)} 件のサーバー設定を復元しました。")
+            logger.info(f'データベース: {len(saved_settings)} 件のサーバー設定を復元しました。')
 
     def _settings_for_key(self, guild_key: int) -> GuildSettings:
         """起動時の一括復元先を返す。取得済みの値を使うため、ここではDBを読み直さない。"""

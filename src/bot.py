@@ -1,19 +1,13 @@
-import sys
+import logging
+
+from persona_bot.utils.logging_setup import configure_logging
+
+# 全モジュールを読み込む前に、UTF-8 の標準出力とログ形式を1か所で設定する。
+configure_logging()
+logger = logging.getLogger(__name__)
 
 import discord
 from discord import app_commands
-
-# Windows の既定コンソール（cp932）は絵文字などを出力できず、print した時点で
-# UnicodeEncodeError になって処理がそこで止まる。ボット名・ユーザーの発言・NGワード・
-# モデルの応答にはいずれも絵文字が入りうるため、標準出力を UTF-8（変換できない文字は
-# 置換）に設定してログ出力でボットの処理が中断されないようにする。
-for _stream in (sys.stdout, sys.stderr):
-    _reconfigure = getattr(_stream, "reconfigure", None)
-    if _reconfigure is not None:
-        try:
-            _reconfigure(encoding="utf-8", errors="replace")
-        except Exception as _error:  # 出力設定の失敗でボットを止めない
-            print(f"標準出力のエンコーディング設定に失敗しました: {_error}")
 
 from persona_bot.core.app_state import BotState
 from persona_bot.services.affinity_service import AffinityService
@@ -194,7 +188,8 @@ feedback_prune_loop = make_guarded_loop(
 async def on_ready() -> None:
     if client.background_tasks.stopping:
         return
-    print(f"ログイン成功: {client.user}")
+    # 起動確認と管理コンソールのボット名表示に必要なため、接続したボット名だけを記録する。
+    logger.info("ログイン成功: %s", client.user)
     async with memory.io_lock:
         await run_in_thread(memory.ensure_storage)
 
@@ -251,7 +246,7 @@ async def on_guild_join(guild: discord.Guild) -> None:
         welcome_text = build_welcome_text(resolve_bot_name(client.user))
         await post_welcome_message(guild, welcome_text, state.welcomed_guild_ids)
     except Exception as error:
-        print(f"ウェルカムメッセージの処理エラー（guild={guild.id}）: {error}")
+        logger.error("ウェルカムメッセージの処理エラー。", exc_info=True)
 
 
 @client.event
@@ -277,7 +272,7 @@ async def on_voice_state_update(
     try:
         voice_guard.handle_voice_state_update(member, before, after)
     except Exception as error:
-        print(f"ボイス接続の保護の処理エラー: {type(error).__name__}: {error}")
+        logger.error("ボイス接続の保護の処理エラー。", exc_info=True)
 
 
 @client.event
@@ -300,7 +295,8 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
 
 
 def main() -> None:
-    client.run(settings.TOKEN_DISCORD)
+    # discord.py 側で別の stderr ハンドラを追加せず、上の共通設定へ揃える。
+    client.run(settings.TOKEN_DISCORD, log_handler=None)
 
 
 if __name__ == "__main__":

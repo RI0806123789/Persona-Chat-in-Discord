@@ -4,7 +4,7 @@
 // bot.db のテーブルの中身は、列の種類ごとに隠す（dbTables.ts の isSecretKind）。
 import { createContext, useContext } from "react";
 import type { ConnectionState, GitInfo, Insights, Profile } from "./types";
-import { conversationLines } from "./logPrivacy";
+import { conversationHeader, conversationLines } from "./logPrivacy";
 export { conversationLines } from "./logPrivacy";
 
 export const MASK = "••••••";
@@ -143,8 +143,6 @@ export function redactError(text: string | null | undefined, safeText: string | 
 // ---------------------------------------------------------------- ログの会話の本文
 
 // 任意本文は運用ログと区別できないため、受信時の属性で隠す（logPrivacy.ts）。
-const USER_LINE = /^User \((.*?)\)：/;
-const AI_LINE = /^AI：/;
 const CHANNEL_MENTION = /#[^\s#、。，．,.:：)）」』\]]+/g;
 
 /** 伏せ字モードで、ログ1行を見せる形にする。 */
@@ -152,8 +150,9 @@ export function redactLogLine(text: string, isConversation: boolean, privacy: Pr
   if (!privacy.enabled) return text;
   if (isConversation) {
     // 「User (場所)：」「AI：」の見出しだけ残し、誰が・どこで・何を話したかは隠す
-    if (USER_LINE.test(text)) return `User (${MASK})：${MASK}`;
-    if (AI_LINE.test(text)) return `AI：${MASK}`;
+    const header = conversationHeader(text);
+    if (header === "user") return `User (${MASK})：${MASK}`;
+    if (header === "ai") return `AI：${MASK}`;
     return MASK;
   }
   return privacy.redact(text).replace(CHANNEL_MENTION, `#${MASK}`);

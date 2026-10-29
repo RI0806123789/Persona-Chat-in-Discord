@@ -101,7 +101,7 @@ class PackageLayoutTests(unittest.TestCase):
                 namespace = runpy.run_path('bot.py', run_name='__main__')
                 try:
                     factory.assert_called_once_with('FICTIONAL_GEMINI_KEY')
-                    run.assert_called_once_with('FICTIONAL_DISCORD_TOKEN')
+                    run.assert_called_once_with('FICTIONAL_DISCORD_TOKEN', log_handler=None)
                     assert {command.name for command in namespace['tree'].get_commands()} == {'functions', 'join', 'leave'}
                     assert Path('../data/memory/bot.db').is_file()
                     assert not Path('../memory').exists()

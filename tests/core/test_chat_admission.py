@@ -20,6 +20,10 @@ from persona_bot.services.agent_plan import AgentPlan
 from tests.helpers.message_handler_helpers import make_message_handler
 from tests.helpers.network_guard import block_network
 from tests.helpers.persona_helpers import install_empty_persona_catalog
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class ChatAdmissionTests(unittest.TestCase):
@@ -258,9 +262,11 @@ class MessageAdmissionTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(例外=type(error).__name__):
                 message = self.message(user=user)
                 message.reply.side_effect = error
-                with patch("builtins.print") as log:
+                with self.assertLogs("persona_bot.core.message_handler", level="ERROR") as logs:
                     await self.handler.on_message(message)
-                self.assertIn(type(error).__name__, log.call_args.args[0])
+                self.assertIn(type(error).__name__, logs.records[-1].getMessage())
+                self.assertNotIn("架空の失敗", LOG_FORMATTER.format(logs.records[-1]))
+                self.assertIs(logs.records[-1].exc_info[1], error)
                 await self.handler.on_message(message)
                 message.reply.assert_awaited_once()
         self.moderator.check_and_route.assert_not_awaited()

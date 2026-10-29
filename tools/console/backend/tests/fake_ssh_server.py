@@ -76,6 +76,12 @@ SEPARATOR_LINE = "-" * 124
 MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
 
 
+def logging_line(message: str, *, logger: str = "persona_bot.core.bot_client", at: float | None = None) -> str:
+    """新しい標準出力の書式を、実際の logging 設定を変更せず再現する。"""
+    stamp = datetime.fromtimestamp(at if at is not None else time.time(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
+    return f"[{stamp}] [INFO] [{logger}] {message}"
+
+
 def fake_commit(number: int) -> str:
     """作り物のコミット ID（40 桁の16進数）。"""
     return hashlib.sha1(f"fake-commit-{number}".encode()).hexdigest()
@@ -217,11 +223,11 @@ class FakeBot:
             self.log(message, at=moments[0] - 4)
         for index, moment in enumerate(moments):
             if index % 9 == 4:
-                self.log_conversation(at=moment)
+                self.log_conversation(at=moment, structured=index % 18 == 4)
             else:
                 self.log(random_log_message(), at=moment)
 
-    def log_conversation(self, at: float | None = None) -> None:
+    def log_conversation(self, at: float | None = None, *, structured: bool = False) -> None:
         """会話1件ぶんのログを、ボットと同じ形で複数行に分けて出す。"""
         label, question, attachments, answer = random.choice(CONVERSATIONS)
         total_in, total_out = random.randint(800, 6000), random.randint(80, 900)
@@ -237,7 +243,8 @@ class FakeBot:
             SEPARATOR_LINE,
         ]
         for line in lines:
-            self.log(line, at=at)
+            message = logging_line(line, logger="persona_bot.utils.usage_graph", at=at) if structured else line
+            self.log(message, at=at)
 
     async def live_loop(self, interval: tuple[float, float]) -> None:
         while True:
@@ -333,7 +340,7 @@ class FakeBot:
                 self.failed = True
                 self.log(f"{SERVICE_NAME}.service: Main process exited, code=exited, status=1/FAILURE", source="systemd")
                 return
-            self.log(message)
+            self.log(logging_line(message))
 
     # ---------------------------------------------------------- その他のコマンド
 

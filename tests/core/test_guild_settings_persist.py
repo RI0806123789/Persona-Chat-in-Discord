@@ -52,12 +52,12 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
 
     def test_invalid_auto_topic_intervals_use_default_without_logging_values(self) -> None:
         for interval in (True, False, 0, -1, 2, 25, 1.0, "1", [], {"架空": "設定"}):
-            with self.subTest(interval=interval), patch("builtins.print") as logging:
+            with self.subTest(interval=interval), patch("persona_bot.core.app_state.logger") as logging:
                 settings = GuildSettings(auto_topic_interval_hours=24)
                 settings.apply_persisted({"auto_topic_interval_hours": interval})
                 self.assertEqual(settings.auto_topic_interval_hours, constants.DEFAULT_AUTO_TOPIC_INTERVAL_HOURS)
-                logging.assert_called_once()
-                self.assertNotIn(str(interval), str(logging.call_args_list))
+                logging.warning.assert_called_once()
+                self.assertNotIn(str(interval), str(logging.warning.call_args_list))
 
     def test_missing_auto_topic_interval_keeps_current_value(self) -> None:
         for values in ({}, {"auto_topic_interval_hours": None}):
@@ -81,25 +81,26 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
 
     def test_disallowed_values_use_defaults_without_logging_saved_values(self) -> None:
         for value in ("架空の廃止された値", ["不正な型"], {"不正": "型"}):
-            with self.subTest(value=value), patch("builtins.print") as logging:
+            with self.subTest(value=value), patch("persona_bot.core.app_state.logger") as logging:
                 settings = GuildSettings(current_prompt_file="previous", current_model_name="previous", current_respond_mode="previous")
                 settings.apply_persisted({key: value for key in ("prompt_file", "model_name", "respond_mode")})
                 self.assertEqual(settings.current_prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
                 self.assertEqual(settings.current_model_name, constants.DEFAULT_MODEL_NAME)
                 self.assertEqual(settings.current_respond_mode, constants.DEFAULT_RESPOND_MODE)
-                self.assertEqual(logging.call_count, 3)
-                self.assertNotIn(str(value), str(logging.call_args_list))
+                self.assertEqual(logging.warning.call_count, 3)
+                self.assertNotIn(str(value), str(logging.warning.call_args_list))
 
     def test_missing_prompt_file_keeps_value_and_responds_with_default(self) -> None:
         # Git の更新でキャラ別のファイルが一時的に消えても、保存値は残して既定で応答する。
         # ファイルを戻して一覧を読み直せば、元のペルソナに戻る。
         install_persona_catalog(self, "../prompts/既定.txt", default="../prompts/既定.txt")
         settings = GuildSettings(current_model_name=choices.MODEL_CHOICES[0].value)
-        with patch("builtins.print") as logging:
+        with patch("persona_bot.core.app_state.logger") as logging:
             settings.apply_persisted({"prompt_file": "../prompts/消えたキャラ.txt"})
         self.assertEqual(settings.current_prompt_file, "../prompts/消えたキャラ.txt")
         self.assertEqual(settings.snapshot_response().prompt_file, "../prompts/既定.txt")
-        self.assertIn("消えたキャラ.txt", str(logging.call_args_list))
+        self.assertIn("保存済みのペルソナ", str(logging.warning.call_args_list))
+        self.assertNotIn("消えたキャラ.txt", str(logging.warning.call_args_list))
         self.assertEqual(settings.current_model_name, choices.MODEL_CHOICES[0].value)
 
         install_persona_catalog(self, "../prompts/既定.txt", "../prompts/消えたキャラ.txt", default="../prompts/既定.txt")
@@ -109,7 +110,7 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
         # 保存値から prompts/ の外（.env など）やテンプレートを読ませない
         for value in ("../.env", "../prompts/../.env", "../prompts/sub/架空.txt", "../prompts/..\\.env",
                       "../prompts/00_prompt_format.txt", "../prompts/.hidden.txt", "../prompts/架空.md"):
-            with self.subTest(value=value), patch("builtins.print"):
+            with self.subTest(value=value), patch("persona_bot.core.app_state.logger"):
                 settings = GuildSettings(current_prompt_file="previous")
                 settings.apply_persisted({"prompt_file": value})
                 self.assertEqual(settings.current_prompt_file, personas.FOLLOW_DEFAULT_PERSONA)
@@ -126,7 +127,7 @@ class GuildSettingsRestoreValidationTests(unittest.TestCase):
         # 既定を Gemini 3.5 Flash Lite へ変える前の既定を保存したサーバーも、次の起動で新しい既定へ移る。
         self.assertIn(constants.DEFAULT_MODEL_NAME, [choice.value for choice in choices.MODEL_CHOICES])
         settings = GuildSettings(current_model_name="previous")
-        with patch("builtins.print"):
+        with patch("persona_bot.core.app_state.logger"):
             settings.apply_persisted({"model_name": "gemini-3.1-flash-lite"})
         self.assertEqual(settings.current_model_name, "gemini-3.5-flash-lite")
         self.assertEqual(settings.current_model_name, constants.DEFAULT_MODEL_NAME)

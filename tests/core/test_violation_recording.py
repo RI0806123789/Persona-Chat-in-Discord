@@ -5,8 +5,6 @@
 """
 
 import asyncio
-from contextlib import redirect_stdout
-import io
 from pathlib import Path
 import sys
 import unittest
@@ -21,6 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from persona_bot.config.constants import BLACKLIST_MAX_VIOLATIONS
 from persona_bot.services.content_moderator import ContentModerator
 from tests.helpers.ng_pipeline import FICTIONAL_NG_WORD, NgPipeline
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
+
 
 NG_TEXT = f"{FICTIONAL_NG_WORD}を含む架空の質問です。"
 
@@ -44,16 +47,18 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reloaded.get_violation_count(user_id), BLACKLIST_MAX_VIOLATIONS)
 
     async def test_three_local_ng_inputs_block_and_log_each_recorded_count(self) -> None:
-        output = io.StringIO()
-        with redirect_stdout(output):
+        with self.assertLogs("persona_bot.core.message_handler", level="INFO") as logs:
             for _ in range(BLACKLIST_MAX_VIOLATIONS):
                 await self.send()
         self.assert_blocked_everywhere()
-        log = output.getvalue()
+        log = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
         # 検出ログだけでなく、記録できた回数もログで追える
         self.assertIn(f"1/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました", log)
         self.assertIn(f"2/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました", log)
         self.assertIn("ブラックリストに登録しました", log)
+        self.assertIn("NGワード検出 (ユーザー入力): 1 件", log)
+        self.assertIn("user_id=<ID>", log)
+        self.assertNotIn(FICTIONAL_NG_WORD, log)
 
     async def test_three_ai_unsafe_inputs_block(self) -> None:
         self.pipeline.moderator.check_and_route.return_value = (False, "架空の理由", "none", None)
@@ -74,9 +79,8 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("あと0回" in reply for reply in replies))
 
     async def test_save_failure_is_not_reported_as_a_counted_violation(self) -> None:
-        output = io.StringIO()
         with patch.object(self.pipeline.blacklist, "_save", side_effect=PermissionError("架空の保存拒否")), \
-                redirect_stdout(output):
+                self.assertLogs("persona_bot.core.message_handler", level="INFO") as logs:
             messages = [await self.send() for _ in range(BLACKLIST_MAX_VIOLATIONS)]
 
         for message in messages:
@@ -86,8 +90,11 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("NGワードが含まれている", reply)
             self.assertNotIn("あと", reply)
             self.assertNotIn("ブラックリストに登録されました", reply)
-        self.assertIn("保存に失敗したため、今回の違反は回数に数えていません", output.getvalue())
-        self.assertIn("PermissionError", output.getvalue())
+        log_text = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
+        self.assertIn("保存に失敗したため、今回の違反は回数に数えていません", log_text)
+        self.assertIn("PermissionError", log_text)
+        self.assertIn("user_id=<ID>", log_text)
+        self.assertNotIn("架空の保存拒否", log_text)
         self.assertFalse(self.pipeline.blacklist.is_blocked(11))
         self.assertEqual(self.pipeline.blacklist.get_violation_count(11), 0)
         self.assertFalse(self.pipeline.blacklist_path.exists())
@@ -143,14 +150,14 @@ class ViolationRecordingTests(unittest.IsolatedAsyncioTestCase):
                             await pipeline.blacklist.record_violation(11, "架空の利用者")
                     message = pipeline.message(NG_TEXT, mention=True)
                     message.reply.side_effect = error_type(SimpleNamespace(status=status, reason="架空の失敗"), "架空の失敗")
-                    output = io.StringIO()
                     with patch.object(pipeline.blacklist, "_save", wraps=pipeline.blacklist._save,
-                                      side_effect=OSError("架空の保存失敗") if case == "save_failure" else None), redirect_stdout(output):
+                                      side_effect=OSError("架空の保存失敗") if case == "save_failure" else None), \
+                            self.assertLogs("persona_bot.core.message_handler", level="INFO") as logs:
                         await pipeline.handler.on_message(message)
                     expected = {"warning": 1, "block": BLACKLIST_MAX_VIOLATIONS, "save_failure": 0}[case]
                     self.assertEqual(pipeline.blacklist.get_violation_count(11), expected)
                     self.assertEqual(pipeline.reloaded_blacklist().get_violation_count(11), expected)
-                    self.assertIn("違反通知: 送信に失敗しました", output.getvalue())
+                    self.assertIn("違反通知: 送信に失敗しました", "\n".join(LOG_FORMATTER.format(record) for record in logs.records))
 
 
 if __name__ == "__main__":
