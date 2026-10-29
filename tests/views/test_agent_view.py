@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import discord
 
 from persona_bot.config.constants import AGENT_DEFAULT_LINES
-from persona_bot.core.background import spawn
+from persona_bot.core.background import TaskOwner, spawn
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport
 from persona_bot.views import agent_view
@@ -123,6 +123,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await run
         await asyncio.wait_for(worker_cancelled.wait(), 1)
+        self.assertTrue(self.progress._view.is_finished())
 
 
     async def wait_for_worker_cleanup(self, trigger, *, repeat=False, broken=False, report=False, late_button=False):
@@ -299,6 +300,64 @@ class CancelButtonTests(unittest.IsolatedAsyncioTestCase):
         await button.callback(requester)
         requester.response.defer.assert_awaited_once()
         self.assertTrue(event.is_set())
+
+    async def test_discord_acknowledgement_errors_do_not_escape(self) -> None:
+        for user_id in (11, 12):
+            with self.subTest(user_id=user_id):
+                event = asyncio.Event()
+                view = agent_view.AgentCancelView(11, event)
+                self.addCleanup(view.stop)
+                error = discord.HTTPException(SimpleNamespace(status=400, reason="Bad Request"), "架空の送信失敗")
+                interaction = SimpleNamespace(
+                    user=SimpleNamespace(id=user_id),
+                    response=SimpleNamespace(
+                        send_message=AsyncMock(side_effect=error), defer=AsyncMock(side_effect=error),
+                    ),
+                )
+                with patch("builtins.print") as log:
+                    await view.children[0].callback(interaction)
+                self.assertEqual(event.is_set(), user_id == 11)
+                self.assertTrue(log.called)
+                self.assertNotIn("架空の送信失敗", str(log.call_args))
+
+    async def test_callback_is_collected_by_the_owner_on_shutdown(self) -> None:
+        owner = TaskOwner()
+        event, started, cleaned = (asyncio.Event() for _ in range(3))
+        with owner.scope():
+            view = agent_view.AgentCancelView(11, event)
+        self.addCleanup(view.stop)
+
+        async def defer():
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        interaction = SimpleNamespace(user=SimpleNamespace(id=11), response=SimpleNamespace(defer=AsyncMock(side_effect=defer)))
+        callback = asyncio.create_task(view.children[0].callback(interaction))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            self.assertIn(callback, owner._tasks)
+            await asyncio.wait_for(owner.shutdown(), 2)
+            self.assertTrue(callback.cancelled())
+            self.assertTrue(cleaned.is_set())
+        finally:
+            callback.cancel()
+            await asyncio.gather(callback, return_exceptions=True)
+
+    async def test_stopping_owner_rejects_callback_before_mutating_or_replying(self) -> None:
+        owner = TaskOwner()
+        event = asyncio.Event()
+        with owner.scope():
+            view = agent_view.AgentCancelView(11, event)
+        self.addCleanup(view.stop)
+        owner.stopping = True
+        interaction = SimpleNamespace(user=SimpleNamespace(id=11), response=SimpleNamespace(defer=AsyncMock()))
+        with self.assertRaises(asyncio.CancelledError):
+            await view.children[0].callback(interaction)
+        self.assertFalse(event.is_set())
+        interaction.response.defer.assert_not_awaited()
 
 
 if __name__ == "__main__":

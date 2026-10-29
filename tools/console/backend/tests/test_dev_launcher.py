@@ -132,6 +132,20 @@ class ConsoleLifetimeTests(unittest.TestCase):
         self.notify.assert_called_once()
         self.assert_stopped()
 
+    def test_frontend_exit_after_start_requests_graceful_backend_shutdown(self):
+        # 監視処理自体は差し替えず、Vite が先に異常終了した状況を再現する。
+        backend, frontend, browser = self.processes
+        frontend.poll.return_value = 7
+        frontend.returncode = 7
+        with self.assertRaisesRegex(RuntimeError, "画面配信が終了しました"):
+            launcher.run_console(self.root, self.notify)
+        self.notify.assert_called_once()
+        backend.stdin.close.assert_called_once()
+        backend.wait.assert_called_once_with(timeout=launcher.BACKEND_SHUTDOWN_TIMEOUT)
+        backend.terminate.assert_not_called()
+        frontend.terminate.assert_not_called()
+        browser.terminate.assert_called_once()
+
     def test_occupied_port_does_not_launch_or_stop_any_process(self):
         self.ports.side_effect = RuntimeError("ポートは使用中")
         with self.assertRaisesRegex(RuntimeError, "使用中"):

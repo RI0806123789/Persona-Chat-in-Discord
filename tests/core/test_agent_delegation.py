@@ -62,7 +62,7 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.generations = []
 
         async def generate(prompt, model_name, images=None, timeout=None, grounding=False):
-            self.generations.append(SimpleNamespace(prompt=prompt, model=model_name, grounding=grounding))
+            self.generations.append(SimpleNamespace(prompt=prompt, model=model_name, grounding=grounding, images=images))
             if "依頼主（別のAI）" in prompt:
                 step = sum("依頼主（別のAI）" in item.prompt for item in self.generations)
                 return GenerationResult(f"架空の子の出力{step}", None, [SOURCE], model_name)
@@ -171,6 +171,21 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.child_calls(), [])
         self.assertEqual(len(self.persona_calls()), 1)
 
+    async def test_delegation_reuses_borrowed_images_without_loading_or_closing_them(self) -> None:
+        self.message.attachments = [SimpleNamespace(filename="sample.png", content_type="image/png")]
+        for images in ([Mock()], []):
+            with self.subTest(image_count=len(images)):
+                self.generations.clear()
+                with patch("persona_bot.core.message_handler.load_image_attachments", new_callable=AsyncMock) as load:
+                    await self.handler._process_accepted_message(
+                        self.message, self.message.content, self.state.get_guild(1),
+                        accepts_normally=True, is_autonomous_comment=False, image_objects=images,
+                    )
+                load.assert_not_awaited()
+                self.assertIs(self.persona_calls()[0].images, images)
+                for image in images:
+                    image.close.assert_not_called()
+
     async def test_declined_or_missing_plan_answers_directly(self) -> None:
         for plan, declined in ((AgentPlan(delegate=False), True), (None, False)):
             with self.subTest(plan=plan):
@@ -266,7 +281,8 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
                 if trigger == "parent" or repeat:
                     with self.assertRaises(asyncio.CancelledError):
                         await asyncio.wait_for(run, 2)
-                    self.progress_message.edit.assert_not_awaited()
+                    self.progress_message.edit.assert_awaited_once_with(view=None)
+                    self.assertTrue(view.is_finished())
                 else:
                     await asyncio.wait_for(run, 2)
                     expected = "中止" if trigger == "button" else "うまくいきませんでした"
@@ -347,6 +363,66 @@ class AgentDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.message.reply.assert_not_awaited()
         self.handoff.edit.assert_awaited_once_with(view=None)
         self.assertTrue(self.agent.try_acquire("11"))
+
+    async def cancel_work_thread(self, phase, *, broken_cleanup=False, repeat=False) -> None:
+        self.enable_work_thread()
+        started, editing, release, cleaned = (asyncio.Event() for _ in range(4))
+
+        async def wait_for_cancel(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        if phase == "worker":
+            self.gemini.generate_with_metadata.side_effect = wait_for_cancel
+        else:
+            self.moderator.check.side_effect = wait_for_cancel
+
+        async def edit(**kwargs):
+            editing.set()
+            await release.wait()
+            cleaned.set()
+            if broken_cleanup:
+                raise RuntimeError("架空のボタン回収失敗")
+
+        self.handoff.edit.side_effect = edit
+        with patch("builtins.print"):
+            run = asyncio.create_task(self.handler.on_message(self.message))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                run.cancel()
+                await asyncio.wait_for(editing.wait(), 2)
+                view = self.thread.send.await_args_list[0].kwargs["view"]
+                self.assertTrue(view.is_finished())
+                self.assertFalse(run.done())
+                self.assertFalse(self.agent.try_acquire("11"))
+                if repeat:
+                    for _ in range(3):
+                        run.cancel()
+                        await asyncio.sleep(0)
+                        self.assertFalse(run.done())
+                        self.assertFalse(cleaned.is_set())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(run, 2)
+                self.assertTrue(cleaned.is_set())
+                self.handoff.edit.assert_awaited_once_with(view=None)
+                self.assertTrue(self.agent.try_acquire("11"))
+                self.agent.release("11")
+                self.send.assert_not_awaited()
+                self.tts.assert_not_awaited()
+            finally:
+                release.set()
+                run.cancel()
+                await asyncio.gather(run, return_exceptions=True)
+
+    async def test_external_cancel_removes_work_thread_button_before_releasing_slot(self) -> None:
+        await self.cancel_work_thread("worker", repeat=True)
+
+    async def test_cancel_during_child_report_screening_removes_work_thread_button(self) -> None:
+        await self.cancel_work_thread("screening")
+
+    async def test_button_cleanup_failure_does_not_replace_external_cancellation(self) -> None:
+        await self.cancel_work_thread("worker", broken_cleanup=True)
 
     async def test_failed_delegation_in_work_thread_is_told_in_channel(self) -> None:
         self.enable_work_thread()

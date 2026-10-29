@@ -357,6 +357,7 @@ class MessageHandler:
             if agent_plan is not None and agent_plan.delegate:
                 response_text = await self._handle_agent_request(
                     message, question, memory_category, agent_plan, response_settings,
+                    image_objects=image_objects,
                 )
             else:
                 # サブエージェントを求められたが不要と判断した場合は、人格役がその旨を一言添えて直接答える。
@@ -382,6 +383,8 @@ class MessageHandler:
         memory_category: str,
         plan: AgentPlan,
         response_settings: ResponseSettings,
+        *,
+        image_objects: list | None = None,
     ) -> str | None:
         """子（サブエージェント）に作業させ、報告を人格役がペルソナの口調で言い直して返信する（#170）。
 
@@ -389,6 +392,7 @@ class MessageHandler:
         委託内容を伝えて子が Webhook で進捗と報告を残す（#267）。使えなければ1通のメッセージを
         書き換える。子の失敗・期限切れ・中止は定型文で伝えて終える（人格役の生成はしない）。
         返信の後処理（親密度・モデレーション・評価・記憶）は通常の会話と同じ handle_chat_message に任せる。
+        image_objects は読込済み画像の借用として人格役へ渡し、この経路では閉じない。
         """
         user_id = str(message.author.id)
         catalog = current_persona_catalog()
@@ -400,6 +404,8 @@ class MessageHandler:
             except discord.DiscordException as error:
                 print(f"サブエージェント: 受付できない旨を送れませんでした: {type(error).__name__}")
             return None
+        progress = None
+        progress_finished = False
         try:
             # ロール・依頼内容・出力形式・手順名は進捗や作業スレッドへそのまま出るため、NG ワードを伏せておく。
             plan = AgentPlan(
@@ -431,17 +437,24 @@ class MessageHandler:
                 )
                 if not accepted:
                     await progress.finish("failed")
+                    progress_finished = True
                     return None
             await progress.finish(outcome, report if progress.shows_report else None)
+            progress_finished = True
             if report is None:
                 return None
             return await self.handle_chat_message(
                 message, question, memory_category, response_settings=response_settings,
                 delegation_section=build_agent_report_section(plan.role, report.text),
                 delegated_sources=report.sources,
+                image_objects=image_objects,
             )
         finally:
-            self.agent.release(user_id)
+            try:
+                if progress is not None and not progress_finished:
+                    await progress.close()
+            finally:
+                self.agent.release(user_id)
 
     async def handle_chat_message(
         self,

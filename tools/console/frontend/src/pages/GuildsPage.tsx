@@ -110,7 +110,10 @@ export function GuildsPage({
 }
 
 function SettingsList({ settings }: { settings: GuildSettingsView }) {
+  const privacy = usePrivacy();
   const persona = describePersona(settings);
+  const channel = (id: string | null | undefined) =>
+    id === undefined ? "この版には無い機能" : id === null ? "指定なし（自動）" : `ID: ${privacy.mask(id)}`;
   const rows: { icon: IconName; label: string; value: string; muted?: boolean }[] = [
     { icon: "sparkle", label: "ペルソナ", value: persona.value },
     { icon: "bolt", label: "モデル", value: settings.model ?? "—" },
@@ -126,6 +129,18 @@ function SettingsList({ settings }: { settings: GuildSettingsView }) {
       label: "自律行動",
       value: settings.autonomous_enabled === null ? "この版には無い機能" : settings.autonomous_enabled ? "ON" : "OFF",
       muted: settings.autonomous_enabled === null,
+    },
+    {
+      icon: "stage",
+      label: "配信先（ステージ）",
+      value: channel(settings.autonomous_stage_channel_id),
+      muted: settings.autonomous_stage_channel_id === undefined,
+    },
+    {
+      icon: "voice",
+      label: "配信先（ボイス）",
+      value: channel(settings.autonomous_voice_channel_id),
+      muted: settings.autonomous_voice_channel_id === undefined,
     },
   ];
   return (

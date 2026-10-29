@@ -4,6 +4,7 @@
 """
 
 import ast
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -50,7 +51,8 @@ AUTO_TOPIC_INTERVAL_CHOICES = [
 '''
 
 
-def make_fake_bot(root: Path, *, layout: str, with_autonomous_column: bool) -> None:
+def make_fake_bot(root: Path, *, layout: str, with_autonomous_column: bool,
+                  with_channel_columns: bool = False) -> None:
     """ボットのフォルダ構成だけを真似た一時フォルダを作る。"""
     source = root / ("index" if layout == "index" else "src/persona_bot/config")
     source.mkdir(parents=True)
@@ -68,6 +70,8 @@ def make_fake_bot(root: Path, *, layout: str, with_autonomous_column: bool) -> N
               "grounding_enabled INTEGER, auto_topic_enabled INTEGER, auto_topic_interval_hours INTEGER"
     if with_autonomous_column:
         columns += ", autonomous_enabled INTEGER"
+    if with_channel_columns:
+        columns += ", autonomous_stage_channel_id INTEGER, autonomous_voice_channel_id INTEGER"
     con.execute(f"CREATE TABLE guild_settings ({columns})")
     con.execute(
         "INSERT INTO guild_settings (guild_id, prompt_file, model_name, respond_mode, grounding_enabled, "
@@ -264,6 +268,35 @@ subprocess.run = _fake_run
         self.assertEqual(data["source_dir"], "src")
         self.assertTrue(data["autonomous_supported"])
         self.assertIs(data["dm_settings"]["autonomous_enabled"], False)
+
+    def test_v15_channel_settings_preserve_ids_and_default_without_writing_db(self) -> None:
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True, with_channel_columns=True)
+        stage_id, voice_id = 2 ** 60 + 1, 2 ** 60 + 3  # 架空値。JS の安全な整数範囲を超える。
+        db_path = self.root / "data/memory/bot.db"
+        # 接続のwithはトランザクションだけを終えるため、Windowsの削除前に明示的に閉じる。
+        with closing(sqlite3.connect(db_path)) as con, con:
+            con.execute(
+                "INSERT INTO guild_settings (guild_id, autonomous_stage_channel_id, autonomous_voice_channel_id) "
+                "VALUES (?, ?, ?)", (11, stage_id, voice_id),
+            )
+        before = db_path.read_bytes()
+        data = self.insights(journal=[], settings_cases=[{}])
+        settings = data["discord"]["guilds"][0]["settings"]
+        self.assertEqual(settings["autonomous_stage_channel_id"], str(stage_id))
+        self.assertEqual(settings["autonomous_voice_channel_id"], str(voice_id))
+        for defaults in (data["dm_settings"], data["settings_cases"][0]):
+            self.assertIsNone(defaults["autonomous_stage_channel_id"])
+            self.assertIsNone(defaults["autonomous_voice_channel_id"])
+        self.assertEqual(db_path.read_bytes(), before)
+
+    def test_v15_channel_settings_reject_invalid_saved_values(self) -> None:
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True, with_channel_columns=True)
+        invalid = (None, 0, -1, True, False, "12", 1.2, [], {})
+        cases = [{"autonomous_stage_channel_id": value, "autonomous_voice_channel_id": value}
+                 for value in invalid]
+        for view in self.insights(journal=[], settings_cases=cases)["settings_cases"]:
+            self.assertIsNone(view["autonomous_stage_channel_id"])
+            self.assertIsNone(view["autonomous_voice_channel_id"])
 
     def test_without_token_reports_error(self) -> None:
         make_fake_bot(self.root, layout="index", with_autonomous_column=False)

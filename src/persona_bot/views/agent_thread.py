@@ -221,7 +221,7 @@ class AgentThreadProgress(AgentProgressBase):
             await progress._child_send(progress._line("child_start"))
         except BaseException:
             # 途中で止められたら、押しても誰も待っていない中止ボタンを残さない
-            progress._view.stop()
+            await progress.close()
             raise
         return progress
 
@@ -312,5 +312,9 @@ async def start_agent_progress(
     if progress is not None:
         return progress
     fallback = AgentProgress(message, lines, plan)
-    await fallback.start()
+    try:
+        await fallback.start()
+    except BaseException:
+        await fallback.close()
+        raise
     return fallback

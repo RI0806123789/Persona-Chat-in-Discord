@@ -123,6 +123,8 @@ python bot.py     # 成功時に "ログイン成功: <bot>" と表示される
 
 ## 開発者用ダッシュボード (`tools/console/`)
 
+サーバー設定インサイトはスキーマ15の`autonomous_stage_channel_id` / `autonomous_voice_channel_id`も取得する。正の整数のIDは精度を保つ文字列、指定なしは`null`、列が無い旧版は項目なしとして区別する。サーバー一覧とDM設定の専用欄は描画時に`mask`し、`collectSecrets`にも登録する。設定名を取得するためのDiscord API呼出しは増やさない（#292）。
+
 インサイトのモデル・応答モード・自発会話間隔は、保存値を各選択肢と照合し、ボット本体の`GuildSettings.apply_persisted`と同じ既定値へ解決する（間隔は整数のみで`bool`を除外）。`journal()`は成功時に一覧（0件を含む）、失敗時に`None`を返す。初回のログ取得失敗時は古い会話の検索を重ねず、`note()`は同じエラー文を初出順に1件だけ記録する（#259）。
 
 SSH設定由来の`SshError`は対象ファイルと対処方法を維持して返す。ログのWebSocket切断後は理由と受信済みの行を残し、自動再接続せず手動再接続を待つ。`journalctl -g`の終了コード1・標準エラーなしだけは検索結果0件とし、実際の取得失敗は警告する。
@@ -400,6 +402,8 @@ gTTSへの退避では、各HTTP要求へ `TTS_GTTS_CONNECT_TIMEOUT_SECONDS`・`
 
 ### キャラ設定 UI (`settings_view.py`, `commands.py`, `choices.py`)
 
+配信先パネルの「戻る」は`OpenAutonomousChannelButton`から渡す`make_settings`でキャラ設定を作り直す。共通`BackButton`は指定された`make_parent`を優先し、指定が無ければ従来どおり`make_hub`を使う。非同期の生成関数を待つ前に操作世代を確保し、待機中の時間切れや別の遷移で失効した結果を表示しない。キャラ設定からは次の「戻る」で機能ハブへ戻れる。ブラックリスト判定・メッセージ参照の引継ぎは共通の遷移処理に任せ、戻る操作では未確定の配信先を保存しない。管理者用ボタンは戻る操作時点の権限で表示し直し、全体の違反件数は応答保留後に最新の所有者を再確認してから表示する（#292）。
+
 `/functions` のハブ（`functions_view.py` の `FunctionsView`、エフェメラル）から **⚙️ キャラ設定** を選ぶと、同じメッセージが `SettingsView` に変身する（ペルソナ/モデル/応答モードのセレクト + 確定/戻る/リセットボタン、120秒タイムアウト）。一時的な選択値は View 上に保持され、**確定 (Confirm)** ボタンを押したときにのみ `GuildSettings`（`/functions` 実行時に `interaction.guild_id` から解決したもの）に書き込まれる — それまでは共有状態を一切変更しない。Google検索（グラウンディング）のトグルはハブ側にあり、こちらは押した瞬間に `GuildSettings` へ反映される（ハブは「その場で実行」系のため）。**各 View は `BotState` ではなく `GuildSettings` を受け取る** ため、設定変更の影響はそのサーバー内（DM の場合は全 DM）に閉じる。`choices.py` はモデル/モード、および要約期間（`SUMMARY_PERIOD_CHOICES`）の選択肢リストと表示名マップの唯一の情報源。ペルソナの選択肢は固定の一覧を持たず、`personas.py` が `prompts/` から作る（次項）。
 
 **🎙️ 配信先（`autonomous_channel_view.py` の `AutonomousChannelView`。管理者専用、#266）**: キャラ設定パネルは row 0〜2 をセレクトで使っているため、自律行動の配信先はボタン（row 4 の `OpenAutonomousChannelButton`）から同じメッセージを専用パネルへ `swap_panel` で差し替えて設定する。ボタンは `SettingsView(is_admin=...)`（`OpenSettingsButton` が押した時点の `is_administrator(interaction.user)` を渡す）が真のときだけ出し、押した時点でも `interaction.guild` と `is_administrator` を確かめ、`defer(ephemeral=True)`後に`is_current_administrator`で最新のMemberを取得する。権限失効・取得失敗時は配信先を表示せず、設定の変更も行わない。パネルはステージ・ボイスのセレクト（どちらも単一選択、先頭に「指定なし（自動）」）と確定/戻るで、確定まで `GuildSettings` を変えない。確定は `defer` の後に `is_current_administrator`（最新の Member）で権限を再確認してから `autonomous_stage_channel_id` / `autonomous_voice_channel_id` を書き、開始失敗の待ち時間を解除して `persist()` する。選択肢は「指定なし」を含めて `DISCORD_SELECT_MAX_OPTIONS` 件まで（チャンネルは先頭の24件。指定中のチャンネルは範囲外でも末尾に残し、超過は本文で注記）。使えないチャンネルは選択肢の説明と本文で知らせ、判定は `autonomous_stage.can_use_stage` / `can_use_voice` を再利用する（判定を画面側で書き直さないこと）。本文に「Discord の仕様上、管理者が手動でボットを別のチャンネルへ移すことは防げない。移された場合は配信を終了する」を必ず残す。
@@ -592,6 +596,10 @@ DBを待つGoogle検索トグル・自発会話の確定・リマインダー一
 - **案内の文言も合わせて直すこと**: 付与を間引く以上、「返信に必ず 👍👎 が付く」という案内は嘘になる。`help_view.py` の `_FEEDBACK_LINE`（❓使い方とウェルカム投稿の共通の情報源）に「一部の返信にしか付かないが、自分で押しても記録される」旨を書いてある。付与の方針を変えたらここも必ず対で直す。
 
 ### サブエージェント（委任型） (`agent_plan.py`, `agent_service.py`, `agent_view.py`, `agent_thread.py`, `message_handler.py`)
+
+読込済みの`image_objects`は空の結果も含め、`_process_accepted_message`→`_handle_agent_request`→`handle_chat_message`へ借用として引き継ぐ。親の応答で再取得・再展開せず、引継ぎ先で画像を閉じない（#292）。
+
+外部中断時は`AgentProgressBase.close()`で中止Viewを止め、`wait_for_cleanup`で既知のメッセージのボタン除去を待ってから実行枠を返す。スレッド開始途中・返信1通の進捗開始途中・報告のAI判定待ちも対象とし、通常の`finish`完了後は二重編集しない。除去に失敗しても元のキャンセルを維持し、ログは例外の型名だけにする。`AgentCancelView`は`PanelView`と異なるViewのまま、生成時の`TaskOwner`を保持し、本人確認・中止要求・応答を`owner.run`で管理する。応答の`HTTPException`を捕捉し、応答失敗でも受け付けた中止要求は維持する（#292）。
 
 統合判定は固定指示とNGワード見本を`system_instruction`、本文と委任時だけの履歴をJSON化した`<moderation_data>`区画に分ける。山括弧とJSONの引用符・改行をエスケープし、本文・履歴の指示は判定用データとして扱う。問い合わせ別のJSONスキーマを渡し、`safe is True` の場合だけ記憶分類・リマインダー・委任を返す。`False`や文字列の`"false"`など、既存の正規化で不適切と判定される値は従来どおり拒否する。解釈できない値・例外・空応答・不正JSONでは会話を通過させるが、記憶分類・リマインダー・委任は返さない。抽出した通知本文・委任各項目は既存上限内の1行へ整え、`@`を全角化する。入力の分離と構造化出力は判定誘導の完全な防止を保証しない（#280）。
 

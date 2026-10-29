@@ -85,6 +85,45 @@ const {NotConnected} = load("pages/shared.tsx");
 const {DeployCard} = load("pages/DeployCard.tsx");
 const {GuildsPage} = load("pages/GuildsPage.tsx");
 
+test("#292 配信先設定はIDを表示し、伏せ字の切替と旧版・自動指定を区別する", () => {
+  const settings = {persona: null, persona_source: "default", persona_missing: null, persona_builtin: false,
+    model: null, respond_mode: null, grounding: false, auto_topic_enabled: false,
+    auto_topic_interval_hours: 6, autonomous_enabled: true, saved: true,
+    autonomous_stage_channel_id: "7", autonomous_voice_channel_id: "9"};
+  const props = {connected: true, connecting: false, onConnect: noop, selectedProfile: profile,
+    insights: {discord: {ok: true, error: null, guilds: [{name: "架空サーバー", members: 1,
+      online: 1, voice_channel: null, settings}]}, dm_settings: {...settings,
+      autonomous_stage_channel_id: null, autonomous_voice_channel_id: undefined}},
+    insightsFetchedAt: 1, insightsError: null, now: 1000};
+  const plain = html(GuildsPage, props, false);
+  assert.ok(plain.includes("配信先（ステージ）"));
+  assert.ok(plain.includes("配信先（ボイス）"));
+  assert.ok(plain.includes("ID: 7"));
+  assert.ok(plain.includes("ID: 9"));
+  assert.ok(plain.includes("指定なし（自動）"));
+  assert.ok(plain.includes("この版には無い機能"));
+  const masked = html(GuildsPage, props, true);
+  assert.equal(masked.includes("ID: 7"), false);
+  assert.equal(masked.includes("ID: 9"), false);
+  assert.ok(masked.includes(`ID: ${privacy.MASK}`));
+  assert.ok(masked.includes("指定なし（自動）"));
+});
+
+test("#292 サーバー・DMの配信先IDは自由文の伏せ字にも登録する", () => {
+  const guildSettings = {autonomous_stage_channel_id: "FICTIONAL_STAGE_CHANNEL",
+    autonomous_voice_channel_id: "FICTIONAL_VOICE_CHANNEL"};
+  const dmSettings = {autonomous_stage_channel_id: "FICTIONAL_DM_STAGE",
+    autonomous_voice_channel_id: "FICTIONAL_DM_VOICE"};
+  const insights = {discord: {guilds: [{name: "架空サーバー", voice_channel: null, settings: guildSettings}]},
+    dm_settings: dmSettings};
+  const secrets = privacy.collectSecrets({profile: null, profiles: [], connection: null, insights});
+  const values = [...Object.values(guildSettings), ...Object.values(dmSettings)];
+  const text = `取得失敗 ${values.join(" / ")}`;
+  assert.equal(privacy.createPrivacy(false, secrets).redact(text), text);
+  const masked = privacy.createPrivacy(true, secrets).redact(text);
+  for (const value of values) assert.equal(masked.includes(value), false);
+});
+
 test("#251 サーバー一覧の部分取得は既存行を表示しながら全件取得と区別する", () => {
   const settings = {persona: null, persona_source: "default", persona_missing: null, persona_builtin: false,
     model: null, respond_mode: null, grounding: false, auto_topic_enabled: false,

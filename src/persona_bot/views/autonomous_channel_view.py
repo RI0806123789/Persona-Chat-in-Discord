@@ -164,6 +164,7 @@ class AutonomousChannelView(PanelView):
         guild: discord.Guild,
         *,
         make_hub: HubFactory | None = None,
+        make_settings: HubFactory | None = None,
     ) -> None:
         super().__init__(
             timeout_notice=(
@@ -175,6 +176,8 @@ class AutonomousChannelView(PanelView):
         self.guild = guild
         # 「戻る」ボタンが機能パネルを再生成するための生成関数
         self.make_hub = make_hub
+        # 配信先はキャラ設定の子パネルなので、戻るときはその親を作り直す。
+        self.make_settings = make_settings
 
         # 一時選択値（現在の設定を初期値として保存）
         self.temp_stage_channel_id: int | None = guild_settings.autonomous_stage_channel_id
@@ -187,7 +190,7 @@ class AutonomousChannelView(PanelView):
         self.add_item(StageChannelSelect(self.guild, self.temp_stage_channel_id))
         self.add_item(VoiceChannelSelect(self.guild, self.temp_voice_channel_id))
         self.add_item(AutonomousChannelConfirmButton())
-        self.add_item(BackButton(row=2))
+        self.add_item(BackButton(row=2, make_parent=self.make_settings))
 
     def build_preview(self, *, confirmed: bool = False) -> str:
         """一時選択値からパネルの表示テキストを組み立てる。"""

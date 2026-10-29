@@ -335,6 +335,13 @@ def describe_settings(row):
         autonomous = flag("autonomous_enabled", False)
     else:
         autonomous = None  # この版の DB には列が無い（自律行動に未対応の版）
+    channels = {}
+    for key in ("autonomous_stage_channel_id", "autonomous_voice_channel_id"):
+        if key in SETTINGS_COLUMNS:
+            value = row.get(key)
+            # ボットの復元と同じく、正の整数だけを指定先として扱う。
+            # ID は JavaScript の数値で丸まらないよう文字列にし、列の無い旧版は省略する。
+            channels[key] = str(value) if type(value) is int and value > 0 else None
     return {
         **describe_persona(row),
         "model": MODELS.get(model, model or None),
@@ -343,6 +350,7 @@ def describe_settings(row):
         "auto_topic_enabled": flag("auto_topic_enabled", False),
         "auto_topic_interval_hours": interval,
         "autonomous_enabled": autonomous,
+        **channels,
         "saved": bool(row),
     }
 
