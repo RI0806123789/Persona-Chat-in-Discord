@@ -21,6 +21,10 @@ from persona_bot.core.bot_client import PersonaClient
 from persona_bot.core.database import Database
 from tests.helpers.network_guard import block_network
 from tests.helpers.persona_helpers import install_empty_persona_catalog
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class CommandShutdownTests(unittest.IsolatedAsyncioTestCase):
@@ -293,10 +297,11 @@ class CommandShutdownTests(unittest.IsolatedAsyncioTestCase):
                 interaction = self.interaction("leave")
                 interaction.response.is_done.return_value = True
                 interaction.followup.send.side_effect = error
-                with patch("builtins.print") as log:
+                with self.assertLogs("persona_bot.core.commands", level="ERROR") as logs:
                     body = self.dispatch(interaction)
                     await asyncio.wait_for(body, 2)
-                self.assertNotIn("架空の非公開情報", str(log.call_args_list))
+                self.assertNotIn("架空の非公開情報", "\n".join(LOG_FORMATTER.format(record) for record in logs.records))
+                self.assertTrue(any(record.exc_info and record.exc_info[1] is error for record in logs.records))
                 interaction.followup.send.assert_awaited_once()
                 interaction.response.send_message.assert_not_awaited()
                 self.assertTrue(interaction.command_failed)

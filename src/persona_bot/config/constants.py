@@ -4,6 +4,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BASE_DIR.parent
 
+# 運用ログは標準出力へ揃え、journaldと管理コンソールが同じ形式を扱う。
+LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+
 # ペルソナ（キャラクター設定）のプロンプトを置くフォルダ。Git が管理するのは書式見本の
 # テンプレートだけで、キャラ別のファイルは利用者が各自のパソコン・サーバーで作る
 # （.gitignore で除外済み）。ここにある .txt がキャラ設定の選択肢になる（personas.py）。

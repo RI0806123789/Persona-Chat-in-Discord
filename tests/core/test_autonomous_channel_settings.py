@@ -28,11 +28,11 @@ class AutonomousChannelPersistenceTests(unittest.IsolatedAsyncioTestCase):
     def reopen(self) -> None:
         self.db.close()
         self.db = Database(self.path)
-        with patch("builtins.print"):
+        with patch("persona_bot.core.database.logger"):
             self.db.initialize()
 
     async def test_version_fourteen_rows_migrate_to_unset_and_keep_other_settings(self) -> None:
-        with patch.object(database, "SCHEMA_VERSION", 14), patch("builtins.print"):
+        with patch.object(database, "SCHEMA_VERSION", 14), patch("persona_bot.core.database.logger"):
             self.db.initialize()
         with self.db._lock, self.db._conn:
             self.db._conn.execute(
@@ -53,7 +53,7 @@ class AutonomousChannelPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(settings.autonomous_voice_channel_id)
 
     async def test_designation_survives_restart_and_rejoin_and_clearing_saves_zero(self) -> None:
-        with patch("builtins.print"):
+        with patch("persona_bot.core.database.logger"):
             self.db.initialize()
         state = BotState()
         state.restore_from_database(self.db)
@@ -88,17 +88,17 @@ class AutonomousChannelPersistenceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value):
                 settings = GuildSettings()
                 settings.autonomous_voice_channel_id = 99
-                with patch("builtins.print") as printed:
+                with patch("persona_bot.core.app_state.logger") as logged:
                     settings.apply_persisted({"autonomous_voice_channel_id": value})
                 self.assertIsNone(settings.autonomous_voice_channel_id)
-                self.assertIn("autonomous_voice_channel_id", printed.call_args.args[0])
+                self.assertIn("autonomous_voice_channel_id", logged.warning.call_args.args[0])
         for value in (0, None):
             with self.subTest(value=value):
                 settings = GuildSettings()
-                with patch("builtins.print") as printed:
+                with patch("persona_bot.core.app_state.logger") as logged:
                     settings.apply_persisted({"autonomous_stage_channel_id": value})
                 self.assertIsNone(settings.autonomous_stage_channel_id)
-                printed.assert_not_called()
+                logged.warning.assert_not_called()
         # 列の無い古い値の組（キーが無い）では、現在の値を変えない
         settings = GuildSettings(autonomous_stage_channel_id=42)
         settings.apply_persisted({"model_name": ""})

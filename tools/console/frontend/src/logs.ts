@@ -16,11 +16,11 @@ export const LEVEL_LABELS: Record<LogLevel, string> = {
   system: "systemd",
 };
 
-// discord.py の logging が出す行: "[2026-10-16 12:04:29] [INFO    ] discord.gateway: 本文"
-// 先頭の時刻は UTC なので、画面では journald の時刻（ローカル時刻）だけを見せる
-const LOGGING_PREFIX = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s*\] /;
+// discord.py の旧書式と、時差を含むボット共通の logging 書式を扱う。
+// 画面では journald の時刻だけを見せ、モジュール名と本文は残す。
+const LOGGING_PREFIX = /^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[+-]\d{4})?\] \[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s*\] /;
 
-// ボット自身は print でログを出すため、journald の重要度はほぼ常に「情報(6)」になる。
+// print と標準出力への logging は、journald では「情報(6)」になることがある。
 // そこで logging の書式があればそのレベルを、無ければ本文の言葉から重さを推定する
 const ERROR_PATTERN = /Traceback|Error|ERROR|Exception|エラー|失敗|例外|^\s+File "/;
 const WARN_PATTERN = /警告|Warning|WARN|タイムアウト|見送/;

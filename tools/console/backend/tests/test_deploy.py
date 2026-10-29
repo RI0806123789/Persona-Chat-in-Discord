@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "helpers"
 import fake_ssh_server  # noqa: E402
 import remote_commands as rc  # noqa: E402
 from deploy import DeployManager, DeployRecord, DeployRunner, new_record  # noqa: E402
-from fake_ssh_server import start_fake_server  # noqa: E402
+from fake_ssh_server import logging_line, start_fake_server  # noqa: E402
 from profiles import Profile  # noqa: E402
 from network_guard import block_network  # noqa: E402
 from ssh_session import CommandResult, SshError, SshSession  # noqa: E402
@@ -119,6 +119,15 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
     async def test_login_without_pid_does_not_pass_health(self):
         runner, _, _ = await self.restart_for_health()
         self.assertFalse(await self.check_health_with_raw_logs(runner, [{"MESSAGE": rc.LOGIN_SUCCESS_TEXT}]))
+
+    async def test_logging_prefixed_login_requires_current_journal_pid(self):
+        for kind in ("current", "old", "missing"):
+            with self.subTest(kind=kind):
+                runner, _, previous_pid = await self.restart_for_health()
+                entry = {"MESSAGE": logging_line(rc.LOGIN_SUCCESS_TEXT + ": 架空のボット")}
+                if kind != "missing":
+                    entry["_PID"] = str(self.bot.pid if kind == "current" else previous_pid)
+                self.assertEqual(await self.check_health_with_raw_logs(runner, [entry]), kind == "current")
 
     async def test_health_waits_for_current_pid_after_old_login(self):
         runner, record, old_pid = await self.restart_for_health(health_timeout=5)

@@ -93,14 +93,11 @@ class MessageHandler:
             # メモリ上の記録を差し替えるため、ここで失敗した違反はどこにも残っていない。
             # 「あと N 回」は事実と食い違うので出さず、発言を処理しないことだけを伝える。
             # 再試行もしない（同じ障害で失敗し続ける保存を、発言のたびに積み増さないため）。
-            print(
-                f"違反記録: 保存に失敗したため、今回の違反は回数に数えていません "
-                f"(user_id={user_id}): {type(error).__name__}: {error}"
-            )
+            logger.error(f'違反記録: 保存に失敗したため、今回の違反は回数に数えていません (user_id=<ID>): {type(error).__name__}', exc_info=error)
             await self._send_violation_notice(message, f"⚠️ {notice}")
             return
         if just_blocked:
-            print(f"違反記録: {count}回目の違反でブラックリストに登録しました (user_id={user_id})")
+            logger.info(f'違反記録: {count}回目の違反でブラックリストに登録しました (user_id=<ID>)')
             await self._send_violation_notice(
                 message,
                 f"🚫 違反が{BLACKLIST_MAX_VIOLATIONS}回に達したため、ブラックリストに登録されました。"
@@ -110,9 +107,9 @@ class MessageHandler:
             # 並行して届いた別の違反で既にブロック済み（record_violation は回数を増やさず
             # just_blocked=False を返す）。そちらが 🚫 の案内を返しているため、「あと0回」の
             # ような食い違った警告も二重の案内も出さない（ブロック中の発言は黙って破棄する）。
-            print(f"違反記録: 既にブロック済みのため警告を省略します (user_id={message.author.id})")
+            logger.warning(f'違反記録: 既にブロック済みのため警告を省略します (user_id=<ID>)')
         else:
-            print(f"違反記録: {count}/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました (user_id={user_id})")
+            logger.info(f'違反記録: {count}/{BLACKLIST_MAX_VIOLATIONS} 回目を記録しました (user_id=<ID>)')
             remaining = BLACKLIST_MAX_VIOLATIONS - count
             await self._send_violation_notice(message, f"⚠️ {notice}（あと{remaining}回で応答を停止します）")
 
@@ -122,14 +119,15 @@ class MessageHandler:
         try:
             await message.reply(text, allowed_mentions=REPLY_ALLOWED_MENTIONS)
         except discord.DiscordException as error:
-            print(f"違反通知: 送信に失敗しました: {type(error).__name__}")
+            logger.error(f'違反通知: 送信に失敗しました: {type(error).__name__}', exc_info=error)
 
     async def _reject_ng_input(self, message: discord.Message, question: str, notice: str) -> bool:
         """入力にNGワードがあれば違反として記録し、True を返す（Gemini は呼ばない）。"""
         if not question or not self.ng_filter.contains_ng_word(question):
             return False
         detected = self.ng_filter.find_ng_words(question)
-        print(f"NGワード検出 (ユーザー入力): {detected}")
+        # 検出した語には非公開の設定や会話が含まれるため、件数だけを記録する。
+        logger.info('NGワード検出 (ユーザー入力): %d 件', len(detected))
         await self.notify_violation(message, notice)
         return True
 
@@ -142,7 +140,7 @@ class MessageHandler:
             try:
                 await message.reply(notice, allowed_mentions=discord.AllowedMentions.none())
             except Exception as error:
-                print(f"通常会話: 見送り案内の送信に失敗しました: {type(error).__name__}")
+                logger.error(f'通常会話: 見送り案内の送信に失敗しました: {type(error).__name__}', exc_info=error)
         return False
 
     async def on_message(self, message: discord.Message) -> None:
@@ -281,7 +279,7 @@ class MessageHandler:
                     )
                 return
             if not accepts_normally:
-                print("自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。")
+                logger.info('自律行動: 配信の終了と入れ違いに届いた発言のため、応答しません。')
                 return
 
             # 配信終了後に通常会話へ移る場合も、通常の受付制限を通す。
@@ -398,11 +396,11 @@ class MessageHandler:
         catalog = current_persona_catalog()
         lines = catalog.agent_lines(response_settings.prompt_file)
         if not self.agent.try_acquire(user_id):
-            print(f"サブエージェント: 実行中の依頼があるため受け付けませんでした (user_id={user_id})。")
+            logger.info(f'サブエージェント: 実行中の依頼があるため受け付けませんでした (user_id=<ID>)。')
             try:
                 await message.reply(render_agent_line(lines, "busy"), allowed_mentions=discord.AllowedMentions.none())
             except discord.DiscordException as error:
-                print(f"サブエージェント: 受付できない旨を送れませんでした: {type(error).__name__}")
+                logger.error(f'サブエージェント: 受付できない旨を送れませんでした: {type(error).__name__}', exc_info=error)
             return None
         progress = None
         progress_finished = False
@@ -417,7 +415,7 @@ class MessageHandler:
                 ),
                 steps=tuple(self.ng_filter.mask_with_log(step, label="サブエージェントの手順") for step in plan.steps),
             )
-            print(f"サブエージェント: 委任します（ロール: {plan.role}、手順: {len(plan.steps)}）。")
+            logger.info('サブエージェント: 委任します（手順: %d）。', len(plan.steps))
             progress = await start_agent_progress(
                 message, lines, plan, webhooks=self._agent_webhooks,
                 avatar_url=catalog.agent_avatar_url(response_settings.prompt_file),
@@ -512,7 +510,7 @@ class MessageHandler:
                 try:
                     prompt = await load_persona_template(response_settings.prompt_file)
                 except FileNotFoundError:
-                    logger.warning("プロンプトファイルが見つかりません: %s", response_settings.prompt_file, exc_info=True)
+                    logger.warning("プロンプトファイルが見つかりません。", exc_info=True)
                     await message.reply(
                         "会話設定のファイルが見つかりません。管理者に設定の確認を依頼してください。",
                         allowed_mentions=REPLY_ALLOWED_MENTIONS,
@@ -556,7 +554,7 @@ class MessageHandler:
                 # タグを除去した結果、本文が空になった場合は空メッセージ送信を防ぐ
                 # （モデルが感情タグだけを返したケース）。
                 if not response_text.strip():
-                    print("応答本文が空です（感情タグのみ、または空応答）。")
+                    logger.info('応答本文が空です（感情タグのみ、または空応答）。')
                     await message.reply(
                         "申し訳ありません、うまく応答を生成できませんでした。もう一度お試しください。",
                         allowed_mentions=REPLY_ALLOWED_MENTIONS,
@@ -608,7 +606,7 @@ class MessageHandler:
                 prompt_file=response_settings.prompt_file,
             )
         except Exception as error:
-            print(f"評価対象の登録に失敗しました（返信は送信済み）: {type(error).__name__}: {error}")
+            logger.error(f'評価対象の登録に失敗しました（返信は送信済み）: {type(error).__name__}', exc_info=error)
 
     async def _remember_reply(self, user_id: str, question: str, response_text: str) -> bool:
         """会話を記憶圧縮前の一時ログへ追記し、成功したかを返す。
@@ -619,9 +617,6 @@ class MessageHandler:
         try:
             await self.memory.append_pending_log(user_id, question, response_text)
         except Exception as error:
-            print(
-                f"会話記憶: 返信は送信済みですが、記憶への追記に失敗しました"
-                f"（user_id={user_id}）: {type(error).__name__}: {error}"
-            )
+            logger.error(f'会話記憶: 返信は送信済みですが、記憶への追記に失敗しました（user_id=<ID>）: {type(error).__name__}', exc_info=error)
             return False
         return True

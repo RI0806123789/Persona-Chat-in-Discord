@@ -28,7 +28,7 @@ class RestoreAttachTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         db = Database(Path(directory.name) / "bot.db")
         self.addCleanup(db.close)
-        with patch("builtins.print"):
+        with patch("persona_bot.core.database.logger"):
             db.initialize()
         state = BotState()
         early = state.get_guild(1)  # 復元より前に作られた設定

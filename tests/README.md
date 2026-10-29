@@ -1,5 +1,11 @@
 # 回帰テスト
 
+## Issue #283の段階的ログ移行
+
+第1段階は起動処理・core・共通ログ設定と、管理コンソールの旧print／新logging両対応を対象にする。`utils/test_logging_setup.py` は時刻・レベル・モジュール、ハンドラの重複防止、識別子の伏字、例外本文・絶対パス・ソース行の非漏洩、元レコードの非変更を検証する。`PYTHONIOENCODING` を外した別プロセスでcp932を再現し、絵文字をUTF-8で出力できることも確認する。既存のcore回帰はINFOを明示捕捉し、診断用の元例外保持と実際の出力の情報境界を別々に確認する。
+
+services・views・audioと補助モジュールは後続の変更単位へ分ける。実Discord・journald・本番SSH・ブラウザ操作はこの自動確認に含めない。
+
 仮想環境のPythonを使い、リポジトリルートで実行する。
 
 ```bash
@@ -411,6 +417,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | views | [test_stats_pagination.py](views/test_stats_pagination.py) |
 | views | [test_summary_view.py](views/test_summary_view.py) |
 | views | [test_view_parts.py](views/test_view_parts.py) |
+| utils | [test_logging_setup.py](utils/test_logging_setup.py) |
 | utils | [test_graph_fonts.py](utils/test_graph_fonts.py) |
 | utils | [test_image_attachments.py](utils/test_image_attachments.py) |
 | utils | [test_json_extraction.py](utils/test_json_extraction.py) |

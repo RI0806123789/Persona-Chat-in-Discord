@@ -30,7 +30,7 @@ class GuildRejoinTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.db = Database(Path(directory.name) / "bot.db")
         self.addCleanup(self.db.close)
-        with patch("builtins.print"):
+        with patch("persona_bot.core.database.logger"):
             self.db.initialize()
         install_persona_catalog(self, "../prompts/架空のペルソナ.txt")
         self.state = BotState()

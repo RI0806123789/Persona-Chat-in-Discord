@@ -4,8 +4,7 @@
 """
 
 import asyncio
-from contextlib import asynccontextmanager, redirect_stdout
-import io
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -36,6 +35,11 @@ from persona_bot.utils.discord_helpers import (
     is_supported_document_attachment, is_supported_message_channel,
 )
 from persona_bot.services.prompting import build_full_prompt, build_memory_sections
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
+
 
 # 検索の呼び出し・思考・最終回答が通常の text に連続した、架空の異常応答（Issue #167）。
 LEAKED_TEXT = (
@@ -392,7 +396,7 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.namespace["memory"].append_pending_log.assert_awaited_once()
         self.namespace["send_long_reply"].assert_awaited_once()
 
-    async def test_missing_persona_is_logged_but_its_file_name_is_not_sent(self) -> None:
+    async def test_missing_persona_is_logged_without_file_name_or_exception_details(self) -> None:
         self.loader.side_effect = FileNotFoundError("架空の内部ファイル詳細")
         with self.assertLogs("persona_bot.core.message_handler", level="WARNING") as logs:
             await self.on_message(self.message)
@@ -400,7 +404,11 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.settings.current_prompt_file, reply)
         self.assertNotIn("架空の内部ファイル詳細", reply)
         self.assertIn("管理者", reply)
-        self.assertIn(self.settings.current_prompt_file, "\n".join(logs.output))
+        log_text = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
+        self.assertIn("プロンプトファイルが見つかりません", log_text)
+        self.assertNotIn(self.settings.current_prompt_file, log_text)
+        self.assertNotIn("架空の内部ファイル詳細", log_text)
+        self.assertIs(logs.records[0].exc_info[1], self.loader.side_effect)
         self.namespace["gemini"].generate_with_metadata.assert_not_awaited()
         self.namespace["affinity"].update_emotion.assert_not_called()
 
@@ -500,20 +508,23 @@ class ReplySettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_memory_save_failure_after_send_still_speaks_the_sent_reply(self) -> None:
         memory = self.namespace["memory"]
         memory.append_pending_log.side_effect = OSError("架空の記憶保存失敗")
-        output = io.StringIO()
-        with redirect_stdout(output):
+        with self.assertLogs("persona_bot.core.message_handler", level="ERROR") as logs:
             await self.on_message(self.message)
         await asyncio.gather(*self.tasks)
         self.assert_sent_once_and_spoken()
         self.feedback.track_reply.assert_called_once()
         # 保存できなかった会話を成功扱いにせず、記憶圧縮も起動しない
         memory.flush_if_needed.assert_not_awaited()
-        self.assertIn("記憶への追記に失敗しました", output.getvalue())
-        self.assertIn("OSError", output.getvalue())
+        messages = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
+        self.assertIn("記憶への追記に失敗しました", messages)
+        self.assertIn("OSError", messages)
+        self.assertIn("user_id=<ID>", messages)
+        self.assertNotIn("架空の記憶保存失敗", messages)
+        self.assertTrue(any(record.exc_info and record.exc_info[1] is memory.append_pending_log.side_effect for record in logs.records))
 
     async def test_feedback_registration_failure_does_not_skip_memory_or_voice(self) -> None:
         self.feedback.track_reply.side_effect = RuntimeError("架空の登録失敗")
-        with redirect_stdout(io.StringIO()):
+        with self.assertLogs("persona_bot.core.message_handler", level="ERROR"):
             await self.on_message(self.message)
         await asyncio.gather(*self.tasks)
         self.namespace["memory"].append_pending_log.assert_awaited_once()

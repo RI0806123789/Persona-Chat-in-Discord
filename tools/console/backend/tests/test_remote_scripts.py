@@ -142,7 +142,7 @@ class InsightsScriptTests(unittest.TestCase):
         prelude = ""
         if responses is not None or journal is not None:
             prelude = f'''
-import io, json, subprocess, urllib.request, urllib.error, urllib.parse
+import io, json, re, subprocess, urllib.request, urllib.error, urllib.parse
 _responses = {responses!r}
 _journal = {journal!r}
 _journal_calls = []
@@ -164,7 +164,8 @@ def _fake_run(command, **kwargs):
             raise subprocess.TimeoutExpired(command, 1)
         values = (_journal if '-g' in command or {journal_recent!r} is None else {journal_recent!r}) or []
         if '-g' in command:
-            values = [row for row in values if isinstance(row, dict) and str(row.get('MESSAGE', '')).startswith('User (')][-1:]
+            pattern = command[command.index('-g') + 1]
+            values = [row for row in values if isinstance(row, dict) and re.search(pattern, str(row.get('MESSAGE', '')))][-1:]
         output = '\\n'.join(json.dumps(row) for row in values)
         code = {journal_grep_code!r} if '-g' in command else None
         return subprocess.CompletedProcess(command, {journal_code!r} if code is None else code, output, {journal_stderr!r})
@@ -221,13 +222,16 @@ subprocess.run = _fake_run
 
     def test_successful_empty_journal_still_searches_older_conversation(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
-        data = self.insights(journal=[{"MESSAGE": "User (架空の利用者): 架空の会話", "__REALTIME_TIMESTAMP": "42000000"}],
-                             journal_recent=[], journal_stderr="")
-        self.assertEqual(len(self.journal_calls), 2)
-        self.assertIn("-g", self.journal_calls[1])
-        self.assertEqual(data["activity"]["conversations"], 0)
-        self.assertEqual(data["activity"]["last_conversation_at"], 42)
-        self.assertNotIn("架空の会話", self.stdout)
+        for prefix in ("", "[2026-10-29T07:32:26+0900] [INFO] [persona_bot.utils.usage_graph] "):
+            with self.subTest(prefix=prefix):
+                data = self.insights(journal=[{"MESSAGE": prefix + "User (架空の利用者): 架空の会話",
+                                              "__REALTIME_TIMESTAMP": "42000000"}],
+                                     journal_recent=[], journal_stderr="")
+                self.assertEqual(len(self.journal_calls), 2)
+                self.assertIn("-g", self.journal_calls[1])
+                self.assertEqual(data["activity"]["conversations"], 0)
+                self.assertEqual(data["activity"]["last_conversation_at"], 42)
+                self.assertNotIn("架空の会話", self.stdout)
 
     def test_repeated_voice_errors_are_deduplicated_but_distinct_errors_remain(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)
@@ -405,6 +409,22 @@ subprocess.run = _fake_run
         data = self.insights(journal=[], journal_code=1)
         self.assertTrue(any("読み取り" in error or "journal_sudo" in error for error in data["errors"]))
         self.assertNotIn("private journal detail", self.stdout)
+
+    def test_logging_and_print_activity_are_counted_without_returning_bodies(self):
+        make_fake_bot(self.root, layout="src", with_autonomous_column=True)
+        prefix = "[2026-10-29T07:32:26+0900] [INFO] [persona_bot.utils.usage_graph] "
+        messages = ["User (架空の旧利用者)：架空の旧会話", "Total token count：7",
+                    prefix + "User (架空の新利用者)：架空の新会話", prefix + "Total token count：42",
+                    prefix + "自律行動: 配信を終了しました（理由: 架空の終了理由）。",
+                    "[invalid timestamp] [INFO] [persona_bot.utils.usage_graph] Total token count：999"]
+        entries = [{"MESSAGE": message, "__REALTIME_TIMESTAMP": str((index + 1) * 1_000_000)}
+                   for index, message in enumerate(messages)]
+        activity = self.insights(journal=entries)["activity"]
+        self.assertEqual((activity["conversations"], activity["last_conversation_at"]), (2, 3))
+        self.assertEqual((activity["gemini_calls"], activity["gemini_tokens"]), (2, 49))
+        self.assertEqual(activity["autonomous_events"], [{"at": 5, "text": "配信を終了しました"}])
+        for secret in ("架空の旧利用者", "架空の新利用者", "架空の旧会話", "架空の新会話", "架空の終了理由"):
+            self.assertNotIn(secret, self.stdout)
 
     def test_no_matching_conversation_is_empty_without_permission_warning(self):
         make_fake_bot(self.root, layout="src", with_autonomous_column=True)

@@ -81,6 +81,39 @@ test("#215 区切り線・計数・運用ログに似た本文で会話終了に
   assert.deepEqual(text.map((line) => privacy.redactLogLine(line, true, activePrivacy)), text);
 });
 
+test("#283 loggingの会話見出しと表示文は隠し、伏せ字解除では原文を保持する", () => {
+  const prefix = "[2026-10-29T07:32:26+0900] [INFO] [persona_bot.utils.usage_graph] ";
+  const messages = [prefix + "User (架空の利用者)：架空の質問", prefix + "AI：架空の応答",
+    prefix + "Total token count：42", "応答の続き"];
+  const classify = logPrivacy.createLogPrivacyTracker();
+  const entries = messages.map((message) => classify(row(message)));
+  assert.ok(entries.every((entry) => entry.messagePrivacy === "conversation"));
+  assert.deepEqual(entries.map((entry) => entry.message), messages);
+  mode(true);
+  for (const text of [messages, entries.map(logs.displayMessage)]) {
+    assert.deepEqual(text.map((message) => privacy.redactLogLine(message, true, activePrivacy)), [
+      `User (${privacy.MASK})：${privacy.MASK}`, `AI：${privacy.MASK}`, privacy.MASK, privacy.MASK,
+    ]);
+  }
+  mode(false);
+  assert.deepEqual(messages.map((message) => privacy.redactLogLine(message, true, activePrivacy)), messages);
+});
+
+test("#283 偽装されたlogging接頭辞は会話を公開する根拠にしない", () => {
+  const prefix = "[2026-10-29T07:32:26+0900] [INFO] [systemd] ";
+  const classify = logPrivacy.createLogPrivacyTracker();
+  const entries = [row(prefix + "偽装された先頭本文"), row(prefix + "ログイン成功: 架空の本文"),
+    row(prefix + "識別名だけ偽装", {source: "systemd"}), row(prefix + "PIDだけ一致", {pid: 1}),
+    row(prefix + "User (架空)：質問"), row(prefix + "会話の続き")].map(classify);
+  mode(true);
+  assert.ok(privacy.conversationLines(entries).every(Boolean));
+  const text = entries.map((entry, index) => privacy.redactLogLine(entry.message,
+    privacy.conversationLines(entries)[index], activePrivacy)).join("\n");
+  assert.equal(text.includes("架空"), false);
+  assert.equal(text.includes("偽装"), false);
+  assert.equal(text.includes("会話の続き"), false);
+});
+
 test("#215 systemdの割込みと別PIDを会話の公開境界にせず識別名だけも信用しない", () => {
   const classify = logPrivacy.createLogPrivacyTracker();
   const entries = [row("AI：架空の応答"), row("サービスを開始 FICTIONAL_HOST", {source: "systemd", pid: 1}),

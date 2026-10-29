@@ -23,6 +23,21 @@ test("discord.py のレベルを使い、UTC の前置きを表示から外す",
   assert.equal(displayMessage(rows[0]), "discord.client: Error という単語を含む情報");
 });
 
+test("#283 ボット共通loggingの時差付き時刻とレベルを認識しモジュール名を残す", () => {
+  const prefix = "[2026-10-29T07:32:26+0900]";
+  const rows = [
+    entry(`${prefix} [INFO] [persona_bot.core.database] Errorという語を含む情報`),
+    entry(`${prefix} [WARNING] [persona_bot.core.database] 処理を継続します`),
+    entry(`${prefix} [ERROR] [persona_bot.core.database] 処理を停止しました`),
+    entry("[2026-10-28T22:32:26-0900] [CRITICAL] [__main__] 処理を停止しました"),
+  ];
+  assert.deepEqual(classifyEntries(rows), ["info", "warn", "error", "error"]);
+  assert.equal(displayMessage(rows[0]), "[persona_bot.core.database] Errorという語を含む情報");
+  assert.deepEqual(classifyEntries([
+    entry("Traceback (most recent call last):"), entry('  File "example.py", line 1'), rows[0],
+  ]), ["error", "error", "info"]);
+});
+
 test("例外の Traceback は空行・コード・例外本文まで同じレベルにする", () => {
   const rows = ["Traceback (most recent call last):", '  File "example.py", line 1', "    call()", "",
     "ValueError: 架空の例外", "ログイン成功"].map((text) => entry(text));

@@ -29,18 +29,18 @@ class ProfileAbsorptionTests(unittest.TestCase):
 
     def test_shared_profile_without_owner_is_preserved_with_warning(self) -> None:
         original = self.write_profile({"趣味": "架空の工作"})
-        with patch("builtins.print") as log:
+        with self.assertLogs("persona_bot.core.database", level="INFO") as logs:
             self.db.initialize()
         self.assertEqual(self.profile_path.read_bytes(), original)
         self.assertEqual(self.db.profile_load(""), {})
-        self.assertTrue(any("profile.json" in str(call) and "保持" in str(call) for call in log.call_args_list))
+        self.assertTrue(any("profile.json" in record.getMessage() and "保持" in record.getMessage() for record in logs.records))
 
     def test_empty_user_profiles_are_preserved_when_nothing_is_absorbed(self) -> None:
         original = self.write_profile({"11": {}})
-        with patch("builtins.print") as log:
+        with self.assertLogs("persona_bot.core.database", level="INFO") as logs:
             self.db.initialize()
         self.assertEqual(self.profile_path.read_bytes(), original)
-        self.assertTrue(any("保持" in str(call) for call in log.call_args_list))
+        self.assertTrue(any("保持" in record.getMessage() for record in logs.records))
 
     def test_per_user_profiles_merge_and_reset_after_success(self) -> None:
         self.db.initialize()
@@ -62,9 +62,9 @@ class ProfileAbsorptionTests(unittest.TestCase):
     def test_absorption_log_contains_only_counts_without_user_ids_or_profile_keys(self) -> None:
         user_id = "".join(("81", "0000", "0000", "0000", "000", "1"))
         self.write_profile({user_id: {"架空の非公開項目": "架空の値", "架空の別項目": "架空の値"}})
-        with patch("builtins.print") as log:
+        with self.assertLogs("persona_bot.core.database", level="INFO") as logs:
             self.db.initialize()
-        messages = "\n".join(str(call.args[0]) for call in log.call_args_list)
+        messages = "\n".join(record.getMessage() for record in logs.records)
         self.assertIn("profile.json から 1 人分・2 項目", messages)
         self.assertNotIn(user_id, messages)
         self.assertNotIn("架空の非公開項目", messages)
@@ -100,12 +100,12 @@ class ProfileAbsorptionTests(unittest.TestCase):
     def test_dictionary_only_legacy_profile_without_owner_is_not_imported_or_erased(self) -> None:
         data = {"profile": {"name": "架空の利用者"}, "likes": {"color": "blue"}}
         original = self.write_profile(data)
-        with patch("builtins.print") as log:
+        with self.assertLogs("persona_bot.core.database", level="INFO") as logs:
             self.db.initialize()
         self.assertEqual(self.profile_path.read_bytes(), original)
         self.assertEqual(self.db.profile_load("profile"), {})
         self.assertEqual(self.db.profile_load("likes"), {})
-        self.assertTrue(any("保持" in str(call) for call in log.call_args_list))
+        self.assertTrue(any("保持" in record.getMessage() for record in logs.records))
 
     def test_dictionary_only_legacy_profile_with_owner_keeps_structure(self) -> None:
         self.db._legacy_owner_id = "legacy-user"
@@ -118,7 +118,7 @@ class ProfileAbsorptionTests(unittest.TestCase):
 
     def test_every_key_and_value_must_match_the_per_user_format(self) -> None:
         for key, value in (("", {}), ("１２", {}), ("²", {}), ("named-user", {}), ("22", "架空の値")):
-            with self.subTest(key=key, value=value), patch("builtins.print"):
+            with self.subTest(key=key, value=value), patch("persona_bot.core.database.logger"):
                 original = self.write_profile({"11": {"趣味": "架空の工作"}, key: value})
                 self.db.initialize()
                 self.assertEqual(self.profile_path.read_bytes(), original)

@@ -1,5 +1,7 @@
 """Discord終了時に、共有するGeminiクライアントの接続とDBも閉じる。"""
 
+import logging
+
 import asyncio
 from typing import Any, Awaitable, Callable
 
@@ -8,6 +10,9 @@ import discord
 from persona_bot.core.background import TaskOwner, run_in_thread, spawn, task_scope, wait_for_task
 from persona_bot.services.genai_client import close_genai_client
 from persona_bot.utils.discord_helpers import REPLY_ALLOWED_MENTIONS
+
+
+logger = logging.getLogger(__name__)
 
 
 class PersonaClient(discord.Client):
@@ -52,7 +57,7 @@ class PersonaClient(discord.Client):
                 try:
                     await callback()
                 except (Exception, asyncio.CancelledError) as error:
-                    print(f"終了前のバックグラウンド処理の回収に失敗しました: {type(error).__name__}")
+                    logger.error(f'終了前のバックグラウンド処理の回収に失敗しました: {type(error).__name__}', exc_info=error)
         finally:
             try:
                 await super().close()

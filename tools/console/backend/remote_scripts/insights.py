@@ -544,6 +544,14 @@ def collect_discord(settings_rows):
 
 # ---------------------------------------------------------------- ログ（直近24時間）
 
+# print の旧出力と、ボット共通の logging 書式を同じ本文として数える。
+# 接頭辞は集計のためにだけ除く。公開可能なログかどうかの判定には使わない。
+LOGGING_PREFIX_PATTERN = (
+    r"\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4}\] "
+    r"\[(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)\] \[[A-Za-z_][A-Za-z0-9_.]*\] "
+)
+LOGGING_PREFIX = re.compile("^" + LOGGING_PREFIX_PATTERN)
+CONVERSATION_LINE = "^(?:" + LOGGING_PREFIX_PATTERN + r")?User \("
 TOKEN_LINE = re.compile(r"^Total token count：(\d+)")
 AUTONOMOUS_LINE = re.compile(r"^自律行動: .*(配信を開始しました|配信を終了しました)")
 
@@ -605,6 +613,7 @@ def collect_activity():
     }
     entries = journal(["--since", "-24h"])
     for timestamp, message in entries or []:
+        message = LOGGING_PREFIX.sub("", message, count=1)
         if match := TOKEN_LINE.match(message):
             try:
                 count = int(match.group(1))
@@ -632,7 +641,7 @@ def collect_activity():
 
     if entries is not None and activity["last_conversation_at"] is None:
         # 24時間より前の最後の会話（-g は本文の検索。時刻だけを使う）
-        latest = journal(["-r", "-n", "1", "-g", r"^User \("])
+        latest = journal(["-r", "-n", "1", "-g", CONVERSATION_LINE])
         if latest:
             activity["last_conversation_at"] = latest[0][0]
     activity["autonomous_events"] = activity["autonomous_events"][-10:]
