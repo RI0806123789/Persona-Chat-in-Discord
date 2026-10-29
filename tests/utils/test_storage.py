@@ -13,6 +13,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from persona_bot.utils.storage import load_json_file, write_json_file
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class JsonStorageTests(unittest.TestCase):
@@ -45,12 +49,11 @@ class JsonStorageTests(unittest.TestCase):
     def test_bom_prefixed_file_is_read_like_plain_utf8(self) -> None:
         # メモ帳の「UTF-8 (BOM 付き)」保存を想定。BOM だけを理由に退避しない（#153）。
         self.path.write_bytes(b"\xef\xbb\xbf" + self.original_bytes)
-        with patch("builtins.print") as log:
+        with self.assertNoLogs("persona_bot.utils.storage", level="WARNING"):
             loaded = load_json_file(self.path, {"users": {}})
         self.assertEqual(loaded, self.original)
         self.assertEqual(self.path.read_bytes(), b"\xef\xbb\xbf" + self.original_bytes)
         self.assertEqual(list(self.root.iterdir()), [self.path])
-        log.assert_not_called()
 
     def test_atomic_replacement_occurs_after_fsync(self) -> None:
         self.seed()
@@ -152,7 +155,7 @@ class JsonStorageTests(unittest.TestCase):
             with self.subTest(content=broken):
                 self.path.write_bytes(broken)
                 before = set(self.root.glob("projects.json.corrupt-*.bak"))
-                with patch("builtins.print") as log:
+                with self.assertLogs("persona_bot.utils.storage", level="WARNING") as logs:
                     loaded = load_json_file(self.path, {"users": {}})
                 self.assertEqual(loaded, {"users": {}})
                 backups = set(self.root.glob("projects.json.corrupt-*.bak")) - before
@@ -160,8 +163,10 @@ class JsonStorageTests(unittest.TestCase):
                 backup = backups.pop()
                 self.assertEqual(backup.read_bytes(), broken)
                 self.assertFalse(self.path.exists())
-                log.assert_called()
-                self.assertIn(backup.name, str(log.call_args))
+                log_text = "\n".join(LOG_FORMATTER.format(record) for record in logs.records)
+                self.assertIn("<PATH>", log_text)
+                self.assertNotIn(backup.name, log_text)
+                self.assertNotIn(str(self.root), log_text)
                 write_json_file(self.path, loaded)
                 self.assertEqual(backup.read_bytes(), broken)
 
@@ -169,7 +174,7 @@ class JsonStorageTests(unittest.TestCase):
         broken = b'{"users": '
         self.path.write_bytes(broken)
         with patch("os.replace", side_effect=PermissionError("架空の退避失敗")):
-            with patch("builtins.print"):
+            with self.assertLogs("persona_bot.utils.storage", level="ERROR"):
                 with self.assertRaises(PermissionError):
                     load_json_file(self.path, {"users": {}})
         self.assertEqual(self.path.read_bytes(), broken)

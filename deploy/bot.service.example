@@ -54,9 +54,8 @@ WorkingDirectory=<PROJECT_DIR>/src
 # （この python を使えば venv 内の site-packages が自動的に参照される）。
 ExecStart=<PROJECT_DIR>/.venv/bin/python bot.py
 
-# journald へログを即座に反映させるため、Python の出力バッファリングを切る。
-# 付けないと出力がバッファに溜まり、journalctl -f でリアルタイムに追えないうえ、
-# 落ちた瞬間のログが flush されずに失われることがある。
+# logging の標準出力ハンドラは毎回 flush する。ほかの標準出力もjournaldへ
+# 即座に反映し、停止時にバッファ内の出力を失いにくくする指定は維持する。
 Environment=PYTHONUNBUFFERED=1
 
 # ログや例外メッセージには日本語と絵文字が含まれる。ロケール次第で標準出力が

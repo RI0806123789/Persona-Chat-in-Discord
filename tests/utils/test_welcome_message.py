@@ -50,7 +50,7 @@ class AnnouncementChannelTests(unittest.TestCase):
 
 class WelcomeMessageSettingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        quiet = patch("builtins.print")
+        quiet = patch("persona_bot.utils.discord_helpers.logger")
         quiet.start()
         self.addCleanup(quiet.stop)
 

@@ -1,4 +1,5 @@
 import io
+import logging
 from collections import deque
 from typing import Any
 
@@ -11,6 +12,9 @@ import numpy as np
 from persona_bot.core.background import run_in_thread
 from persona_bot.utils.graph_rendering import graph_font_context, save_figure_to_buffer, serialized_plot
 from persona_bot.config.constants import MAX_USAGE_HISTORY
+
+
+logger = logging.getLogger(__name__)
 
 
 class UsageTracker:
@@ -46,8 +50,8 @@ class UsageTracker:
         if not usage_info:
             return
         self.record(usage_info)
-        print(f"[{context_label}] Prompt token count：{self.input_tokens[-1]}")
-        print(f"Total token count：{self.total_tokens[-1]}")
+        logger.info("[内部処理] Prompt token count：%d", self.input_tokens[-1])
+        logger.info("Total token count：%d", self.total_tokens[-1])
 
     def log_snapshot(
         self,
@@ -58,16 +62,15 @@ class UsageTracker:
         response_text: str | None,
         usage_info: Any | None,
     ) -> None:
-        print("-" * 124)
-        print(f"User ({context_label})：{question} / {attachment_summary}")
-        print(f"Prompt text count：{len(full_prompt)}")
+        # 計数用の見出しは維持するが、場所・質問・添付名・応答本文は既定ログへ出さない。
+        logger.info("User (会話)：会話を処理しました。")
+        logger.info("Prompt text count：%d", len(full_prompt))
         if usage_info:
             self.record(usage_info)
-            print(f"Prompt token count：{self.input_tokens[-1]}")
-            print(f"Response token count：{self.output_tokens[-1]}")
-            print(f"Total token count：{self.total_tokens[-1]}")
-        print(f"AI：{response_text}")
-        print("-" * 124)
+            logger.info("Prompt token count：%d", self.input_tokens[-1])
+            logger.info("Response token count：%d", self.output_tokens[-1])
+            logger.info("Total token count：%d", self.total_tokens[-1])
+        logger.info("AI：%s", "応答を生成しました。" if response_text else "応答がありません。")
 
     async def build_graph_buffer(self) -> io.BytesIO:
         # 3列を同じ時点でコピーする。描画待機中のrecordで系列の長さが食い違わない。

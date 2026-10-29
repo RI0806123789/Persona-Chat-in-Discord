@@ -4,7 +4,9 @@
 
 第1段階は起動処理・core・共通ログ設定と、管理コンソールの旧print／新logging両対応を対象にする。`utils/test_logging_setup.py` は時刻・レベル・モジュール、ハンドラの重複防止、識別子の伏字、例外本文・絶対パス・ソース行の非漏洩、元レコードの非変更を検証する。`PYTHONIOENCODING` を外した別プロセスでcp932を再現し、絵文字をUTF-8で出力できることも確認する。既存のcore回帰はINFOを明示捕捉し、診断用の元例外保持と実際の出力の情報境界を別々に確認する。
 
-第2段階の `services/test_service_logging.py` は、NG語・モデレーション理由・記憶の例外本文・日時入力・配信先情報の非漏洩と元例外の保持を確認する。第3段階の `views/test_view_logging.py` はSDKの通常/TaskOwner配下のコールバック、repr非参照・元例外保持、グラフ文脈やファイル名の非漏洩、キャンセル伝播を確認する。audioと補助モジュールは後続の変更単位へ分ける。実Discord・journald・本番SSH・ブラウザ操作はこの自動確認に含めない。
+第2段階の `services/test_service_logging.py` は、NG語・モデレーション理由・記憶の例外本文・日時入力・配信先情報の非漏洩と元例外の保持を確認する。第3段階の `views/test_view_logging.py` はSDKの通常/TaskOwner配下のコールバック、repr非参照・元例外保持、グラフ文脈やファイル名の非漏洩、キャンセル伝播を確認する。
+
+第4段階はaudio・設定読込・共通処理を対象とする。`utils/test_runtime_logging_privacy.py` は会話・添付名・応答本文・文脈名を出さずに会話件数とトークン数を集計できること、設定不足時のキー名と対処案内が単独実行の既定レベルでも残ること、不正なタイムゾーンを原文なしでUTCへ代替することを確認する。既存の音声・設定・保存・履歴取得等のテストも、元例外の保持・情報の非漏洩と代替・再試行・キャンセルの動作を確認する。実Discord・journald・本番SSH・ブラウザ操作はこの自動確認に含めない。
 
 仮想環境のPythonを使い、リポジトリルートで実行する。
 
@@ -423,6 +425,7 @@ Windows・Python 3.13.3でボット672件・コンソールバックエンド158
 | utils | [test_json_extraction.py](utils/test_json_extraction.py) |
 | utils | [test_lifecycle_helpers.py](utils/test_lifecycle_helpers.py) |
 | utils | [test_response_text.py](utils/test_response_text.py) |
+| utils | [test_runtime_logging_privacy.py](utils/test_runtime_logging_privacy.py) |
 | utils | [test_shared_helpers.py](utils/test_shared_helpers.py) |
 | utils | [test_storage.py](utils/test_storage.py) |
 | utils | [test_timeutil.py](utils/test_timeutil.py) |

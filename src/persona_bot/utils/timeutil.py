@@ -9,8 +9,13 @@
 ボット自体は動かせるようにするフェイルオープン設計）。
 """
 
+import logging
+
 from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo
+
+
+logger = logging.getLogger(__name__)
 
 # 日本語の曜日名。datetime.weekday() は月曜=0・日曜=6 を返すため、この並び順と一致する。
 #
@@ -59,8 +64,7 @@ def resolve_timezone(name: str, *, purpose: str = "") -> tzinfo:
     try:
         return ZoneInfo(name)
     except Exception as error:
-        label = f"（{purpose}）" if purpose else ""
-        print(f"タイムゾーン({name})の読み込みに失敗しました{label}。UTC で代用します: {error}")
+        logger.warning('タイムゾーンの読み込みに失敗しました。UTC で代用します。', exc_info=error)
         return timezone.utc
 
 

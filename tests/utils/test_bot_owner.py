@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -49,7 +49,7 @@ class BotOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_bot_owner(interaction))
         self.assertFalse(await is_current_bot_owner(interaction))
         interaction.client.application_info.side_effect = RuntimeError("架空の取得失敗")
-        with patch("builtins.print"):
+        with self.assertLogs("persona_bot.utils.discord_helpers", level="ERROR"):
             self.assertFalse(await is_current_bot_owner(interaction))
         interaction.client.application_info.side_effect = asyncio.CancelledError
         with self.assertRaises(asyncio.CancelledError):

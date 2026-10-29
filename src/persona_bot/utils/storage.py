@@ -1,3 +1,5 @@
+
+import logging
 from copy import deepcopy
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -9,6 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_json_file(path: Path, default_value: dict[str, Any]) -> dict[str, Any]:
@@ -36,9 +41,9 @@ def load_json_file(path: Path, default_value: dict[str, Any]) -> dict[str, Any]:
     try:
         os.replace(path, backup_path)
     except OSError:
-        print(f"JSON読み込みエラー ({path}): {reason} 退避できないため処理を中止します。")
+        logger.error(f'JSON読み込みエラー (<PATH>): {reason} 退避できないため処理を中止します。', exc_info=True)
         raise
-    print(f"JSON読み込みエラー ({path}): {reason} {backup_path} へ退避し、既定値で再開します。")
+    logger.warning(f'JSON読み込みエラー (<PATH>): {reason} <PATH> へ退避し、既定値で再開します。')
     return deepcopy(default_value)
 
 
@@ -71,7 +76,7 @@ def write_json_file(path: Path, data: dict[str, Any]) -> None:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
                 # 後始末の失敗で、書き込みが失敗した本来の例外を隠さない。
-                print(f"JSON一時ファイルの削除に失敗しました ({temporary_path})。")
+                logger.error(f'JSON一時ファイルの削除に失敗しました (<PATH>)。', exc_info=True)
 
 
 def _iter_json_objects(text: str) -> Iterator[dict[str, Any]]:

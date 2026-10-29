@@ -1,3 +1,5 @@
+
+import logging
 import io
 import re
 from datetime import datetime, tzinfo
@@ -25,6 +27,9 @@ from persona_bot.config.constants import (
 from persona_bot.utils.timeutil import resolve_timezone
 from persona_bot.core.background import run_in_thread
 from persona_bot.services.prompting import sanitize_prompt_data
+
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from persona_bot.services.ng_word_service import NgWordFilter
@@ -162,14 +167,14 @@ async def fetch_channel_history_text(
     # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること
     # （順序を逆にすると権限エラーが一時障害として扱われ、原因がログから消える）。
     except discord.Forbidden:
-        print(f"履歴の取得権限がありません（チャンネルID: {channel_id}）。「メッセージ履歴を読む」権限を確認してください。履歴なしで応答します。")
+        logger.error(f'履歴の取得権限がありません（チャンネルID: <ID>）。「メッセージ履歴を読む」権限を確認してください。履歴なしで応答します。', exc_info=True)
         return ""
     except discord.HTTPException as error:
-        print(f"履歴の取得に失敗しました（チャンネルID: {channel_id}）。履歴なしで応答します: {error}")
+        logger.error(f'履歴の取得に失敗しました（チャンネルID: <ID>）。履歴なしで応答します: {type(error).__name__}', exc_info=error)
         return ""
     except Exception as error:
         # 除外判定・本文整形が失敗しても、不明な履歴を使わず会話だけを続ける。
-        print(f"履歴の取得・整形に失敗しました。履歴なしで応答します: {type(error).__name__}")
+        logger.error(f'履歴の取得・整形に失敗しました。履歴なしで応答します: {type(error).__name__}', exc_info=error)
         return ""
 
 
@@ -264,19 +269,19 @@ async def load_image_attachments(attachments: Sequence[discord.Attachment]) -> l
             # 失敗した画像も枚数に数え、取得・デコードの試行自体を制限する。
             attempted += 1
             if attachment.size > MAX_IMAGE_SIZE_BYTES:
-                print("画像読み込み: サイズ上限を超えているため見送ります。")
+                logger.warning('画像読み込み: サイズ上限を超えているため見送ります。')
                 continue
             try:
                 image_bytes = await attachment.read()
                 if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
-                    print("画像読み込み: 取得した画像がサイズ上限を超えているため見送ります。")
+                    logger.warning('画像読み込み: 取得した画像がサイズ上限を超えているため見送ります。')
                     continue
                 image = await run_in_thread(_decode_image_bytes, image_bytes, MAX_IMAGE_TOTAL_RGB_BYTES - total_rgb_bytes)
                 image_objects.append(image)
                 width, height = image.size
                 total_rgb_bytes += width * height * IMAGE_RGB_BYTES_PER_PIXEL
             except Exception as error:
-                print(f"画像読み込みエラー: {error}")
+                logger.error(f'画像読み込みエラー: {type(error).__name__}', exc_info=error)
         return image_objects
     except BaseException:
         # 中断時に受取先がなくなる画像も回収する。処理中の画像はrun_in_threadが回収する。
@@ -292,7 +297,7 @@ def close_image_attachments(images: Sequence[Any]) -> None:
             if callable(close):
                 close()
         except Exception as error:
-            print(f"画像の解放に失敗しました: {type(error).__name__}")
+            logger.error(f'画像の解放に失敗しました: {type(error).__name__}', exc_info=error)
 
 
 def split_message(text: str, limit: int = DISCORD_MESSAGE_MAX_LENGTH) -> list[str]:
@@ -476,7 +481,7 @@ async def post_welcome_message(
 
     channel = pick_announcement_channel(guild)
     if channel is None:
-        print(f"ウェルカムメッセージを投稿できるチャンネルが見つかりませんでした（guild={guild.id}）。")
+        logger.info(f'ウェルカムメッセージを投稿できるチャンネルが見つかりませんでした（guild=<ID>）。')
         return False
 
     # 送信を待つ前に「投稿済み」を立てる。ここから送信までの間に await を
@@ -488,13 +493,13 @@ async def post_welcome_message(
         await channel.send(body, allowed_mentions=discord.AllowedMentions.none())
     # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること。
     except discord.Forbidden:
-        print(f"ウェルカムメッセージの送信を拒否されました（guild={guild.id} / channel={channel.id}）。")
+        logger.error(f'ウェルカムメッセージの送信を拒否されました（guild=<ID> / channel=<ID>）。', exc_info=True)
         return False
     except discord.HTTPException as error:
-        print(f"ウェルカムメッセージの送信に失敗しました（guild={guild.id}）: {error}")
+        logger.error(f'ウェルカムメッセージの送信に失敗しました（guild=<ID>）: {type(error).__name__}', exc_info=error)
         return False
 
-    print(f"ウェルカムメッセージを投稿しました（guild={guild.id} / channel={channel.id}）。")
+    logger.info(f'ウェルカムメッセージを投稿しました（guild=<ID> / channel=<ID>）。')
     return True
 
 
@@ -531,7 +536,7 @@ async def is_current_bot_owner(interaction: discord.Interaction) -> bool:
     try:
         application = await interaction.client.application_info()
     except Exception as error:
-        print(f"ボット所有者の再確認に失敗したため拒否します: {type(error).__name__}")
+        logger.error(f'ボット所有者の再確認に失敗したため拒否します: {type(error).__name__}', exc_info=error)
         return False
     return _is_application_owner(interaction.user.id, application)
 
@@ -553,7 +558,7 @@ async def is_current_administrator(interaction: discord.Interaction) -> bool:
     try:
         member = await user.guild.fetch_member(user.id)
     except Exception as error:
-        print(f"管理者権限の再確認に失敗したため拒否します: {type(error).__name__}")
+        logger.error(f'管理者権限の再確認に失敗したため拒否します: {type(error).__name__}', exc_info=error)
         return False
     return is_administrator(member)
 

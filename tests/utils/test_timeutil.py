@@ -31,7 +31,7 @@ assert local.isoformat() == '2026-10-19T00:00:00+09:00', local
             capture_output=True, encoding="utf-8", timeout=15,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotIn("UTC で代用します", result.stdout)
+        self.assertNotIn("UTC で代用します", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

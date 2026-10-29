@@ -21,6 +21,8 @@ PCM をそのまま受け取れるため、変換用の外部バイナリも一�
 CPU 1コア / メモリ 1GB 級の小さなサーバーでも動かせるようにするための構成。
 """
 
+import logging
+
 import asyncio
 from collections import deque
 from dataclasses import dataclass
@@ -55,6 +57,9 @@ from persona_bot.config.constants import (
 )
 from persona_bot.audio.voice_dsp import apply_equalizer, needs_equalizer, resolve_profile
 from persona_bot.services.affinity_service import strip_speech_tags
+
+
+logger = logging.getLogger(__name__)
 
 # 読み上げに不向きな要素を落とすためのパターン群。
 # 音声で聞いて意味をなさないもの（URL・記号・コード）は読み上げる価値がないうえ、
@@ -134,22 +139,22 @@ async def _fetch_mp3(text: str, profile: Mapping[str, Any]) -> bytes:
     """主エンジン（edge-tts）で合成し、駄目なら gTTS へ退避する。"""
     global _edge_tts_failing
 
+    failure = None
     try:
         mp3 = await asyncio.wait_for(
             _fetch_edge_mp3(text, profile), timeout=TTS_EDGE_TIMEOUT_SECONDS,
         )
         if mp3:
             if _edge_tts_failing:
-                print("TTS: edge-tts が復旧しました。通常の読み上げに戻ります。")
+                logger.info('TTS: edge-tts が復旧しました。通常の読み上げに戻ります。')
                 _edge_tts_failing = False
             return mp3
-        reason = "音声が返ってきませんでした"
     except Exception as error:
-        reason = f"{type(error).__name__}: {error}"
+        failure = error
 
     if not _edge_tts_failing:
         # 失敗が続く間は返信のたびにログが溢れるため、状態が変わったときだけ残す。
-        print(f"TTS: edge-tts に失敗したため gTTS で読み上げます（{reason}）")
+        logger.warning('TTS: edge-tts で音声を取得できなかったため gTTS で読み上げます。', exc_info=failure)
         _edge_tts_failing = True
 
     # 退避時は話者・高さ・速さを再現できないためキャラ差は失われる（音色だけは掛かる）。
@@ -251,7 +256,7 @@ async def _play_pcm_locked(voice_client: discord.VoiceClient, pcm: bytes) -> Non
         # このコールバックは discord.py の再生スレッドから呼ばれるため、
         # イベントループ側のオブジェクトへは call_soon_threadsafe 経由で触る。
         if error:
-            print(f"読み上げの再生エラー: {error}")
+            logger.error(f'読み上げの再生エラー: {type(error).__name__}', exc_info=error)
         loop.call_soon_threadsafe(finished.set)
 
     # 待ち時間の上限は「音声の実再生秒数 + 余裕」。16bit なので 1 サンプル 2 バイト、
@@ -270,24 +275,17 @@ async def _play_pcm_locked(voice_client: discord.VoiceClient, pcm: bytes) -> Non
         try:
             voice_client.stop()
         except Exception as error:
-            print(f"TTS: キャンセル時の再生停止に失敗しました: {type(error).__name__}")
+            logger.error(f'TTS: キャンセル時の再生停止に失敗しました: {type(error).__name__}', exc_info=error)
         raise
     except asyncio.TimeoutError:
-        # getattr の既定値付きで取るのは、切断済みだと guild プロパティの参照自体が
-        # 失敗しうるため（ログのためにここで例外を出したくない）。
-        guild = getattr(voice_client, "guild", None)
-        guild_id = getattr(guild, "id", "不明")
-        print(
-            f"TTS: 再生の完了通知が {timeout_seconds:.1f} 秒以内に届かなかったため、"
-            f"この読み上げを打ち切って次へ進みます（guild_id={guild_id}）。"
-            "ボイス接続が正常な切断を経ずに切れた可能性があります。"
-        )
+        logger.warning(f'TTS: 再生の完了通知が {timeout_seconds:.1f} 秒以内に届かなかったため、この読み上げを打ち切って次へ進みます（guild_id=<ID>）。ボイス接続が正常な切断を経ずに切れた可能性があります。', exc_info=True)
         try:
             # まだ鳴っている場合に次の読み上げと音が重ならないよう止めておく。
             # 既に切断されていると例外になりうるが、打ち切り自体は続行する。
             voice_client.stop()
         except Exception:
-            pass
+            # 完了通知の途絶は既に警告済み。停止済み・切断済みでも次の読み上げへ進める。
+            logger.debug('TTS: 打ち切り時の再生停止に失敗しました。後始末を続行します。', exc_info=True)
     finally:
         try:
             if player is not None:
@@ -298,7 +296,7 @@ async def _play_pcm_locked(voice_client: discord.VoiceClient, pcm: bytes) -> Non
             try:
                 audio_source.cleanup()
             except Exception as error:
-                print(f"TTS: 音声ストリームの解放に失敗しました: {type(error).__name__}")
+                logger.error(f'TTS: 音声ストリームの解放に失敗しました: {type(error).__name__}', exc_info=error)
             finally:
                 # PCMAudio.cleanup() は入力ストリームを閉じないため、所有する側で解放する。
                 pcm_stream.close()
@@ -372,10 +370,10 @@ async def _run_speech_worker(guild: discord.Guild) -> None:
                     ),
                 )
             except asyncio.TimeoutError:
-                print(f"TTS: 音声合成が {TTS_TIMEOUT_SECONDS} 秒で完了しなかったため、この返信の読み上げを見送ります。")
+                logger.warning(f'TTS: 音声合成が {TTS_TIMEOUT_SECONDS} 秒で完了しなかったため、この返信の読み上げを見送ります。', exc_info=True)
             except Exception as error:
                 # 読み上げはチャット本体の付随機能なので、失敗しても次の返信へ進む。
-                print(f"TTS エラー ({type(error).__name__}): {error}")
+                logger.error('TTSの音声合成に失敗しました。', exc_info=error)
     finally:
         # 予期しない例外で抜けた場合も登録を残さない（次の返信で再起動できるように）。
         _discard_speech_queue(guild.id, queue)
@@ -463,6 +461,6 @@ async def speak_text(
     if len(queue) >= TTS_QUEUE_MAX:
         # 読み上げが追いつかないほど返信が続いた場合。古い返信を延々と喋り続けるより、
         # 遅れた分は捨てて会話の現在地に追従する方が自然なため、この返信は見送る。
-        print("TTS: 読み上げの待ち行列が上限に達したため、この返信の読み上げを見送ります。")
+        logger.warning('TTS: 読み上げの待ち行列が上限に達したため、この返信の読み上げを見送ります。')
         return
     queue.append(request)
