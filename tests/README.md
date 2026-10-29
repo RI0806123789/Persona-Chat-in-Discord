@@ -50,7 +50,9 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 Linux・Python 3.12.14でボット全1236件が成功（スキップなし、日本語フォント必須）。コンソールバックエンドは255件中254件が成功し、Windows専用1件は対象外。フロントエンド全146件とTypeScript検証・Viteビルドも成功した。両Python環境の`pip check`、205 Pythonファイルの構文・Python 3.11文法、メッセージ分割、差分の空白とプライバシーチェックも成功した。
 
-Discord・Geminiはモック、SSHはループバックの模擬サーバー、DBは一時ディレクトリと架空データを使う。実際のDiscordでのパネル遷移・中止操作・Webhook編集、本番SSH接続とブラウザでの手動操作、Windowsでの実行は未確認。
+追加したv15のDBテストでは、Windows CIで一時DBの削除時に`WinError 32`が発生した。`sqlite3.Connection`のトランザクション用コンテキストだけでは接続を閉じないため、外側を`contextlib.closing`で囲み、読取前のコミットとハンドル解放を両立する。GCを待たず実接続を保持した確認でも、テスト終了時に作成した2接続が閉じていることを検証する。
+
+Discord・Geminiはモック、SSHはループバックの模擬サーバー、DBは一時ディレクトリと架空データを使う。実際のDiscordでのパネル遷移・中止操作・Webhook編集、本番SSH接続とWindowsを含むブラウザでの手動操作は未確認。
 
 ## Issue #289・#290・#291の確認
 

@@ -4,6 +4,7 @@
 """
 
 import ast
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -272,7 +273,8 @@ subprocess.run = _fake_run
         make_fake_bot(self.root, layout="src", with_autonomous_column=True, with_channel_columns=True)
         stage_id, voice_id = 2 ** 60 + 1, 2 ** 60 + 3  # 架空値。JS の安全な整数範囲を超える。
         db_path = self.root / "data/memory/bot.db"
-        with sqlite3.connect(db_path) as con:
+        # 接続のwithはトランザクションだけを終えるため、Windowsの削除前に明示的に閉じる。
+        with closing(sqlite3.connect(db_path)) as con, con:
             con.execute(
                 "INSERT INTO guild_settings (guild_id, autonomous_stage_channel_id, autonomous_voice_channel_id) "
                 "VALUES (?, ?, ?)", (11, stage_id, voice_id),
