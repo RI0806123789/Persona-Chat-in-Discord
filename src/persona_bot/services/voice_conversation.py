@@ -98,7 +98,16 @@ NOTICE_LIVE_CAPACITY = (
     f"⚠️ 同時に音声会話できるボイスチャンネルの上限（{LIVE_MAX_CONCURRENT_SESSIONS}か所）に達しています。"
     "ほかのボイスチャンネルでの会話が終わってから、もう一度 /join してください。"
 )
+NOTICE_CONSENT_PANEL_FAILED = (
+    "⚠️ 同意パネルを投稿できなかったため、音声会話を始めずに退出しました。"
+    "ボイスチャンネルのチャットか /join を実行したチャンネルで、ボットに"
+    "「チャンネルを見る」「メッセージを送信」の権限があるか確認してください。"
+)
 _NOTICE_INPUT_VIOLATION = "不適切な発言が検出されたため、応答を停止しました。"
+
+
+class ConsentPanelError(Exception):
+    """同意パネルを出せない。同意を集められないため、音声会話を始めない。"""
 
 
 @dataclass
@@ -141,6 +150,10 @@ class _Utterance:
     response_complete: bool = False
     first_audio_at: float | None = None
     input_task: asyncio.Task[Any] | None = None
+    # 入力の文字起こしが出そろった（サーバーの finished・返答の終わり・割り込みの通知・時間切れ）。
+    transcript_closed: bool = False
+    # 帰属を確定できない文字起こしを捨てた。足りない文字起こしは記憶に使わない。
+    transcript_incomplete: bool = False
 
 
 class VoiceConversation:
@@ -191,8 +204,16 @@ class VoiceConversation:
         self._queue_full_warned = False
         self._gate_open = False
         self._waiting_count = 0
-        # 同意の撤回の後、撤回した人の発言を含む文脈を引き継がないための印。
-        self._context_dirty = False
+        # 入力の文字起こしの帰属先。発話権（_current）とは別に持つ — 前の人の文字起こしが
+        # 遅れて届いても、次に話し始めた人の発言として扱わない（違反・記憶を取り違えない）。
+        self._transcript_owner: _Utterance | None = None
+        # 前の人（_transcript_blocked）の文字起こしが閉じないうちに次の人が話し始めた間は、
+        # 届いた断片をどちらにも帰属させずに捨てる。閉じたら _transcript_next が帰属先になる。
+        self._transcript_blocked: _Utterance | None = None
+        self._transcript_next: _Utterance | None = None
+        self._transcript_blocked_since = float("-inf")
+        # 割り込まれた発言。サーバーの割り込みの通知で、その文字起こしを閉じる。
+        self._interrupted: _Utterance | None = None
         self._stopped = False
         self._end_requested = False
         self._tasks: list[asyncio.Task[Any]] = []
@@ -273,9 +294,10 @@ class VoiceConversation:
         self.consent.memory.discard(user_id)
         self.consent.affinity.discard(user_id)
         if had_consent:
-            # 撤回した人の発言が残った文脈を、次に再開するときに使わない。
-            self._context_dirty = True
+            # 撤回した人の発言が残った文脈を使い続けない。撤回した人がボイスチャンネルに
+            # いない（ゲートが開いたまま）場合もあるため、開閉を待たずに新しいセッションへ張り替える。
             self._live.forget_context()
+            spawn(self._live.restart_fresh(), label="音声会話の文脈の破棄")
         if self._active_user == user_id:
             self._end_activity(discard=True)
         self._participants.pop(user_id, None)
@@ -340,9 +362,6 @@ class VoiceConversation:
         self._gate_open = is_open
         if is_open:
             logger.info("音声会話: 参加者全員の同意がそろったため、会話を再開します。")
-            if self._context_dirty:
-                self._context_dirty = False
-                spawn(self._live.restart_fresh(), label="音声会話の文脈の破棄")
         else:
             logger.info("音声会話: 同意していない参加者がいるため、会話を一時停止します。")
             self._pause()
@@ -425,10 +444,12 @@ class VoiceConversation:
                     # サーバーが割り込みを知らせないまま終わっても、待ち続けないよう期限を設ける。
                     self._awaiting_interrupt_ack = True
                     self._interrupt_ack_deadline = now + LIVE_PLAYBACK_STALL_SECONDS
+                    self._interrupted = previous
                 self._discard_response(previous, "割り込み")
             self._abort_playback()
         self._turn_seq += 1
         self._current = _Utterance(self._turn_seq, user_id, now)
+        self._assign_transcript_owner(self._current, now)
         self._active_user = user_id
         self._speaking = True
         self._remove_reservation(user_id)
@@ -437,6 +458,44 @@ class VoiceConversation:
             self._queue_audio(frame)
         participant.preroll.clear()
         participant.voiced_ms = 0.0
+
+    # --- 入力の文字起こしの帰属（発話権とは別に管理する） ---------------------------
+
+    def _assign_transcript_owner(self, utterance: _Utterance, now: float) -> None:
+        """話し始めた発言を、入力の文字起こしの帰属先にする（前の人の分が閉じていれば）。"""
+        if self._transcript_blocked is not None:
+            # 帰属を確定できない間に、さらに次の人が話し始めた。間の人の文字起こしは
+            # 誰の分とも確定できないまま捨てる。
+            if self._transcript_next is not None:
+                self._transcript_next.transcript_incomplete = True
+            self._transcript_next = utterance
+            return
+        owner = self._transcript_owner
+        if owner is None or owner.transcript_closed:
+            self._transcript_owner = utterance
+            return
+        # 前の人の文字起こしがまだ届きうる。閉じるまでの断片は、前の人の残りか次の人の
+        # 冒頭か区別できないため、どちらにも帰属させない。
+        self._transcript_blocked = owner
+        self._transcript_next = utterance
+        self._transcript_owner = None
+        self._transcript_blocked_since = now
+
+    def _close_transcript(self, utterance: _Utterance | None) -> None:
+        if utterance is None:
+            return
+        utterance.transcript_closed = True
+        if utterance is self._transcript_blocked or utterance is self._transcript_next:
+            # 前の人の分が閉じた（または次の人の分まで出そろった）。以後の断片は次の人の分。
+            self._transcript_blocked = None
+            self._transcript_owner, self._transcript_next = self._transcript_next, None
+
+    def _reset_transcripts(self) -> None:
+        """接続の張り替えで、届きうる文字起こしが無くなったときに帰属の状態を戻す。"""
+        self._close_transcript(self._transcript_blocked)
+        self._close_transcript(self._transcript_owner)
+        self._transcript_owner = self._transcript_blocked = self._transcript_next = None
+        self._interrupted = None
 
     def _end_activity(self, *, discard: bool = False) -> None:
         if not self._speaking:
@@ -551,6 +610,11 @@ class VoiceConversation:
                 )
             return
         self._update_gate()
+        if (self._transcript_blocked is not None
+                and self._now() - self._transcript_blocked_since >= LIVE_PLAYBACK_STALL_SECONDS):
+            # 前の人の文字起こしが閉じる合図が来ないまま時間が過ぎた。以後の断片は次の人の分とみなす
+            # （次の人の冒頭は捨てた可能性があるため、その発言は記憶に使わない）。
+            self._close_transcript(self._transcript_blocked)
         if self._speaking and self._active_user is not None:
             participant = self._participants.get(self._active_user)
             now = self._now()
@@ -573,11 +637,14 @@ class VoiceConversation:
         if content is None:
             return
         transcription = getattr(content, "input_transcription", None)
-        if transcription is not None and transcription.text:
-            self._on_input_transcript(transcription.text)
+        if transcription is not None:
+            self._on_input_transcript(transcription.text or "", bool(getattr(transcription, "finished", None)))
         if getattr(content, "interrupted", None):
             self._awaiting_interrupt_ack = False
             self._abort_playback()
+            # 割り込まれた発言は、生成が始まった時点で入力を処理し終えている。
+            self._close_transcript(self._interrupted)
+            self._interrupted = None
         model_turn = getattr(content, "model_turn", None)
         if model_turn is not None:
             for part in model_turn.parts or []:
@@ -603,14 +670,28 @@ class VoiceConversation:
             return None
         return current
 
-    def _on_input_transcript(self, text: str) -> None:
-        utterance = self._current
+    def _on_input_transcript(self, text: str, finished: bool) -> None:
+        utterance = self._transcript_owner
         if utterance is None:
+            blocked = self._transcript_blocked
+            if blocked is None:
+                return
+            if text:
+                # 前の人の残りか次の人の冒頭か区別できない断片は捨てる（別の人へ帰属させない）。
+                blocked.transcript_incomplete = True
+                if self._transcript_next is not None:
+                    self._transcript_next.transcript_incomplete = True
+                logger.debug("音声会話: 話者を確定できない文字起こしを捨てました。")
+            if finished:
+                self._close_transcript(blocked)
             return
-        utterance.input_text = (utterance.input_text + text)[:LIVE_TRANSCRIPT_MAX_CHARS]
-        utterance.input_updated_at = self._now()
-        if self._service.ng_filter.contains_ng_word(utterance.input_text):
-            self._reject_input(utterance, "入力の NG ワード")
+        if text:
+            utterance.input_text = (utterance.input_text + text)[:LIVE_TRANSCRIPT_MAX_CHARS]
+            utterance.input_updated_at = self._now()
+            if self._service.ng_filter.contains_ng_word(utterance.input_text):
+                self._reject_input(utterance, "入力の NG ワード")
+        if finished:
+            self._close_transcript(utterance)
 
     def _on_model_audio(self, data: bytes) -> None:
         utterance = self._accepting_response()
@@ -652,10 +733,14 @@ class VoiceConversation:
         if self._awaiting_interrupt_ack:
             # 割り込まれた古い返答の終わり。新しい発言の返答はこの後に届く。
             self._awaiting_interrupt_ack = False
+            self._close_transcript(self._interrupted)
+            self._interrupted = None
             return
         utterance = self._current
         if utterance is None or utterance.ended_at is None or not utterance.response_started:
             return
+        # 返答が終わった時点で、その発言の入力はサーバーが処理し終えている。
+        self._close_transcript(utterance)
         if utterance.response_complete:
             return
         utterance.response_complete = True
@@ -667,6 +752,8 @@ class VoiceConversation:
             self._end_activity(discard=True)
         if self._current is not None:
             self._discard_response(self._current, "Live の再接続")
+        # 古い接続の文字起こしはもう届かない。
+        self._reset_transcripts()
         self._awaiting_interrupt_ack = False
         self._clear_send_queue()
 
@@ -778,7 +865,7 @@ class VoiceConversation:
         waited = 0.0
         while waited < LIVE_INPUT_TRANSCRIPT_MAX_WAIT_SECONDS:
             quiet = self._now() - utterance.input_updated_at
-            if utterance.input_text and quiet >= LIVE_INPUT_TRANSCRIPT_SETTLE_SECONDS:
+            if utterance.transcript_closed or (utterance.input_text and quiet >= LIVE_INPUT_TRANSCRIPT_SETTLE_SECONDS):
                 break
             await asyncio.sleep(LIVE_TICK_SECONDS)
             waited += LIVE_TICK_SECONDS
@@ -805,9 +892,10 @@ class VoiceConversation:
     async def _remember(self, utterance: _Utterance) -> None:
         if (
             utterance.discarded or utterance.output_ng or utterance.violation_recorded
+            or utterance.transcript_incomplete
             or utterance.input_verdict != VERDICT_SAFE or utterance.output_verdict != VERDICT_SAFE
         ):
-            # 判定不能・違反・割り込みの発言は、記憶・親密度の更新に使わない。
+            # 判定不能・違反・割り込み・文字起こしが欠けた発言は、記憶・親密度の更新に使わない。
             return
         user_id = utterance.user_id
         if user_id not in self.consent.voice or self._service.is_blocked(user_id):
@@ -944,6 +1032,7 @@ class VoiceConversationService:
 
         Raises:
             LiveUnavailableError: Live へ接続できなかった。
+            ConsentPanelError: 同意パネルを出せなかった（同意を集められないので始めない）。
         """
         try:
             existing = self._sessions.get(guild.id)
@@ -967,13 +1056,15 @@ class VoiceConversationService:
             )
             try:
                 await conversation.start()
+                # 同意パネルを出せなければ誰も同意できず、Live の接続と同時実行の枠だけが残る。
+                # パネルの投稿までを開始の成功の条件にする（登録はその後）。
+                await self._post_panel(conversation)
             except BaseException:
                 await wait_for_cleanup(conversation.stop(), label="音声会話の開始失敗の後片付け")
                 raise
             self._sessions[guild.id] = conversation
         finally:
             self._reserved.discard(guild.id)
-        await self._post_panel(conversation)
         logger.info("音声会話: 開始しました。")
         return conversation
 
@@ -983,16 +1074,17 @@ class VoiceConversationService:
         channel = conversation.notice_channel
         if channel is None:
             logger.warning("音声会話: 同意パネルを出せるチャンネルがありません。")
-            return
+            raise ConsentPanelError
         view = VoiceConsentView(conversation, is_blocked=self.is_blocked)
         try:
             conversation.panel_message = await channel.send(
                 build_consent_panel_text(conversation), view=view, allowed_mentions=_NO_MENTIONS,
             )
-            conversation.panel_view = view
         except discord.DiscordException as error:
             view.stop()
             logger.error("音声会話: 同意パネルを送信できませんでした。", exc_info=error)
+            raise ConsentPanelError from error
+        conversation.panel_view = view
 
     async def stop(self, guild_id: int, *, reason: str) -> bool:
         """そのサーバーの音声会話を止める（切断は呼び出し側）。止めたら True。"""
@@ -1017,6 +1109,10 @@ class VoiceConversationService:
             return
         voice_client = current.voice_client
         await self.stop(guild_id, reason=reason)
+        if guild_id in self._sessions or guild_id in self._reserved:
+            # 終了を待つ間に /join が同じ接続で新しい会話を始めた（始めようとしている）。
+            # 新しい会話の接続には触らず、退出の案内も出さない。
+            return
         if notice:
             await current._notify(notice)
         guild = current.guild

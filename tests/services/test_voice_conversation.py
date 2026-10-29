@@ -176,14 +176,34 @@ class GateTests(ConversationTestBase):
         self.conversation._update_gate()
         self.assertFalse(self.conversation.is_open)
 
-    async def test_withdrawal_drops_context_and_restarts_fresh_when_reopened(self):
+    async def test_withdrawal_drops_context_right_away(self):
         self.consent_all()
         self.conversation.withdraw(USER_B)
         self.assertFalse(self.conversation.is_open)
         self.assertTrue(self.live.forgot)
-        self.conversation.grant_voice(USER_B)
         await self.settle()
         self.assertEqual(self.live.restarts, 1)
+        self.conversation.grant_voice(USER_B)  # 再開で二重に張り替えない
+        await self.settle()
+        self.assertEqual(self.live.restarts, 1)
+
+    async def test_withdrawal_while_the_gate_stays_open_also_drops_context(self):
+        """VC を出た人が撤回しても（残った人だけでゲートは開いたまま）、その人の発言を含む文脈を使わない。"""
+        self.consent_all()
+        leaving = self.members[USER_A]
+        self.channel.members.remove(leaving)
+        self.conversation.handle_member_update(leaving, SimpleNamespace(channel=self.channel), SimpleNamespace(channel=None))
+        self.assertTrue(self.conversation.is_open)
+        self.conversation.withdraw(USER_A)
+        self.assertTrue(self.conversation.is_open)
+        await self.settle()
+        self.assertEqual(self.live.restarts, 1)
+        self.assertTrue(self.live.forgot)
+
+    async def test_withdrawal_without_prior_consent_keeps_context(self):
+        self.conversation.withdraw(USER_A)
+        await self.settle()
+        self.assertEqual(self.live.restarts, 0)
 
 
 class SpeakerTests(ConversationTestBase):
@@ -506,6 +526,107 @@ class SenderTests(ConversationTestBase):
         self.assertEqual(self.sent, [])
 
 
+class TranscriptOwnershipTests(ConversationTestBase):
+    """入力の文字起こしは発話権とは別に帰属させ、遅れて届いた分を次の話者へ付けない。"""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.consent_all()
+        self.conversation.toggle_memory(USER_A)
+
+    async def respond(self, *, complete=True):
+        await self.conversation._on_live_message(live_message(
+            model_turn=audio_turn(bytes(24000)), output_transcription=SimpleNamespace(text="架空の返答"),
+        ))
+        if complete:
+            await self.conversation._on_live_message(live_message(generation_complete=True, turn_complete=True))
+        await self.settle()
+
+    async def barge_in(self) -> None:
+        """A の返答中（A の文字起こしはまだ閉じていない）に B が割り込む。"""
+        await self.complete_utterance(USER_A, "架空の質問")
+        await self.respond(complete=False)
+        self.conversation.toggle_memory(USER_B)
+        self.speak(USER_B, constants.LIVE_BARGE_IN_MS // 20)
+        self.assertEqual(self.conversation._active_user, USER_B)
+
+    async def transcript(self, text: str = "", *, finished: bool = False) -> None:
+        await self.conversation._on_live_message(
+            live_message(input_transcription=SimpleNamespace(text=text, finished=finished)),
+        )
+
+    async def test_late_fragment_after_barge_in_is_not_given_to_the_next_speaker(self):
+        await self.barge_in()
+        previous = self.conversation._transcript_blocked
+        current = self.conversation._current
+        self.assertEqual(previous.user_id, USER_A)
+        await self.transcript("架空のNG")  # A の残りか B の冒頭か区別できない
+        await self.settle()
+        self.service.blacklist.record_violation.assert_not_awaited()
+        self.assertEqual(current.input_text, "")
+        self.assertEqual(previous.input_text, "架空の質問")
+        self.assertTrue(previous.transcript_incomplete)
+        self.assertTrue(current.transcript_incomplete)
+
+    async def test_finished_signal_hands_the_following_fragments_to_the_next_speaker(self):
+        await self.barge_in()
+        current = self.conversation._current
+        await self.transcript(finished=True)  # A の文字起こしが閉じた
+        await self.transcript("架空のBの発言")
+        self.assertEqual(current.input_text, "架空のBの発言")
+        self.assertFalse(current.transcript_incomplete)
+        await self.transcript("架空のNG")
+        await self.settle()
+        self.service.blacklist.record_violation.assert_awaited_once()
+        self.assertEqual(self.service.blacklist.record_violation.await_args.args[0], USER_B)
+
+    async def test_interrupted_notice_closes_the_previous_transcript(self):
+        await self.barge_in()
+        current = self.conversation._current
+        await self.conversation._on_live_message(live_message(interrupted=True))
+        await self.transcript("架空のBの発言")
+        self.assertEqual(current.input_text, "架空のBの発言")
+
+    async def test_completed_reply_closes_the_transcript_before_the_next_speaker(self):
+        await self.complete_utterance(USER_A, "架空の質問")
+        await self.respond()  # 返答の終わり（turn_complete）で A の文字起こしは閉じる
+        self.speak(USER_B, constants.LIVE_BARGE_IN_MS // 20)
+        self.assertIsNone(self.conversation._transcript_blocked)
+        await self.transcript("架空のBの発言")
+        self.assertEqual(self.conversation._current.input_text, "架空のBの発言")
+
+    async def test_missing_close_signal_times_out_and_skips_memory_for_the_gap(self):
+        await self.barge_in()
+        current = self.conversation._current
+        await self.transcript("架空の断片")  # 捨てられる
+        self.advance(constants.LIVE_PLAYBACK_STALL_SECONDS)
+        self.conversation.tick()
+        self.assertIsNone(self.conversation._transcript_blocked)
+        await self.transcript("架空のBの発言")
+        self.assertEqual(current.input_text, "架空のBの発言")
+        # 冒頭を捨てた可能性がある発言は記憶に使わない
+        self.service.memory.append_pending_log.reset_mock()
+        self.advance(constants.LIVE_VAD_SILENCE_MS / 1000 + 0.1)
+        self.conversation.tick()
+        await self.conversation._on_live_message(live_message(interrupted=True))
+        await self.respond()
+        self.service.memory.append_pending_log.assert_not_awaited()
+
+    async def test_third_speaker_during_ambiguity_loses_the_middle_transcript(self):
+        await self.barge_in()
+        middle = self.conversation._current
+        self.channel.members.append(member(USER_C))
+        self.conversation.grant_voice(USER_C)
+        self.advance(constants.LIVE_VAD_SILENCE_MS / 1000 + 0.1)
+        self.conversation.tick()
+        self.speak(USER_C, constants.LIVE_BARGE_IN_MS // 20)
+        self.assertTrue(middle.transcript_incomplete)
+        await self.transcript(finished=True)
+        await self.transcript("架空のCの発言")
+        self.assertEqual(self.conversation._current.input_text, "架空のCの発言")
+        self.assertEqual(middle.input_text, "")
+
+
 class LifecycleTests(ConversationTestBase):
     async def test_quota_close_ends_with_notice_and_disconnect(self):
         await self.conversation._on_live_closed(CLOSED_QUOTA)
@@ -628,6 +749,50 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         # 入れ替わった後の古い会話からの終了要求は無視する
         await service.end(1, reason="架空", disconnect=True, conversation=conversation)
         voice_client.disconnect.assert_awaited_once()
+
+    async def test_end_does_not_disconnect_a_conversation_started_while_waiting(self):
+        """終了を待つ間に /join が同じ接続で新しい会話を始めたら、その接続を切らない。"""
+        for takeover in ("session", "reservation"):
+            with self.subTest(takeover=takeover):
+                service = self.make_service(voice_guard=Mock())
+                voice_client = Mock()
+                voice_client.is_connected.return_value = True
+                voice_client.disconnect = AsyncMock()
+                guild = SimpleNamespace(id=1, voice_client=voice_client)
+
+                async def stop():
+                    if takeover == "session":
+                        service._sessions[1] = SimpleNamespace(voice_client=voice_client)
+                    else:
+                        service.reserve(1)
+
+                old = SimpleNamespace(voice_client=voice_client, guild=guild, stop=stop, _notify=AsyncMock())
+                service._sessions[1] = old
+                await service.end(1, reason="架空", notice="架空の案内", disconnect=True, conversation=old)
+                voice_client.disconnect.assert_not_awaited()
+                old._notify.assert_not_awaited()
+                service.voice_guard.release.assert_not_called()
+
+    async def test_start_fails_when_the_consent_panel_cannot_be_posted(self):
+        """同意パネルが無いと誰も同意できないため、開始を失敗にして接続と枠を残さない。"""
+        settings = SimpleNamespace(prompt_file="", grounding_enabled=False)
+        error = discord.HTTPException(SimpleNamespace(status=403, reason="架空"), "架空の拒否")
+        for case in ("send_error", "no_channel"):
+            with self.subTest(case=case):
+                service = self.make_service()
+                self.assertTrue(service.reserve(1))
+                guild = SimpleNamespace(id=1, me=object(), voice_client=None)
+                channel = SimpleNamespace(id=CHANNEL_ID, members=[], send=AsyncMock(side_effect=error))
+                sendable = case == "send_error"
+                with patch.object(VoiceConversation, "start", AsyncMock()), \
+                        patch.object(VoiceConversation, "stop", AsyncMock()) as stop, \
+                        patch.object(voice_conversation, "can_bot_send_messages", Mock(return_value=sendable)):
+                    with self.assertLogs("persona_bot.services.voice_conversation", level="WARNING"):
+                        with self.assertRaises(voice_conversation.ConsentPanelError):
+                            await service.start(guild, Mock(channel=channel), channel, settings, fallback_channel=None)
+                stop.assert_awaited_once()
+                self.assertIsNone(service.get(1))
+                self.assertNotIn(1, service._reserved)
 
 
 if __name__ == "__main__":

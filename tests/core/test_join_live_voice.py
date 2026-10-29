@@ -15,7 +15,8 @@ from persona_bot.core.commands import register_commands
 from persona_bot.core.voice_commands import VoiceCommandCoordinator
 from persona_bot.services.live_session import LiveUnavailableError
 from persona_bot.services.voice_conversation import (
-    NOTICE_LIVE_CAPACITY, NOTICE_LIVE_QUOTA, NOTICE_LIVE_UNAVAILABLE,
+    NOTICE_CONSENT_PANEL_FAILED, NOTICE_LIVE_CAPACITY, NOTICE_LIVE_QUOTA, NOTICE_LIVE_UNAVAILABLE,
+    ConsentPanelError,
 )
 from tests.helpers.network_guard import block_network
 
@@ -109,12 +110,14 @@ class JoinLiveVoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_failure_disconnects_and_explains(self):
         for error, notice in ((LiveUnavailableError(quota=True), NOTICE_LIVE_QUOTA),
                               (LiveUnavailableError(quota=False), NOTICE_LIVE_UNAVAILABLE),
+                              (ConsentPanelError(), NOTICE_CONSENT_PANEL_FAILED),
                               (FileNotFoundError("架空のペルソナ"), NOTICE_LIVE_UNAVAILABLE)):
             with self.subTest(error=type(error).__name__):
                 self.guild.voice_client = None
                 FakeLiveVoiceClient.created.clear()
                 self.live.start.side_effect = error
-                with self.assertLogs("persona_bot.core.commands", level="ERROR") if not isinstance(error, LiveUnavailableError) else _no_logs():
+                expected_log = not isinstance(error, (LiveUnavailableError, ConsentPanelError))
+                with self.assertLogs("persona_bot.core.commands", level="ERROR") if expected_log else _no_logs():
                     reply = await self.join()
                 self.assertEqual(reply, notice)
                 self.created[0].disconnect.assert_awaited_once_with(force=True)
@@ -123,11 +126,21 @@ class JoinLiveVoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_channel_reuses_a_running_conversation(self):
         voice_client = FakeLiveVoiceClient(None, self.channel)
         self.guild.voice_client = voice_client
-        self.live.get.return_value = SimpleNamespace(stopped=False, voice_client=voice_client)
+        self.live.get.return_value = SimpleNamespace(stopped=False, voice_client=voice_client, channel_id=20)
         reply = await self.join()
         self.live.start.assert_not_awaited()
         self.channel.connect.assert_not_awaited()
         self.assertIn("既に接続しています", reply)
+
+    async def test_conversation_for_another_channel_is_restarted_for_this_channel(self):
+        """移された先で /join したら、元のチャンネル用の会話を使い回さず、このチャンネル用に始め直す。"""
+        voice_client = FakeLiveVoiceClient(None, self.channel)
+        self.guild.voice_client = voice_client
+        self.live.get.return_value = SimpleNamespace(stopped=False, voice_client=voice_client, channel_id=30)
+        await self.join()
+        self.channel.connect.assert_not_awaited()
+        self.live.start.assert_awaited_once()
+        self.assertIs(self.live.start.await_args.args[2], self.channel)
 
     async def test_same_channel_without_conversation_starts_on_the_same_connection(self):
         voice_client = FakeLiveVoiceClient(None, self.channel)

@@ -14,9 +14,11 @@ from persona_bot.config.constants import LIVE_ENABLED, VOICE_CONNECT_TIMEOUT_SEC
 from persona_bot.services.autonomous_service import AutonomousService
 from persona_bot.services.live_session import LiveUnavailableError
 from persona_bot.services.voice_conversation import (
+    NOTICE_CONSENT_PANEL_FAILED,
     NOTICE_LIVE_CAPACITY,
     NOTICE_LIVE_QUOTA,
     NOTICE_LIVE_UNAVAILABLE,
+    ConsentPanelError,
     VoiceConversationService,
 )
 from persona_bot.services.autonomous_stage import enable_stage_speaker
@@ -264,8 +266,11 @@ def register_commands(
                         voice_guard.adopt(guild.id, voice_channel.id)
                     if live_voice is not None:
                         conversation = live_voice.get(guild.id)
-                        if conversation is None or conversation.stopped or conversation.voice_client is not voice_client:
-                            # 接続はあるが音声会話が止まっている。同じ接続のまま始め直す。
+                        if (conversation is None or conversation.stopped
+                                or conversation.voice_client is not voice_client
+                                or conversation.channel_id != voice_channel.id):
+                            # 接続はあるが、このチャンネルの音声会話が動いていない（止まっている・
+                            # 移された先で /join された）。同じ接続のまま、このチャンネル用に始め直す。
                             if not await start_live_voice(interaction, voice_client, voice_channel):
                                 return
                     await announce_voice_join(
@@ -319,7 +324,7 @@ def register_commands(
                 fallback_channel=interaction.channel,
             )
         except Exception as error:
-            if not isinstance(error, LiveUnavailableError):
+            if not isinstance(error, (LiveUnavailableError, ConsentPanelError)):
                 # ペルソナの読込失敗など。声で会話できない接続をボイスチャンネルに残さない。
                 logger.error("音声会話を始められませんでした。", exc_info=error)
             if voice_guard is not None:
@@ -328,10 +333,13 @@ def register_commands(
                 await wait_for_cleanup(voice_client.disconnect(force=True), label="音声会話の開始失敗時の切断")
             except Exception:
                 logger.warning("音声会話を始められなかった後の切断に失敗しました。", exc_info=True)
-            quota = isinstance(error, LiveUnavailableError) and error.quota
-            await interaction.followup.send(
-                NOTICE_LIVE_QUOTA if quota else NOTICE_LIVE_UNAVAILABLE, allowed_mentions=discord.AllowedMentions.none(),
-            )
+            if isinstance(error, ConsentPanelError):
+                notice = NOTICE_CONSENT_PANEL_FAILED
+            elif isinstance(error, LiveUnavailableError) and error.quota:
+                notice = NOTICE_LIVE_QUOTA
+            else:
+                notice = NOTICE_LIVE_UNAVAILABLE
+            await interaction.followup.send(notice, allowed_mentions=discord.AllowedMentions.none())
             return False
         finally:
             live_voice.release_reservation(guild.id)
