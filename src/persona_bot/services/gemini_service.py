@@ -1,3 +1,4 @@
+import logging
 import asyncio
 from math import ceil
 from pathlib import Path
@@ -19,10 +20,11 @@ from persona_bot.services.genai_client import generate_content
 from persona_bot.services.prompting import build_document_summary_prompt
 from persona_bot.utils.storage import (
     contains_internal_response_text,
-    describe_response_parts,
     extract_json_object,
     safe_response_text,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _remaining_timeout(deadline: float | None) -> float | None:
@@ -104,7 +106,7 @@ class GeminiService:
             _remaining_timeout(deadline)
             return result
         except asyncio.TimeoutError:
-            print("Gemini生成: 制限時間に達したため打ち切りました。")
+            logger.warning("Gemini生成: 制限時間に達したため打ち切りました。", exc_info=True)
             return GenerationResult(None, None, [], None)
 
     async def _generate(
@@ -133,7 +135,7 @@ class GeminiService:
                 options: dict[str, Any] = {}
                 if use_grounding:
                     options["tools"] = [types.Tool(google_search=types.GoogleSearch())]
-                    print(f"Google検索グラウンディング: 有効（モデル: {effective_model}）")
+                    logger.info("Google検索グラウンディング: 有効")
                 response = await generate_content(
                     self._client, model=effective_model, contents=contents, timeout=remaining, **options,
                 )
@@ -141,12 +143,9 @@ class GeminiService:
                 if text is not None and contains_internal_response_text(text):
                     # Discord・読み上げ・会話記憶・ログへ内部形式を流さないよう、ここで応答ごと捨てる。
                     # 診断には本文・プロンプト・検索語を含めず、モデルと応答の構造だけを残す。
-                    print(
-                        f"Gemini生成: 内部形式が混入した応答を破棄しました（モデル: {effective_model}、"
-                        f"検索: {'有効' if use_grounding else '無効'}、{describe_response_parts(response)}）。"
-                    )
+                    logger.warning("Gemini生成: 内部形式が混入した応答を破棄しました（検索: %s）。", "有効" if use_grounding else "無効")
                     if regenerations_left <= 0:
-                        print("Gemini生成: 再生成の上限に達したため、応答を返しません。")
+                        logger.error("Gemini生成: 再生成の上限に達したため、応答を返しません。")
                         return GenerationResult(None, None, [], None)
                     regenerations_left -= 1
                     # 同じ条件で生成し直す（index は進めない）。待ち時間は生成全体の残りから使う。
@@ -161,15 +160,15 @@ class GeminiService:
             except Exception as error:
                 status_code = getattr(error, "code", None)
                 if use_grounding and _grounding_is_unsupported(status_code, str(error)):
-                    print("検索ツールが非対応のため、残り時間内で代替の生成を試します。")
+                    logger.warning("検索ツールが非対応のため、残り時間内で代替の生成を試します。", exc_info=error)
                     index += 1
                     continue
                 if use_grounding and _grounding_quota_exhausted(status_code):
-                    print(f"検索の利用枠を超えたため（モデル: {effective_model}）、残り時間内で代替の生成を試します。")
+                    logger.warning("検索の利用枠を超えたため、残り時間内で代替の生成を試します。", exc_info=error)
                     index += 1
                     continue
                 # 通信・認証・サーバー障害と、検索なしの生成の利用枠超過では追加のAPI呼び出しを行わない。
-                print(f"Gemini生成エラー: {error}")
+                logger.error("Gemini生成に失敗しました。", exc_info=error)
                 return GenerationResult(None, None, [], None)
         return GenerationResult(None, None, [], None)
 
@@ -228,7 +227,7 @@ class GeminiService:
                 timeout=DOCUMENT_UPLOAD_TIMEOUT_SECONDS,
             )
         except Exception as error:
-            print(f"Geminiファイル削除エラー: {error}")
+            logger.error("Geminiファイル削除に失敗しました。", exc_info=error)
 
     async def summarize_document(self, uploaded_file: Any, document_name: str, model_name: str) -> dict[str, Any]:
         prompt = build_document_summary_prompt(document_name)

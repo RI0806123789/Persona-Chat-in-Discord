@@ -246,28 +246,40 @@ test("#219 名前に別の運用書式や補助面文字が含まれても名前
 });
 
 
-test("#219 現行ボットの配信開始書式を実ソースから読み両方の種類を確認する", async () => {
+test("#283 現行の配信開始ログは名前と識別子を含まず接頭辞でも公開に戻らない", async () => {
   const bot = await source("../../../../src/persona_bot/services/autonomous_service.py");
   const kinds = bot.match(/kind = "([^"\r\n]+)" if is_stage else "([^"\r\n]+)"/);
-  const format = bot.match(/print\(f"(自律行動: \{kind\}[^"\r\n]+)"\)/);
+  const format = bot.match(/logger\.info\("(自律行動: %s[^"\r\n]+)", kind\)/);
   assert.ok(kinds);
   assert.ok(format);
   for (const kind of kinds.slice(1)) {
-    const text = format[1].replace("{kind}", kind).replace("{channel.name}", oldName).replace("{guild.id}", ids[0]);
-    hidden(privacy.redactLogLine(text, false, current(true)));
-    assert.equal(privacy.redactLogLine(text, false, current(false)), text);
+    const text = format[1].replace("%s", kind);
+    assert.equal(text, `自律行動: ${kind}で配信を開始しました。`);
+    for (const privateField of ["channel", "guild", oldName, ...ids]) assert.equal(text.includes(privateField), false);
+    const prefix = "[2026-10-29T07:32:26+0900] [INFO] [persona_bot.services.autonomous_service] ";
+    for (const message of [text, prefix + text]) {
+      const row = {...entry(message), source: "systemd"}; // 識別名だけの偽装は信用しない。
+      assert.deepEqual(privacy.conversationLines([row]), [true]);
+      assert.equal(privacy.redactLogLine(message, true, current(true)), privacy.MASK);
+      assert.equal(privacy.redactLogLine(message, true, current(false)), message);
+    }
   }
 });
 
-test("#288 中止時のステージ終了失敗も実ソースの書式で名前を隠す", async () => {
+test("#283 現行のステージ終了失敗ログは名前と例外本文を含まず接頭辞でも公開に戻らない", async () => {
   const bot = await source("../../../../src/persona_bot/services/autonomous_stage.py");
-  const format = bot.match(/print\(f"(自律行動: 中止時のステージ枠[^"\r\n]+)"\)/);
+  const format = bot.match(/logger\.error\("(自律行動: 中止時のステージ枠[^"\r\n]+)", exc_info=error\)/);
   assert.ok(format);
-  const name = oldName + "（内側）: 補足\n" + otherName;
-  const text = format[1].replace("{channel.name}", name)
-    .replace("{type(error).__name__}", "RuntimeError").replace("{error}", "架空の診断");
-  hidden(current(true).redact(text), [oldName, otherName, "補足"]);
-  assert.equal(current(false).redact(text), text);
+  const text = format[1];
+  assert.equal(text, "自律行動: 中止時のステージ枠の終了に失敗しました。");
+  for (const privateField of ["channel", "guild", "error", oldName, ...ids]) assert.equal(text.includes(privateField), false);
+  const prefix = "[2026-10-29T07:32:26+0900] [ERROR] [persona_bot.services.autonomous_stage] ";
+  for (const message of [text, prefix + text]) {
+    const row = {...entry(message), source: "systemd"};
+    assert.deepEqual(privacy.conversationLines([row]), [true]);
+    assert.equal(privacy.redactLogLine(message, true, current(true)), privacy.MASK);
+    assert.equal(privacy.redactLogLine(message, true, current(false)), message);
+  }
 });
 
 test("#288 user_idの出力は既知値なしでも伏せ、プロフィール統合は件数だけ表示する", async () => {

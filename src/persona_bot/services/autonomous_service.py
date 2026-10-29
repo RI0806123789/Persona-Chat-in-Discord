@@ -36,6 +36,7 @@ VoiceClient を持たせない。持たせると、管理者にキックされ�
 永続化するのは有効/無効（`autonomous_enabled`）だけ。
 """
 
+import logging
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -94,6 +95,8 @@ from persona_bot.services.prompting import (
 )
 from persona_bot.utils.usage_graph import UsageTracker
 from persona_bot.audio.voice import speak_text
+
+logger = logging.getLogger(__name__)
 
 # ボットが自分から投稿する文面では通知を一切飛ばさない。独り言は誰かへの返信では
 # ないため、メンションらしき文字列が混じっても通知爆撃にしないための保険。
@@ -300,7 +303,7 @@ class AutonomousService:
 
                 response_text = strip_affinity_tag(response_text)
                 if not response_text.strip():
-                    print("自律行動: コメント応答が感情タグのみだったため見送ります。")
+                    logger.warning("自律行動: コメント応答が感情タグのみだったため見送ります。")
                     return None
 
                 # 「ユーザーからのインプットに対しては今まで通りフィルターを使う」（idea.md）
@@ -313,7 +316,7 @@ class AutonomousService:
                 # 終わった配信の「配信者としての応答」を後から投稿しないよう、
                 # 独り言・第一声と同じく送信の直前で確かめる。
                 if not self._is_current_session(guild_settings, session):
-                    print("自律行動: 応答の生成中に配信が終了したため、この応答は見送ります。")
+                    logger.info("自律行動: 応答の生成中に配信が終了したため、この応答は見送ります。")
                     return None
 
                 await send_long_reply(message, response_text)
@@ -350,10 +353,7 @@ class AutonomousService:
         if previous is not None:
             elapsed = (now - previous).total_seconds()
             if elapsed < AUTONOMOUS_COMMENT_COOLDOWN_SECONDS:
-                print(
-                    f"自律行動: コメントが続いているため、この1件は見送ります"
-                    f"（前回の応答から {elapsed:.1f} 秒）。"
-                )
+                logger.info("自律行動: コメントが続いているため、この1件は見送ります（前回の応答から %.1f 秒）。", elapsed)
                 return False
 
         session.last_comment_reply_at = now
@@ -378,7 +378,7 @@ class AutonomousService:
             try:
                 await self._check_guild(guild_id, guild_settings)
             except Exception as error:
-                print(f"自律行動: 見回りエラー (guild={guild_id}): {type(error).__name__}: {error}")
+                logger.error("自律行動: 見回りに失敗しました。", exc_info=error)
 
     async def _check_guild(self, guild_id: int, guild_settings: GuildSettings) -> None:
         guild = self._client.get_guild(guild_id)
@@ -388,7 +388,7 @@ class AutonomousService:
             # さらに自発会話の競合抑止（auto_topic_service）も効いたままになって、
             # そのサーバーの話題提供が二度と動かなくなる。ここで片付ける。
             if guild_settings.autonomous_session is not None:
-                print(f"自律行動: サーバーを参照できないため配信の記録を片付けます（guild={guild_id}）。")
+                logger.warning("自律行動: サーバーを参照できないため配信の記録を片付けます。")
                 self._clear_session(guild_settings)
             return
 
@@ -441,7 +441,7 @@ class AutonomousService:
         if channel is not None and bot_member is not None:
             missing = autonomous_stage.missing_session_permissions(channel, bot_member)
             if missing:
-                print(f"自律行動: 配信の継続に必要な権限・状態がありません（guild={guild.id} / 不足: {'、'.join(missing)}）。")
+                logger.warning("自律行動: 配信の継続に必要な権限・状態がありません（不足: %s）。", "、".join(missing))
                 # 発言できなくてもチャットへは終了理由を残す。閲覧・送信が
                 # 許可されていない場合は、送れないと分かっている投稿を試さない。
                 notice = AUTONOMOUS_CLOSING_NOTICE_PERMISSIONS if can_bot_send_messages(channel, bot_member) else None
@@ -582,11 +582,11 @@ class AutonomousService:
             raise
         except Exception as error:
             if isinstance(error, discord.Forbidden):
-                print(f"自律行動: {channel.name} への接続を拒否されました（権限不足）。")
+                logger.warning("自律行動: 配信先への接続を拒否されました（権限不足）。", exc_info=error)
             elif isinstance(error, asyncio.TimeoutError):
-                print(f"自律行動: {channel.name} への接続がタイムアウトしました。")
+                logger.warning("自律行動: 配信先への接続がタイムアウトしました。", exc_info=error)
             else:
-                print(f"自律行動: {channel.name} への接続に失敗しました（{type(error).__name__}: {error}）。")
+                logger.error("自律行動: 配信先への接続に失敗しました。", exc_info=error)
             if voice_client is not None:
                 await wait_for_cleanup(
                     autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
@@ -619,7 +619,7 @@ class AutonomousService:
             except Exception as error:
                 # 発言者になれないステージで喋っても誰にも聞こえないため、
                 # 中途半端に居座らず接続ごと諦める。
-                print(f"自律行動: ステージ({channel.name})の準備に失敗しました（{type(error).__name__}: {error}）。")
+                logger.error("自律行動: ステージの準備に失敗しました。", exc_info=error)
                 if voice_client is not None:
                     await wait_for_cleanup(
                         autonomous_stage.disconnect(guild, expected_voice_client=voice_client),
@@ -656,7 +656,7 @@ class AutonomousService:
         guild_settings.autonomous_start_retry_at = None
         guild_settings.autonomous_session = session
         kind = "ステージ" if is_stage else "ボイスチャンネル"
-        print(f"自律行動: {kind}「{channel.name}」で配信を開始しました（guild={guild.id}）。")
+        logger.info("自律行動: %sで配信を開始しました。", kind)
 
         spawn(self._speak_opening(guild, guild_settings, session, channel), label="自律行動の第一声")
 
@@ -696,10 +696,7 @@ class AutonomousService:
         guild_settings.autonomous_start_failures += 1
         wait_minutes = start_retry_wait_minutes(guild_settings.autonomous_start_failures)
         guild_settings.autonomous_start_retry_at = datetime.now(timezone.utc) + timedelta(minutes=wait_minutes)
-        print(
-            f"自律行動: 配信の開始に失敗しました（連続 {guild_settings.autonomous_start_failures} 回目）。"
-            f"次に試すのは約 {wait_minutes:.0f} 分後です。"
-        )
+        logger.warning("自律行動: 配信の開始に失敗しました（連続 %d 回目）。次に試すのは約 %.0f 分後です。", guild_settings.autonomous_start_failures, wait_minutes)
 
     async def stop_all_sessions(self) -> None:
         """周期処理の終了後、所有するすべての配信枠と接続を回収する。"""
@@ -711,7 +708,7 @@ class AutonomousService:
                 # 1件の停止完了後に届いたキャンセルで、残りのサーバーを取り残さない。
                 canceled = True
             except Exception as error:
-                print(f"自律行動: 終了時の後片付けに失敗しました: {type(error).__name__}")
+                logger.error("自律行動: 終了時の後片付けに失敗しました。", exc_info=error)
         if canceled:
             raise asyncio.CancelledError
 
@@ -753,7 +750,7 @@ class AutonomousService:
         if session is None:
             if starting is not None:
                 self._clear_session(guild_settings)
-                print(f"自律行動: 配信の開始を中止します（guild={guild_id} / 理由: {reason}）。")
+                logger.info("自律行動: 配信の開始を中止します。")
                 # /joinが開始途中の接続を再利用する前に、元の接続と所有枠を片付ける。
                 # 開始処理自身からの中止要求だけは、自分の終了を待たない。
                 if starting.task is not asyncio.current_task():
@@ -784,9 +781,9 @@ class AutonomousService:
                 try:
                     await send_long_message(channel, notice, allowed_mentions=_NO_MENTIONS)
                 except discord.HTTPException as error:
-                    print(f"自律行動: 締めの投稿に失敗しました（guild={guild_id}）: {error}")
+                    logger.error("自律行動: 締めの投稿に失敗しました。", exc_info=error)
                 except Exception as error:
-                    print(f"自律行動: 締めの投稿で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
+                    logger.error("自律行動: 締めの投稿で予期せぬエラーが発生しました。", exc_info=error)
         except asyncio.CancelledError:
             canceled = True
         finally:
@@ -796,7 +793,7 @@ class AutonomousService:
             except asyncio.CancelledError:
                 canceled = True
 
-        print(f"自律行動: 配信を終了しました（guild={guild_id} / 理由: {reason}）。")
+        logger.info("自律行動: 配信を終了しました。")
         if canceled:
             raise asyncio.CancelledError
         return True
@@ -878,7 +875,7 @@ class AutonomousService:
             try:
                 await send_long_message(channel, body, allowed_mentions=_NO_MENTIONS)
             except Exception as error:
-                print(f"自律行動: 第一声の送信に失敗しました: {type(error).__name__}")
+                logger.error("自律行動: 第一声の送信に失敗しました。", exc_info=error)
                 await self._stop_failed_speech(guild, guild_settings, session)
                 return
             # テキストの送信待機中にも /join・/leave・外部からの移動が起こりうる。
@@ -933,7 +930,7 @@ class AutonomousService:
             try:
                 await send_long_message(channel, speech, allowed_mentions=_NO_MENTIONS)
             except Exception as error:
-                print(f"自律行動: 独り言の送信に失敗しました: {type(error).__name__}")
+                logger.error("自律行動: 独り言の送信に失敗しました。", exc_info=error)
                 await self._stop_failed_speech(guild, guild_settings, session)
                 return
             if not self.can_speak_session(guild, guild_settings, session):
@@ -1006,7 +1003,7 @@ class AutonomousService:
             grounding=grounding,
         )
         if not response_text:
-            print(f"自律行動: {label}の生成に失敗しました。")
+            logger.error("自律行動: 発言の生成に失敗しました。")
             return None
         self._usage.log_snapshot(f"自律行動/{label}", detail, "自動実行", full_prompt, response_text, usage_info)
         return response_text
@@ -1016,5 +1013,5 @@ class AutonomousService:
         try:
             return await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
-            print(f"自律行動: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
+            logger.warning("自律行動: プロンプトファイルが見つかりません。", exc_info=True)
             return None

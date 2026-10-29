@@ -4,6 +4,7 @@
 ここでは作成した枠のIDと接続の同一性を確認し、他の配信や手動接続を保護する。
 """
 
+import logging
 import asyncio
 import random
 from collections.abc import Iterable
@@ -18,6 +19,8 @@ from persona_bot.config.constants import (
     AUTONOMOUS_VOICE_STATE_RETRIES,
     AUTONOMOUS_VOICE_STATE_WAIT_SECONDS,
 )
+
+logger = logging.getLogger(__name__)
 
 VocalChannel = discord.VoiceChannel | discord.StageChannel
 
@@ -190,7 +193,7 @@ async def _rollback_created_stage(channel: discord.StageChannel, created_instanc
             await created_instance.delete(reason="ボットの自律行動: 発言者になれなかったため中止")
     except Exception as error:
         # 削除が失敗しても、元の例外・キャンセルと接続の後片付けを妨げない。
-        print(f"自律行動: 中止時のステージ枠の終了に失敗しました（{channel.name}）: {type(error).__name__}: {error}")
+        logger.error("自律行動: 中止時のステージ枠の終了に失敗しました。", exc_info=error)
 
 
 async def finish_session_cleanup(
@@ -224,9 +227,9 @@ async def close_owned_stage(
                 and instance.id == session.stage_instance_id):
             await instance.delete(reason="ボットの自律行動による配信終了")
     except discord.HTTPException as error:
-        print(f"自律行動: ステージ枠の終了に失敗しました（guild={guild_id}）: {error}")
+        logger.error("自律行動: ステージ枠の終了に失敗しました。", exc_info=error)
     except Exception as error:
-        print(f"自律行動: ステージ枠の終了で予期せぬエラー（guild={guild_id}）: {type(error).__name__}: {error}")
+        logger.error("自律行動: ステージ枠の終了で予期せぬエラーが発生しました。", exc_info=error)
 
 
 async def disconnect(
@@ -239,4 +242,4 @@ async def disconnect(
     try:
         await voice_client.disconnect(force=True)
     except Exception as error:
-        print(f"自律行動: ボイス切断に失敗しました（guild={guild.id}）: {error}")
+        logger.error("自律行動: ボイス切断に失敗しました。", exc_info=error)

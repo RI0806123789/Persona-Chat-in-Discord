@@ -27,7 +27,7 @@ class NgWordFileTestCase(unittest.TestCase):
         paths.start()
         self.addCleanup(paths.stop)
         # 読込件数のログでテスト出力を埋めない
-        quiet = patch("builtins.print")
+        quiet = patch.object(ng_word_service.logger, "info")
         quiet.start()
         self.addCleanup(quiet.stop)
 
@@ -217,10 +217,11 @@ class NgWordNormalizationTests(NgWordFileTestCase):
             ng_filter.reload()
             return ranges
 
-        with patch.object(ng_word_service, "_source_ranges", side_effect=matching_with_reload), patch("builtins.print") as logging:
+        with patch.object(ng_word_service, "_source_ranges", side_effect=matching_with_reload), \
+                self.assertLogs(ng_word_service.logger, level="WARNING") as logging:
             masked = ng_filter.mask_with_log("架空aと架空b", label="架空の文脈")
         self.assertEqual(masked, "●●●と架空b")
-        self.assertEqual(logging.call_args.args[0], "NGワード検出 (架空の文脈): ['架空a']")
+        self.assertEqual([record.getMessage() for record in logging.records], ["NGワード検出: 1件をマスクしました。"])
         self.assertTrue(ng_filter.contains_ng_word("架空b"))
 
 

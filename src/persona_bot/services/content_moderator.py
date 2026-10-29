@@ -5,6 +5,7 @@
 APIエラーやタイムアウト時は安全側に倒して通過させる（fail-open）。
 """
 
+import logging
 import asyncio
 from datetime import datetime
 import json
@@ -25,6 +26,8 @@ from persona_bot.utils.timeutil import format_weekday, resolve_timezone, timezon
 from persona_bot.utils.normalization import (
     normalize_extracted_text, normalize_memory_category, normalize_recurrence,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -309,20 +312,20 @@ class ContentModerator:
             # → コンテンツが不適切だと Gemini が判断したので unsafe 扱い
             reason_name = get_prompt_block_reason(response)
             if reason_name is not None:
-                print(f"[モデレーション] プロンプトブロック ({direction}): {reason_name}")
+                logger.warning("モデレーション: プロンプトがブロックされました。")
                 return False, f"安全フィルタによりブロック ({reason_name})", None
 
             # SDKの応答差異や空候補を各呼出側で処理せず、共通入口で安全に読む。
             result_text = safe_response_text(response)
             if result_text is None:
                 # 明示的なプロンプトブロックは上で判定済み。本文の欠落だけでは違反としない。
-                print(f"[モデレーション] テキスト取得失敗 ({direction}) — 通過扱い")
+                logger.warning("モデレーション: テキスト取得失敗のため通過扱いにします。")
                 return True, "", None
 
             parsed = extract_json_object(result_text, required_keys=("safe",))
             if parsed is None:
                 # パース失敗は通過扱い（fail-open）。
-                print(f"[モデレーション] 応答パース失敗 — 通過扱い: {result_text!r}")
+                logger.warning("モデレーション: 応答パース失敗のため通過扱いにします。")
                 return True, "", None
 
             # {"safe": "false"} のように文字列で返るケースに備えて明示的に正規化する。
@@ -332,15 +335,15 @@ class ContentModerator:
             reason = raw_reason.strip() if not is_safe and isinstance(raw_reason, str) else ""
 
             if not is_safe:
-                print(f"[モデレーション] 不適切検出 ({direction}): {reason}")
+                logger.warning("モデレーション: 不適切な内容を検出しました。")
 
             return is_safe, reason, parsed
 
         except asyncio.TimeoutError:
-            print(f"[モデレーション] タイムアウト ({direction}) — 通過扱い")
+            logger.warning("モデレーション: タイムアウトのため通過扱いにします。", exc_info=True)
             return True, "", None
         except Exception as error:
-            print(f"[モデレーション] エラー ({direction}): {error}")
+            logger.error("モデレーション: 判定に失敗したため通過扱いにします。", exc_info=error)
             return True, "", None
 
     async def check(
@@ -481,7 +484,7 @@ async def screen_bot_response_with_status(
     if moderator is not None:
         is_safe, reason = await moderator.check(response_text, direction="Bot応答")
         if not is_safe:
-            print(f"{log_label}モデレーション: {reason}")
+            logger.warning("Bot応答モデレーション: 投稿を見送りました。")
             return "申し訳ありませんが、適切な応答を生成できませんでした。", False
 
     return response_text, True

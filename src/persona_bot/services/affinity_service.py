@@ -1,3 +1,4 @@
+import logging
 import time
 import math
 import asyncio
@@ -14,6 +15,8 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.database import Database
 from persona_bot.services.prompting import build_affinity_prompt
+
+logger = logging.getLogger(__name__)
 
 # モデルが返答の末尾に付ける感情タグ `[V:X, A:Y]`。
 # `[V: +5, A: -10]` のように空白を挟むことがあるため各要素の前後に \s* を許容する。
@@ -81,7 +84,7 @@ class AffinityService:
         try:
             self.cache = self._db.affinity_load_all()
         except Exception as error:
-            print(f"親密度データの読み込みに失敗しました: {error}")
+            logger.error("親密度データの読み込みに失敗しました。", exc_info=error)
             self.cache = {}
 
     def get_user_data(self, user_id: str) -> dict:
@@ -137,7 +140,7 @@ class AffinityService:
                 # キャンセルしてもworker終了までロックを保ち、後続の保存を追い越させない。
                 await run_in_thread(self._db.affinity_upsert, user_id, snapshot)
             except Exception as error:
-                print(f"親密度データの保存に失敗しました: {error}")
+                logger.error("親密度データの保存に失敗しました。", exc_info=error)
 
     def build_dynamic_prompt(self, user_id: str) -> str:
         # 文面そのものは prompting.py に集約している（ここは現在値を渡すだけ）。

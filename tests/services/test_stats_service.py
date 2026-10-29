@@ -431,7 +431,8 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 raise AssertionError("架空の保存待機が解除されませんでした")
             original_save(user_id, entry)
 
-        with patch.object(self.db, "stats_save_user", side_effect=save), patch("builtins.print") as log:
+        with patch.object(self.db, "stats_save_user", side_effect=save), \
+                self.assertLogs("persona_bot.services.stats_service", level="ERROR") as log:
             task = spawn(self.operation("clear"), label="統計復元失敗時の中断を検証")
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -440,7 +441,7 @@ class UserStatsPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await asyncio.gather(task, return_exceptions=True)
             self.assertTrue(task.cancelled())
-            self.assertTrue(any("会話統計の中断後の復元に失敗" in str(call) for call in log.call_args_list))
+            self.assertTrue(any("会話統計の中断後の復元に失敗" in record.getMessage() for record in log.records))
         self.assertEqual(self.service.cache, before)
         self.assertEqual(self.service._analysis_versions, {})
 

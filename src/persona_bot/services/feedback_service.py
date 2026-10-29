@@ -50,6 +50,7 @@ FEEDBACK_REACTION_COOLDOWN_SECONDS 以内に同じチャンネルへ付与して
 （間引いた分がそのままデータの損失にはならない）。
 """
 
+import logging
 import asyncio
 import time
 from collections import OrderedDict
@@ -73,6 +74,8 @@ from persona_bot.config.constants import (
 )
 from persona_bot.core.database import Database
 from persona_bot.utils.timeutil import utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -253,12 +256,9 @@ class FeedbackService:
         # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること
         # （順序を逆にすると権限エラーが一時障害として扱われ、原因がログから消える）。
         except discord.Forbidden:
-            print(
-                f"フィードバック: リアクションを付ける権限がありません"
-                f"（チャンネルID: {sent.channel.id}）。「リアクションの追加」権限を確認してください。"
-            )
+            logger.warning("フィードバック: リアクションを付ける権限がありません。「リアクションの追加」権限を確認してください。", exc_info=True)
         except discord.HTTPException as error:
-            print(f"フィードバック: リアクションの付与に失敗しました: {error}")
+            logger.error("フィードバック: リアクションの付与に失敗しました。", exc_info=error)
 
     # ---- リアクションイベントの処理 --------------------------------------------
 
@@ -297,7 +297,7 @@ class FeedbackService:
             await self._save_vote(message_id, user_id, entry, vote, before)
             # 古い記録の間引きはここでは行わない（prune_stored の docstring を参照）。
         except Exception as error:
-            print(f"フィードバック: 評価の記録に失敗しました: {error}")
+            logger.error("フィードバック: 評価の記録に失敗しました。", exc_info=error)
 
     async def _save_vote(
         self,
@@ -362,7 +362,7 @@ class FeedbackService:
         try:
             await run_in_thread(self._db.feedback_prune, FEEDBACK_MAX_STORED_ROWS)
         except Exception as error:
-            print(f"フィードバック: 古い記録の整理に失敗しました: {error}")
+            logger.error("フィードバック: 古い記録の整理に失敗しました。", exc_info=error)
 
     async def handle_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
         """👍/👎 が外されたときに評価を取り消す（on_raw_reaction_remove から呼ぶ）。
@@ -393,7 +393,7 @@ class FeedbackService:
             del vote.reactions[rating]
             await self._save_vote(message_id, user_id, entry, vote, before)
         except Exception as error:
-            print(f"フィードバック: 評価の取り消しに失敗しました: {error}")
+            logger.error("フィードバック: 評価の取り消しに失敗しました。", exc_info=error)
 
     def _resolve_vote_target(
         self, payload: discord.RawReactionActionEvent
@@ -432,7 +432,7 @@ class FeedbackService:
         try:
             rows = await run_in_thread(self._db.feedback_summary, int(guild_id))
         except Exception as error:
-            print(f"フィードバック: 集計の取得に失敗しました: {error}")
+            logger.error("フィードバック: 集計の取得に失敗しました。", exc_info=error)
             return "フィードバックの集計に失敗しました。"
 
         if not rows:

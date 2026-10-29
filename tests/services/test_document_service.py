@@ -425,7 +425,8 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
             missing = Path(directory) / "fictional-internal-dir" / "missing-persona.txt"
             with patch.object(document_service, "load_persona_template", paths.load_persona_template), \
                     patch.object(paths, "resolve_prompt_path", return_value=missing):
-                await self.process_response("使われない回答")
+                with self.assertLogs(document_service.logger, level="ERROR") as captured:
+                    await self.process_response("使われない回答")
         reply = self.failure_reply()
         self.assertEqual(reply, document_service.DOCUMENT_FAILURE_NOTICE)
         for leaked in (directory, "fictional-internal-dir", "missing-persona.txt", "Errno", "FileNotFoundError"):
@@ -433,6 +434,9 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
         # 原因の調査に要る診断は、内部の失敗記録にだけ残る。
         self.assertIn("FileNotFoundError", self.saved_error())
         self.assertIn("missing-persona.txt", self.saved_error())
+        for record in captured.records:
+            self.assertNotIn(directory, record.getMessage())
+            self.assertNotIn("missing-persona.txt", record.getMessage())
         self.gemini.generate.assert_not_awaited()
 
     async def test_unexpected_errors_including_plain_value_error_get_fixed_notice(self) -> None:
@@ -446,11 +450,16 @@ class DocumentResponseTests(unittest.IsolatedAsyncioTestCase):
                 self.message.reply.reset_mock()
                 self.service._update_task.reset_mock()
                 self.memory.build_contexts.side_effect = error
-                await self.process_response("使われない回答")
+                with self.assertLogs(document_service.logger, level="ERROR") as captured:
+                    await self.process_response("使われない回答")
                 reply = self.failure_reply()
                 self.assertEqual(reply, document_service.DOCUMENT_FAILURE_NOTICE)
                 self.assertNotIn("fictional", reply)
                 self.assertEqual(self.saved_error(), f"{type(error).__name__}: {error}")
+                self.assertIs(captured.records[0].exc_info[1], error)
+                for record in captured.records:
+                    self.assertNotIn("fictional", record.getMessage())
+                    self.assertNotIn(str(error), record.getMessage())
 
     async def test_gemini_failure_reply_is_fixed_notice(self) -> None:
         await self.process_response(None)

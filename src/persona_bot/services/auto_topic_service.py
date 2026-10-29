@@ -1,3 +1,4 @@
+import logging
 import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -32,6 +33,8 @@ from persona_bot.config.paths import load_persona_template
 from persona_bot.services.prompting import build_anniversary_prompt, build_auto_topic_prompt
 from persona_bot.utils.timeutil import resolve_timezone
 from persona_bot.utils.usage_graph import UsageTracker
+
+logger = logging.getLogger(__name__)
 
 
 class AutoTopicService:
@@ -133,7 +136,7 @@ class AutoTopicService:
             channel = self._client.get_channel(channel_id)
             if channel is None:
                 # チャンネルが削除された・アクセスできなくなった場合は監視から外す
-                print(f"自発的な会話: チャンネル {channel_id} が見つからないため監視を解除します。")
+                logger.warning("自発的な会話: チャンネルが見つからないため監視を解除します。")
                 guild_settings.auto_topic_channels.pop(channel_id, None)
                 guild_settings.auto_topic_posted_at.pop(channel_id, None)
                 continue
@@ -142,10 +145,10 @@ class AutoTopicService:
                 done = await self._post_topic(channel, guild_settings)
             except discord.Forbidden:
                 # 生成中に権限が変わった場合も、同じ沈黙期間にAPIを呼び続けない。
-                print(f"自発的な会話: 送信権限がなくなったため話題提供を見送ります (channel={channel_id})。")
+                logger.warning("自発的な会話: 送信権限がなくなったため話題提供を見送ります。", exc_info=True)
                 done = True
             except Exception as error:
-                print(f"自発的な会話: 話題提供エラー (channel={channel_id}): {error}")
+                logger.error("自発的な会話: 話題提供に失敗しました。", exc_info=error)
                 continue
 
             if done:
@@ -184,7 +187,7 @@ class AutoTopicService:
         try:
             persona_prompt = await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
-            print(f"自発的な会話: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
+            logger.warning("自発的な会話: プロンプトファイルが見つかりません。", exc_info=True)
             return False
 
         history_text = await fetch_channel_history_text(
@@ -218,7 +221,7 @@ class AutoTopicService:
         )
 
         if not response_text:
-            print("自発的な会話: 話題の生成に失敗しました。次回の見回りで再試行します。")
+            logger.warning("自発的な会話: 話題の生成に失敗しました。次回の見回りで再試行します。")
             return False
 
         screened, done = await self._screen_auto_post(response_text, "自発的な会話")
@@ -226,7 +229,7 @@ class AutoTopicService:
             return False
         if not self._can_send(channel):
             # 既に生成した後なので、送信時の Forbidden と同じく再生成を抑える。
-            print(f"自発的な会話: 生成後に送信権限がなくなったため話題提供を見送ります (channel={channel.id})。")
+            logger.warning("自発的な会話: 生成後に送信権限がなくなったため話題提供を見送ります。")
             return True
         if screened is None:
             return done
@@ -268,7 +271,7 @@ class AutoTopicService:
         text = strip_affinity_tag(response_text)
         if not text:
             # 一時的な生成失敗の可能性があるため、次の見回りで再試行する
-            print(f"{label}: 生成結果が空でした。")
+            logger.warning("自動投稿: 生成結果が空でした。")
             return None, False
 
         # NG ワードは既存パイプラインと同様に ● でマスクする
@@ -279,7 +282,7 @@ class AutoTopicService:
         # 同じ材料からの再生成はほぼ同じ結果になるため、リトライせず完了扱いにする。
         is_safe, reason = await self._moderator.check(text, direction="Bot応答")
         if not is_safe:
-            print(f"{label}: モデレーションにより投稿を見送りました ({reason})")
+            logger.warning("自動投稿: モデレーションにより投稿を見送りました。")
             return None, True
 
         return text, True
@@ -304,7 +307,7 @@ class AutoTopicService:
                 self._db.profile_load_all_for_key, ANNIVERSARY_PROFILE_KEY
             )
         except Exception as error:
-            print(f"記念日チェック: profile の読み込みに失敗しました: {error}")
+            logger.error("記念日チェック: profile の読み込みに失敗しました。", exc_info=error)
             return
 
         if not all_anniversaries:
@@ -334,7 +337,7 @@ class AutoTopicService:
             try:
                 await self._celebrate_user(user_id, label, today_str)
             except Exception as error:
-                print(f"記念日チェック: お祝い投稿エラー (user_id={user_id}, label={label}): {error}")
+                logger.error("記念日チェック: お祝い投稿に失敗しました。", exc_info=error)
 
     @staticmethod
     def _is_public_anniversary_label(label: str) -> bool:
@@ -383,10 +386,10 @@ class AutoTopicService:
         except discord.NotFound:
             return None  # このサーバーのメンバーではない（正常なケース）
         except discord.Forbidden:
-            print(f"記念日: メンバー取得の権限がありません (guild={guild.id})")
+            logger.warning("記念日: メンバー取得の権限がありません。", exc_info=True)
             return None
         except discord.HTTPException as error:
-            print(f"記念日: メンバー取得に失敗しました (guild={guild.id}, user={user_id}): {error}")
+            logger.error("記念日: メンバー取得に失敗しました。", exc_info=error)
             return None
 
     async def _celebrate_user(self, user_id: str, label: str, today_str: str) -> None:
@@ -423,11 +426,10 @@ class AutoTopicService:
                 # 生成中に権限が変わった場合も、同じ日に毎時間 API を呼び続けない
                 # （自発的な会話の Forbidden と同じ扱い）。今日の分は処理済みとして記録する。
                 # 生成文はこのチャンネルの履歴から作ったため、別のチャンネルへは流用しない。
-                print(f"記念日: 送信権限がなくなったため今日のお祝いを見送ります "
-                      f"(guild={guild_id}, channel={channel.id})。")
+                logger.warning("記念日: 送信権限がなくなったため今日のお祝いを見送ります。", exc_info=True)
                 done = True
             except Exception as error:
-                print(f"記念日: 投稿エラー (guild={guild_id}, user={user_id}): {error}")
+                logger.error("記念日: 投稿に失敗しました。", exc_info=error)
                 continue
 
             if done:
@@ -450,7 +452,7 @@ class AutoTopicService:
         for channel_id in candidates:
             channel = self._client.get_channel(channel_id)
             if channel is None:
-                print(f"記念日: チャンネル {channel_id} が見つからないため監視を解除します。")
+                logger.warning("記念日: チャンネルが見つからないため監視を解除します。")
                 guild_settings.auto_topic_channels.pop(channel_id, None)
                 guild_settings.auto_topic_posted_at.pop(channel_id, None)
                 continue
@@ -474,7 +476,7 @@ class AutoTopicService:
         try:
             persona_prompt = await load_persona_template(response_settings.prompt_file)
         except FileNotFoundError:
-            print(f"記念日: プロンプトファイル({response_settings.prompt_file})が見つかりません。")
+            logger.warning("記念日: プロンプトファイルが見つかりません。", exc_info=True)
             return False
 
         history_text = await fetch_channel_history_text(
@@ -499,7 +501,7 @@ class AutoTopicService:
         )
 
         if not response_text:
-            print(f"記念日: お祝いメッセージの生成に失敗しました (user={member.id}, label={label})。")
+            logger.error("記念日: お祝いメッセージの生成に失敗しました。")
             return False
 
         screened, done = await self._screen_auto_post(response_text, "記念日のお祝い")
@@ -508,7 +510,7 @@ class AutoTopicService:
             return False
         if not self._can_send(channel):
             # 当日中の再生成を止める。生成文は別チャンネルへ流用しない。
-            print(f"記念日: 生成後に送信権限がなくなったため今日のお祝いを見送ります (channel={channel.id})。")
+            logger.warning("記念日: 生成後に送信権限がなくなったため今日のお祝いを見送ります。")
             return True
         if screened is None:
             return done

@@ -398,12 +398,12 @@ class GeminiInternalTextTests(GeminiRequestFixture):
 
     async def test_diagnostic_log_omits_reply_prompt_and_search_terms(self) -> None:
         self.sdk_request.side_effect = [leaked_response(), leaked_response()]
-        with patch("builtins.print") as printed:
+        with self.assertLogs(gemini_service.logger, level="INFO") as recorded:
             await self.service.generate("架空の秘密の質問", "selected-model", timeout=30, grounding=True)
-        logs = "\n".join(" ".join(map(str, call.args)) for call in printed.call_args_list)
-        self.assertIn("内部形式が混入した応答を破棄しました（モデル: selected-model、検索: 有効、終了理由: STOP、パート: text×1）", logs)
+        logs = "\n".join(record.getMessage() for record in recorded.records)
+        self.assertIn("内部形式が混入した応答を破棄しました（検索: 有効）", logs)
         self.assertIn("再生成の上限に達したため", logs)
-        for secret in ("架空の秘密の質問", "架空の天気", "I should answer", "架空の最終回答", "example.com"):
+        for secret in ("架空の秘密の質問", "架空の天気", "I should answer", "架空の最終回答", "example.com", "selected-model"):
             self.assertNotIn(secret, logs)
 
     async def test_normal_words_code_examples_and_structured_thoughts_are_not_regenerated(self) -> None:

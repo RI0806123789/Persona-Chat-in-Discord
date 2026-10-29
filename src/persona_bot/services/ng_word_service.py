@@ -4,11 +4,14 @@ data/ng/NG_WORD.txt と data/ng/NG_WORD_private.txt から1行ずつNGワード�
 ユーザーの入力やBotの応答に含まれていないかチェックする。
 """
 
+import logging
 import re
 import unicodedata
 from pathlib import Path
 
 from persona_bot.config.constants import NG_WORD_PATH, NG_WORD_PRIVATE_PATH
+
+logger = logging.getLogger(__name__)
 
 
 def _is_ignored_character(character: str) -> bool:
@@ -116,7 +119,7 @@ def _load_words_from_file(file_path: Path) -> list[str]:
     except FileNotFoundError:
         return []
     except Exception as error:
-        print(f"NGワード読み込みエラー ({file_path.name}): {error}")
+        logger.error("NGワードの読み込みに失敗しました。", exc_info=error)
         # 読込失敗を空の成功結果へ変えず、再読込元に従来の判定を維持させる。
         raise
 
@@ -165,7 +168,7 @@ class NgWordFilter:
         # ワーカーで準備してから一度に公開し、再読込中も従来の判定を維持する。
         self._snapshot = (words, pattern)
         if words:
-            print(f"NGワード: {len(words)}件 読み込み済み")
+            logger.info("NGワード: %d件 読み込み済み", len(words))
 
     @property
     def word_count(self) -> int:
@@ -203,7 +206,7 @@ class NgWordFilter:
         return _mask_ranges(text, _source_ranges(text, pattern))
 
     def mask_with_log(self, text: str, *, label: str) -> str:
-        """NGワードが含まれていればログに出したうえでマスクし、無ければ元のテキストを返す。
+        """NGワードが含まれていれば件数をログに出してマスクし、無ければ元のテキストを返す。
 
         マスク仕様を変えるときに1か所で済ませるために集約している。以前、感情タグの
         正規表現が3ファイルに重複して差異が生まれ、タグがユーザーへ露出する不具合に
@@ -211,8 +214,8 @@ class NgWordFilter:
 
         Args:
             text: 判定対象のテキスト（ユーザー入力・Bot応答・リマインダー本文など）。
-            label: ログに出す文脈名（例: "Bot応答" / "自発的な会話" / "リマインダー"）。
-                どの経路で検出されたのか追えるよう、呼び出し側で必ず指定すること。
+            label: 呼び出し側の文脈名。既存の呼び出しとの互換性のため受け取るが、
+                運用ログには文脈や検出語を含めず件数だけを残す。
 
         Returns:
             NGワードを含む場合はマスク済みのテキスト。含まない場合は加工しない元のテキスト。
@@ -225,5 +228,5 @@ class NgWordFilter:
         if not ranges:
             return text
         detected = list(dict.fromkeys(text[start:end] for start, end in ranges))
-        print(f"NGワード検出 ({label}): {detected}")
+        logger.warning("NGワード検出: %d件をマスクしました。", len(detected))
         return _mask_ranges(text, ranges)
