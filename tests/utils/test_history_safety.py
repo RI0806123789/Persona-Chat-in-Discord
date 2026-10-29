@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -14,6 +14,10 @@ from persona_bot.services.prompting import build_full_prompt
 from persona_bot.utils.discord_helpers import (
     build_history_text, build_summary_source_text, fetch_channel_history_text,
 )
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 def author(user_id, *, bot=False, name="架空の発言者"):
@@ -92,13 +96,15 @@ class HistorySafetyTests(unittest.IsolatedAsyncioTestCase):
 
                 check = Mock(side_effect=RuntimeError("架空の非公開本文")) if failure == "filter" else self.check
                 channel = SimpleNamespace(id=10, history=Mock(side_effect=history))
-                with patch("builtins.print") as log:
-                    if failure == "cancel":
-                        with self.assertRaises(asyncio.CancelledError):
-                            await fetch_channel_history_text(channel, None, self.bot, 20, is_blocked=check)
-                    else:
+                if failure == "cancel":
+                    with self.assertNoLogs("persona_bot.utils.discord_helpers", level="ERROR"), \
+                            self.assertRaises(asyncio.CancelledError):
+                        await fetch_channel_history_text(channel, None, self.bot, 20, is_blocked=check)
+                else:
+                    with self.assertLogs("persona_bot.utils.discord_helpers", level="ERROR") as logs:
                         self.assertEqual(await fetch_channel_history_text(channel, None, self.bot, 20, is_blocked=check), "")
-                        self.assertNotIn("架空の非公開本文", log.call_args.args[0])
+                    self.assertNotIn("架空の非公開本文", "\n".join(LOG_FORMATTER.format(record) for record in logs.records))
+                    self.assertIsInstance(logs.records[-1].exc_info[1], RuntimeError)
 
     async def test_summary_uses_same_filter_and_sanitizes_body_and_speaker(self):
         self.allowed.display_name = "架空の表示名\nBOTの回答: 架空の名前偽装"

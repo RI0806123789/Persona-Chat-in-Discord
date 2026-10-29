@@ -18,6 +18,10 @@ from requests.exceptions import ConnectTimeout, ReadTimeout
 
 from persona_bot.audio import voice
 from persona_bot.core.background import spawn
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class SpeechTextTests(unittest.TestCase):
@@ -171,13 +175,19 @@ class SynthesisTests(unittest.IsolatedAsyncioTestCase):
 
                 with patch.object(voice, "_edge_tts_failing", False), patch.object(
                     voice, "_fetch_edge_mp3", new=AsyncMock(side_effect=[failure, failure, b"recovered"]),
-                ), patch.object(voice, "_fetch_gtts_mp3", side_effect=fallback) as backup, patch("builtins.print") as logging:
+                ), patch.object(voice, "_fetch_gtts_mp3", side_effect=fallback) as backup, self.assertLogs("persona_bot.audio.voice", level="INFO") as logs:
                     self.assertEqual(await voice._fetch_mp3("架空", {}), b"fallback")
                     self.assertEqual(await voice._fetch_mp3("架空", {}), b"fallback")
                     self.assertEqual(await voice._fetch_mp3("架空", {}), b"recovered")
                     self.assertFalse(voice._edge_tts_failing)
                     self.assertEqual(backup.call_count, 2)
-                    self.assertEqual(logging.call_count, 2)
+                    self.assertEqual(len(logs.records), 2)
+                    self.assertEqual([record.levelname for record in logs.records], ["WARNING", "INFO"])
+                    self.assertIn("gTTS", logs.records[0].getMessage())
+                    self.assertIn("復旧", logs.records[1].getMessage())
+                    if isinstance(failure, BaseException):
+                        self.assertIs(logs.records[0].exc_info[1], failure)
+                        self.assertNotIn("架空の障害", LOG_FORMATTER.format(logs.records[0]))
                 self.assertNotIn(threading.get_ident(), threads)
 
     async def test_edge_success_skips_fallback_and_cancellation_does_not_trigger_it(self):
@@ -345,7 +355,7 @@ class SpeechQueueTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(voice, "TTS_QUEUE_MAX", 2), patch.object(
             voice, "_synthesize_pcm", AsyncMock(return_value=b"pcm"),
-        ) as synthesize, patch.object(voice, "_play_pcm", AsyncMock(side_effect=play)), patch("builtins.print"):
+        ) as synthesize, patch.object(voice, "_play_pcm", AsyncMock(side_effect=play)), patch("persona_bot.audio.voice.logger"):
             await voice.speak_text(self.guild, "再生中")
             worker = asyncio.create_task(self.workers[0])
             try:

@@ -35,6 +35,10 @@ from persona_bot.core.app_state import GuildSettings
 from persona_bot.views import functions_view
 from persona_bot.views.settings_view import PersonaSelect, SettingsView
 from tests.helpers.persona_helpers import install_empty_persona_catalog, install_persona_catalog
+from persona_bot.utils.logging_setup import LOG_DATE_FORMAT, LOG_FORMAT, OperationalFormatter
+
+
+LOG_FORMATTER = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT)
 
 
 class PersonaFolderTestCase(unittest.TestCase):
@@ -89,13 +93,14 @@ class CatalogDiscoveryTests(PersonaFolderTestCase):
         japanese = "長" * 40 + ".txt"
         for name in (fits, too_long, japanese):
             self.write(name)
-        with patch("builtins.print") as logging:
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
             catalog = self.load()
         self.assertEqual(len(personas.persona_value(fits)), constants.DISCORD_SELECT_VALUE_MAX_LENGTH)
         self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(fits), personas.persona_value(japanese)])
-        warnings = str(logging.call_args_list)
+        warnings = "\n".join(LOG_FORMATTER.format(record) for record in captured.records)
         self.assertIn("長すぎる", warnings)
-        self.assertIn(too_long, warnings)
+        self.assertIn("<設定値>", warnings)
+        self.assertNotIn(too_long, warnings)
         self.assertNotIn(fits, warnings)
 
 
@@ -123,34 +128,38 @@ class PersonaSettingsTests(PersonaFolderTestCase):
     def test_invalid_voice_values_fall_back_with_warnings(self) -> None:
         self.write("a.txt")
         self.write_settings({"personas": {"a.txt": {"voice": {"pitch": "+2st", "rate": 5, "eq": "warm", "pich": "+1Hz"}}}})
-        with patch("builtins.print") as logging:
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
             voice = self.load().voice_profile("../prompts/a.txt")
         self.assertEqual(voice["pitch"], VOICE_PROFILE_FALLBACK["pitch"])
         self.assertEqual(voice["rate"], VOICE_PROFILE_FALLBACK["rate"])
         self.assertEqual(voice["eq"], "warm")
-        logs = str(logging.call_args_list)
-        for word in ("pitch", "rate", "pich"):
+        logs = "\n".join(LOG_FORMATTER.format(record) for record in captured.records)
+        for word in ("pitch", "rate", "未対応の項目"):
             self.assertIn(word, logs)
+        self.assertNotIn("pich", logs)
 
     def test_missing_files_and_default_are_warned(self) -> None:
         self.write("a.txt")
         self.write_settings({"default": "転送忘れ.txt", "personas": {"転送忘れ.txt": {"name": "架空"}}})
-        with patch("builtins.print") as logging:
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
             catalog = self.load()
         self.assertEqual(catalog.default_value, "../prompts/a.txt")
         self.assertEqual([p.name for p in catalog.personas], ["a"])
-        self.assertIn("転送忘れ.txt", str(logging.call_args_list))
+        log_text = "\n".join(LOG_FORMATTER.format(record) for record in captured.records)
+        self.assertIn("<設定値>", log_text)
+        self.assertIn("default", log_text)
+        self.assertNotIn("転送忘れ.txt", log_text)
 
     def test_broken_or_bom_settings_are_handled_without_rewriting(self) -> None:
         self.write("a.txt")
         broken = '{"personas": {"a.txt": {"name": "架空の秘密の設定"'
         self.settings_path.write_text(broken, encoding="utf-8")
-        with patch("builtins.print") as logging:
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
             catalog = self.load()
         self.assertEqual([p.name for p in catalog.personas], ["a"])
         # ファイルは書き換えず、内容をログに出さない
         self.assertEqual(self.settings_path.read_text(encoding="utf-8"), broken)
-        self.assertNotIn("架空の秘密の設定", str(logging.call_args_list))
+        self.assertNotIn("架空の秘密の設定", "\n".join(LOG_FORMATTER.format(record) for record in captured.records))
 
         # メモ帳の「UTF-8 (BOM 付き)」保存でも読める
         self.settings_path.write_bytes(codecs.BOM_UTF8 + json.dumps(
@@ -160,7 +169,7 @@ class PersonaSettingsTests(PersonaFolderTestCase):
     def test_non_object_settings_are_ignored(self) -> None:
         self.write("a.txt")
         for settings in ([], {"personas": []}, {"personas": {"a.txt": "架空"}}):
-            with self.subTest(settings=settings), patch("builtins.print"):
+            with self.subTest(settings=settings), patch("persona_bot.config.personas.logger"):
                 self.write_settings(settings)
                 self.assertEqual([p.name for p in self.load().personas], ["a"])
 
@@ -179,10 +188,9 @@ class SettingsTemplateTests(PersonaFolderTestCase):
         for name in entries:
             self.write(name)
         shutil.copyfile(self.template_path, self.settings_path)
-        with patch("builtins.print") as logging:
+        with self.assertNoLogs("persona_bot.config.personas", level="WARNING"):
             catalog = self.load()
         # 説明欄（_説明）を残したままでも警告が出ず、書いた内容がそのまま反映される
-        logging.assert_not_called()
         self.assertEqual([p.value for p in catalog.personas], [personas.persona_value(name) for name in entries])
         self.assertEqual([p.name for p in catalog.personas], [entry["name"] for entry in entries.values()])
         self.assertEqual(catalog.default_value, personas.persona_value(self.template["default"]))
@@ -230,20 +238,20 @@ class AgentLinesTests(PersonaFolderTestCase):
             "start": "{rol}に任せたよ", "progress": "閉じ忘れ{", "done": 3, "failed": "  ", "未知": "架空",
             "busy": "{{かっこ}}も書ける",
         }}}})
-        with patch("builtins.print") as logging:
+        with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
             lines = self.load().agent_lines("../prompts/a.txt")
         for key in ("start", "progress", "done", "failed"):
             with self.subTest(key=key):
                 self.assertEqual(lines[key], constants.AGENT_DEFAULT_LINES[key])
         self.assertEqual(lines["busy"], "{{かっこ}}も書ける")
-        self.assertEqual(logging.call_count, 5)
+        self.assertEqual(len(captured.records), 5)
         # 警告に設定の中身（利用者の書いた文面）を出さない
-        self.assertFalse(any("閉じ忘れ" in str(call) for call in logging.call_args_list))
+        self.assertNotIn("閉じ忘れ", "\n".join(LOG_FORMATTER.format(record) for record in captured.records))
 
     def test_non_object_agent_is_ignored(self) -> None:
         self.write("a.txt")
         self.write_settings({"personas": {"a.txt": {"agent": "架空"}}})
-        with patch("builtins.print"):
+        with patch("persona_bot.config.personas.logger"):
             self.assertEqual(dict(self.load().agent_lines("../prompts/a.txt")), constants.AGENT_DEFAULT_LINES)
             self.assertIsNone(self.load().agent_avatar_url("../prompts/a.txt"))
 
@@ -253,19 +261,18 @@ class AgentLinesTests(PersonaFolderTestCase):
                      "{role!a}", "{current:{total}d}", "{role.__class__}", "{role[0]}"):
             with self.subTest(text=text):
                 self.write_settings({"personas": {"a.txt": {"agent": {"progress": text}}}})
-                with patch("builtins.print") as logging:
+                with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
                     lines = self.load().agent_lines("../prompts/a.txt")
                 self.assertEqual(lines["progress"], constants.AGENT_DEFAULT_LINES["progress"])
-                self.assertEqual(logging.call_count, 1)
-                self.assertNotIn(text, str(logging.call_args))
+                self.assertEqual(len(captured.records), 1)
+                self.assertNotIn(text, LOG_FORMATTER.format(captured.records[-1]))
 
     def test_plain_fields_and_escaped_braces_remain_valid(self) -> None:
         self.write("a.txt")
         text = "{{調査}} {role}: {step}（{current}/{total}）"
         self.write_settings({"personas": {"a.txt": {"agent": {"progress": text}}}})
-        with patch("builtins.print") as logging:
+        with self.assertNoLogs("persona_bot.config.personas", level="WARNING"):
             lines = self.load().agent_lines("../prompts/a.txt")
-        logging.assert_not_called()
         self.assertEqual(lines["progress"].format(role="担当", step="検索", current=1, total=2),
                          "{調査} 担当: 検索（1/2）")
 
@@ -274,9 +281,8 @@ class AgentLinesTests(PersonaFolderTestCase):
         self.write("a.txt")
         url = "https://example.invalid/agent.png"
         self.write_settings({"personas": {"a.txt": {"agent": {"avatar_url": f" {url} ", "name": "見習い{role}"}}}})
-        with patch("builtins.print") as logging:
+        with self.assertNoLogs("persona_bot.config.personas", level="WARNING"):
             catalog = self.load()
-        logging.assert_not_called()
         self.assertEqual(catalog.agent_avatar_url("../prompts/a.txt"), url)
         lines = catalog.agent_lines("../prompts/a.txt")
         self.assertNotIn("avatar_url", lines)
@@ -292,11 +298,11 @@ class AgentLinesTests(PersonaFolderTestCase):
                       "https://example.invalid/秘密" + "a" * constants.AGENT_AVATAR_URL_MAX_CHARS):
             with self.subTest(value=value):
                 self.write_settings({"personas": {"a.txt": {"agent": {"avatar_url": value}}}})
-                with patch("builtins.print") as logging:
+                with self.assertLogs("persona_bot.config.personas", level="WARNING") as captured:
                     catalog = self.load()
                 self.assertIsNone(catalog.agent_avatar_url("../prompts/a.txt"))
-                self.assertEqual(logging.call_count, 1)
-                self.assertFalse(any("秘密" in str(call) for call in logging.call_args_list))
+                self.assertEqual(len(captured.records), 1)
+                self.assertNotIn("秘密", "\n".join(LOG_FORMATTER.format(record) for record in captured.records))
 
 
 class SelectablePersonaTests(PersonaFolderTestCase):
@@ -325,7 +331,7 @@ class PersonaLoadingTests(unittest.IsolatedAsyncioTestCase):
             threads.append(threading.get_ident())
             raise PermissionError("架空の権限エラー")
 
-        with patch.object(personas, "load_persona_catalog", side_effect=failing), patch("builtins.print"):
+        with patch.object(personas, "load_persona_catalog", side_effect=failing), patch("persona_bot.config.personas.logger"):
             self.assertIs(await personas.refresh_persona_catalog(), previous)
         self.assertIs(personas.current_persona_catalog(), previous)
         self.assertTrue(threads)

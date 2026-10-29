@@ -13,11 +13,16 @@
 属性を持つオブジェクトなので、呼び出し側（bot.py）の書き方は変わらない。
 """
 
+import logging
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from persona_bot.config.constants import ENV_FILE_PATH
+
+
+logger = logging.getLogger(__name__)
 
 # python-dotenv が未インストールでも「起動すらできない」状態にはしない。
 # systemd の EnvironmentFile= や Docker の --env-file のように OS 側から
@@ -82,11 +87,8 @@ def _load_env_file(env_path: Path) -> str:
     まとめて案内する。
     """
     if load_dotenv is None:
-        print(
-            "警告: python-dotenv が見つかりません。.env は読み込まず、"
-            "OSの環境変数だけで続行します。"
-        )
-        print("      .env からキーを読み込むには `pip install -r requirements.txt` を実行してください。")
+        logger.warning('警告: python-dotenv が見つかりません。.env は読み込まず、OSの環境変数だけで続行します。')
+        logger.warning('      .env からキーを読み込むには `pip install -r requirements.txt` を実行してください。')
         return _ENV_NO_DOTENV
 
     if not env_path.exists():
@@ -118,32 +120,30 @@ def _read_key(name: str) -> str:
 
 def _report_missing(missing: list, env_status: str, env_path: Path) -> None:
     """キーが足りないことを日本語で案内する（例外の送出は呼び出し側で行う）。"""
+    # 移行スクリプト等から単独で呼んでも、既定のWARNING閾値で対処方法まで表示する。
     # この1行は「キーが無いときの合図」として仕様で決まっている文言のため、
     # 変更・削除しないこと。詳しい案内はこの後ろに続ける。
-    print("キー未設定")
-    print("")
-    print("APIキーが設定されていないため、ボットを起動できません。")
-    print("以下のキーが見つかりませんでした:")
+    logger.error('キー未設定')
+    logger.error('APIキーが設定されていないため、ボットを起動できません。')
+    logger.error('以下のキーが見つかりませんでした:')
     for name in missing:
-        print(f"  - {name}: {_REQUIRED_KEYS[name]}")
-    print("")
+        logger.error('  - %s: %s', name, _REQUIRED_KEYS[name])
 
     if env_status == _ENV_MISSING:
-        print(f".env が見つかりません: {env_path}")
-        print("  .env.example をコピーして .env を作り、上記のキーを書き込んでください。")
-        print("    Windows (PowerShell): Copy-Item .env.example .env")
-        print("    Linux / macOS:        cp .env.example .env")
+        logger.error('.env が見つかりません: <PATH>')
+        logger.error('  .env.example をコピーして .env を作り、上記のキーを書き込んでください。')
+        logger.error('    Windows (PowerShell): Copy-Item .env.example .env')
+        logger.error('    Linux / macOS:        cp .env.example .env')
     elif env_status == _ENV_NO_DOTENV:
-        print("python-dotenv が未インストールのため .env を読み込めていません。")
-        print("  `pip install -r requirements.txt` を実行するか、")
-        print("  OS の環境変数（systemd なら EnvironmentFile=）でキーを渡してください。")
+        logger.error('python-dotenv が未インストールのため .env を読み込めていません。')
+        logger.error('  `pip install -r requirements.txt` を実行するか、')
+        logger.error('  OS の環境変数（systemd なら EnvironmentFile=）でキーを渡してください。')
     else:
-        print(f".env は読み込みましたが、上記のキーが空か、.env.example のままです: {env_path}")
-        print("  `API_KEY_GEMINI=（実際の値）` のように、= の右側を自分のキーへ書き換えてください。")
-        print("  ※ = の前後に空白を入れないこと。")
+        logger.error('.env は読み込みましたが、上記のキーが空か、.env.example のままです: <PATH>')
+        logger.error('  `API_KEY_GEMINI=（実際の値）` のように、= の右側を自分のキーへ書き換えてください。')
+        logger.error('  ※ = の前後に空白を入れないこと。')
 
-    print("")
-    print("設定後、src/ の中から `python bot.py` で起動し直してください。")
+    logger.error('設定後、src/ の中から `python bot.py` で起動し直してください。')
 
 
 def load_settings() -> Settings:
