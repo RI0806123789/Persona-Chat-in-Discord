@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -26,6 +27,9 @@ from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, panel_operation_is_current,
     BackButton, HubFactory, PanelView,
 )
+
+
+logger = logging.getLogger(__name__)
 
 # Markdown の見出し記号（行頭の # 〜 ######）を除去する正規表現。
 # Discord は h4 以降（####）を描画せず「#### 見出し」がそのまま表示され見づらいため、
@@ -61,11 +65,11 @@ async def _report_failure(interaction: discord.Interaction, notice: str, *, keep
             await edit_panel_message(interaction, deferred=True, content=notice)
             return
         except Exception as error:
-            print(f"要約: 失敗の案内をパネルに表示できませんでした: {error}")
+            logger.warning("要約: 失敗の案内をパネルに表示できませんでした。", exc_info=error)
     try:
         await interaction.followup.send(notice, ephemeral=True)
     except Exception as error:
-        print(f"要約: 失敗の案内を送れませんでした: {error}")
+        logger.error("要約: 失敗の案内を送れませんでした。", exc_info=error)
 
 
 async def generate_channel_summary(
@@ -95,7 +99,7 @@ async def generate_channel_summary(
     except discord.Forbidden:
         return False, "⚠️ メッセージ履歴を読む権限がありません。ボットの権限設定を確認してください。"
     except Exception as error:
-        print(f"要約: 履歴取得エラー: {error}")
+        logger.error("要約: 履歴の取得に失敗しました。", exc_info=error)
         return False, "⚠️ 履歴の取得に失敗しました。"
 
     # --- 自動停止: 上限超過なら要約せず注意メッセージ ---
@@ -113,9 +117,9 @@ async def generate_channel_summary(
     # --- ペルソナテンプレート読み込み（キャラ設定パネルで選択中のペルソナ） ---
     try:
         persona_prompt = await load_persona_template(response_settings.prompt_file)
-    except FileNotFoundError:
+    except FileNotFoundError as error:
         # ペルソナが見つからなくても議事録自体は作れるため、口調なしで続行する
-        print(f"要約: プロンプトファイル({response_settings.prompt_file})が見つかりません。口調なしで続行します。")
+        logger.warning("要約: プロンプトファイルが見つかりません。口調なしで続行します。", exc_info=error)
         persona_prompt = ""
 
     full_prompt = build_summary_prompt(persona_prompt, period.name, source_text)
@@ -262,16 +266,16 @@ class RunSummaryButton(ui.Button):
                     await send_long_message(channel, text, allowed_mentions=discord.AllowedMentions.none())
                 # Forbidden は HTTPException の派生クラスなので、必ず先に捕まえること。
                 except discord.Forbidden as error:
-                    print(f"要約: チャンネルへの投稿を拒否されました: {error}")
+                    logger.warning("要約: チャンネルへの投稿を拒否されました。", exc_info=error)
                     await _report_failure(interaction, _FORBIDDEN_NOTICE, keep_result=False)
                     return
                 except discord.HTTPException as error:
-                    print(f"要約: チャンネルへの投稿に失敗しました: {error}")
+                    logger.error("要約: チャンネルへの投稿に失敗しました。", exc_info=error)
                     await _report_failure(interaction, _PARTIAL_POST_NOTICE, keep_result=False)
                     return
                 await edit_panel_message(interaction, deferred=True, content="✅ 要約をチャンネルに投稿しました。")
         except Exception as error:
-            print(f"要約: 生成・送信中にエラーが発生しました: {error}")
+            logger.error("要約: 生成・送信中にエラーが発生しました。", exc_info=error)
             # 例外の文面には内部の情報が含まれうるため、利用者には定型文だけを見せる。
             await _report_failure(interaction, _FAILURE_NOTICE, keep_result=result_shown)
 

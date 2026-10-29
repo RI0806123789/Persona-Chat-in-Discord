@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import logging
 import asyncio
 from time import monotonic
 from typing import Any, Coroutine, Mapping
@@ -32,6 +33,9 @@ from persona_bot.config.constants import AGENT_PROGRESS_MIN_INTERVAL_SECONDS, AG
 from persona_bot.core.background import TaskOwner, _current_owner, spawn, wait_for_cleanup
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport, render_agent_line
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCancelView(ui.View):
@@ -46,6 +50,12 @@ class AgentCancelView(ui.View):
         self.cancel_event = cancel_event
         # Discordが直接起動するコールバックにも、作成時の所有者を引き継ぐ。
         self._task_owner = task_owner if task_owner is not None else _current_owner.get()
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, item: ui.Item[Any], /
+    ) -> None:
+        """中止ボタンもSDK既定の repr 付きログへ渡さない。"""
+        logger.error("サブエージェント: 中止ボタンの操作中にエラーが発生しました。", exc_info=error)
 
     @ui.button(label="中止", emoji="⏹️", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
@@ -63,7 +73,7 @@ class AgentCancelView(ui.View):
             self.cancel_event.set()
             await interaction.response.defer()
         except discord.HTTPException as error:
-            print(f"サブエージェント: 中止操作への応答を送れませんでした: {type(error).__name__}")
+            logger.warning("サブエージェント: 中止操作への応答を送れませんでした。", exc_info=error)
 
 
 class AgentProgressBase:
@@ -108,7 +118,7 @@ class AgentProgressBase:
                 await self._remove_cancel_button()
             except Exception as error:
                 # 編集の失敗で本来のキャンセルや処理例外を置き換えない。
-                print(f"サブエージェント: 中止ボタンを回収できませんでした: {type(error).__name__}")
+                logger.warning("サブエージェント: 中止ボタンを回収できませんでした。", exc_info=error)
 
         await wait_for_cleanup(remove_button(), label="サブエージェントの中止ボタンの回収")
 
@@ -146,14 +156,14 @@ class AgentProgressBase:
         if worker_finished and not worker.cancelled():
             error = worker.exception()
             if error is not None:
-                print(f"サブエージェント: 作業中にエラーが発生しました: {type(error).__name__}: {error}")
+                logger.error("サブエージェント: 作業中にエラーが発生しました。", exc_info=error)
                 return "failed", None
             report = worker.result()
             return ("done", report) if report is not None else ("failed", None)
         if cancel_requested:
-            print("サブエージェント: 依頼した本人が中止しました。")
+            logger.info("サブエージェント: 依頼した本人が中止しました。")
             return "canceled", None
-        print(f"サブエージェント: 期限（{AGENT_TOTAL_TIMEOUT_SECONDS:.0f}秒）に達したため中止しました。")
+        logger.warning("サブエージェント: 期限に達したため中止しました。")
         return "failed", None
 
 
@@ -180,7 +190,7 @@ class AgentProgress(AgentProgressBase):
             )
             self._last_edit = monotonic()
         except discord.DiscordException as error:
-            print(f"サブエージェント: 進捗メッセージを送れませんでした: {type(error).__name__}")
+            logger.warning("サブエージェント: 進捗メッセージを送れませんでした。", exc_info=error)
             self._view.stop()
 
     async def update(self, index: int, step: str) -> None:
@@ -200,7 +210,7 @@ class AgentProgress(AgentProgressBase):
                 try:
                     await self._source.reply(self._line(key), allowed_mentions=discord.AllowedMentions.none())
                 except discord.DiscordException as error:
-                    print(f"サブエージェント: 終了の案内を送れませんでした: {type(error).__name__}")
+                    logger.warning("サブエージェント: 終了の案内を送れませんでした。", exc_info=error)
             return
         await self._edit(f"{self._header}\n{self._line(key)}", view=None)
 
@@ -209,7 +219,7 @@ class AgentProgress(AgentProgressBase):
             await self._message.edit(content=content, view=view)
             self._last_edit = monotonic()
         except discord.DiscordException as error:
-            print(f"サブエージェント: 進捗メッセージを更新できませんでした: {type(error).__name__}")
+            logger.warning("サブエージェント: 進捗メッセージを更新できませんでした。", exc_info=error)
 
     async def _remove_cancel_button(self) -> None:
         if self._message is not None:

@@ -22,7 +22,7 @@ def forbidden() -> discord.Forbidden:
 
 class RunSummaryFailureTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        quiet = patch("builtins.print")
+        quiet = patch("persona_bot.views.summary_view.logger")
         quiet.start()
         self.addCleanup(quiet.stop)
         supported = patch.object(summary_view, "is_supported_message_channel", return_value=True)

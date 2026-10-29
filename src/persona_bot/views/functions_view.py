@@ -1,3 +1,4 @@
+import logging
 import discord
 from discord import ui
 
@@ -23,6 +24,9 @@ from persona_bot.utils.usage_graph import UsageTracker
 from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, PanelView, send_graph_ephemeral, swap_panel,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenSettingsButton(ui.Button):
@@ -96,7 +100,7 @@ class GraphButton(ui.Button):
         try:
             buffer = await hub.usage.build_graph_buffer()
         except Exception as error:
-            print(f"グラフ生成中にエラー: {error}")
+            logger.error("グラフ生成中にエラーが発生しました。", exc_info=error)
             await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
             return
         # ハブは残したまま、グラフを新しいエフェメラルメッセージとして送る。

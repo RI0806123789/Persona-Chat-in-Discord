@@ -315,14 +315,19 @@ class GraphSendingTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(followup=followup):
                 interaction = make_interaction()
                 sender = interaction.followup.send if followup else interaction.response.send_message
-                sender.side_effect = [OSError("架空の送信失敗"), None]
+                error = OSError("架空の送信失敗")
+                sender.side_effect = [error, None]
                 buffer = io.BytesIO(b"fictional-png")
-                with patch("builtins.print") as logging:
+                with self.assertLogs("persona_bot.views.view_parts", level="ERROR") as logging:
                     await view_parts.send_graph_ephemeral(
                         interaction, buffer, "fictional.png", "架空のグラフ", followup=followup,
                         error_log="架空の文脈", error_notice="架空のエラー案内",
                     )
-                logging.assert_called_once_with("架空の文脈: 架空の送信失敗")
+                self.assertEqual(len(logging.records), 1)
+                self.assertEqual(logging.records[0].getMessage(), "グラフの送信中にエラーが発生しました。")
+                self.assertIs(logging.records[0].exc_info[1], error)
+                self.assertNotIn("架空の文脈", logging.records[0].getMessage())
+                self.assertNotIn("fictional.png", logging.records[0].getMessage())
                 self.assertEqual(sender.await_args.args, ("架空のエラー案内",))
                 self.assertEqual(sender.await_args.kwargs, {"ephemeral": True})
                 self.assertTrue(buffer.closed)

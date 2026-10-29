@@ -55,7 +55,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_progress_failures_do_not_raise(self) -> None:
         self.source.reply.side_effect = [discord.DiscordException("架空の送信失敗"), None]
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_view.logger"):
             await self.progress.start()
             await self.progress.update(1, "特徴の比較")
             await self.progress.finish("failed")
@@ -75,7 +75,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         async def broken():
             raise RuntimeError("架空の障害")
 
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_view.logger"):
             self.assertEqual(await self.progress.run(empty()), ("failed", None))
             self.assertEqual(await self.progress.run(broken()), ("failed", None))
 
@@ -94,7 +94,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         run = asyncio.create_task(self.progress.run(slow()))
         await started.wait()
         self.progress._cancel_event.set()
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_view.logger"):
             self.assertEqual(await run, ("canceled", None))
         await asyncio.wait_for(worker_cancelled.wait(), 1)
 
@@ -102,7 +102,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
         async def slow():
             await asyncio.sleep(3600)
 
-        with patch.object(agent_view, "AGENT_TOTAL_TIMEOUT_SECONDS", 0.01), patch("builtins.print"):
+        with patch.object(agent_view, "AGENT_TOTAL_TIMEOUT_SECONDS", 0.01), patch("persona_bot.views.agent_view.logger"):
             self.assertEqual(await self.progress.run(slow()), ("failed", None))
 
     async def test_caller_cancellation_propagates_and_stops_worker(self) -> None:
@@ -153,7 +153,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(agent_view, "spawn", side_effect=start), patch.object(
             agent_view, "AGENT_TOTAL_TIMEOUT_SECONDS", 0.01 if trigger == "timeout" else 30,
-        ), patch("builtins.print"):
+        ), patch("persona_bot.views.agent_view.logger"):
             run = asyncio.create_task(self.progress.run(work()))
             try:
                 await asyncio.wait_for(started.wait(), 2)
@@ -240,7 +240,7 @@ class ProgressTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("架空の作業失敗")
             return report
 
-        with patch.object(agent_view, "spawn", side_effect=start), patch("builtins.print"):
+        with patch.object(agent_view, "spawn", side_effect=start), patch("persona_bot.views.agent_view.logger"):
             run = asyncio.create_task(self.progress.run(work()))
             try:
                 await asyncio.wait_for(cleaning.wait(), 2)
@@ -314,11 +314,12 @@ class CancelButtonTests(unittest.IsolatedAsyncioTestCase):
                         send_message=AsyncMock(side_effect=error), defer=AsyncMock(side_effect=error),
                     ),
                 )
-                with patch("builtins.print") as log:
+                with self.assertLogs("persona_bot.views.agent_view", level="WARNING") as logs:
                     await view.children[0].callback(interaction)
                 self.assertEqual(event.is_set(), user_id == 11)
-                self.assertTrue(log.called)
-                self.assertNotIn("架空の送信失敗", str(log.call_args))
+                self.assertTrue(logs.records)
+                self.assertNotIn("架空の送信失敗", logs.records[0].getMessage())
+                self.assertIs(logs.records[0].exc_info[1], error)
 
     async def test_callback_is_collected_by_the_owner_on_shutdown(self) -> None:
         owner = TaskOwner()

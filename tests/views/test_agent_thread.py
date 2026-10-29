@@ -162,7 +162,7 @@ class WebhookCacheTests(unittest.IsolatedAsyncioTestCase):
         channel = make_channel()
         channel.webhooks.side_effect = [discord.Forbidden(Mock(status=403), "架空の拒否"), [own_webhook()]]
         webhooks = AgentWebhooks()
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_thread.logger"):
             self.assertIsNone(await webhooks.get(channel, BOT_ID))
         self.assertIsNotNone(await webhooks.get(channel, BOT_ID))
 
@@ -193,7 +193,7 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
         self.webhooks = AgentWebhooks()
 
     async def open(self, avatar_url="https://example.invalid/agent.png"):
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_thread.logger"):
             progress = await start_agent_progress(
                 self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=avatar_url,
             )
@@ -288,13 +288,13 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
         await started.wait()
         button = self.thread.send.await_args_list[0].kwargs["view"].children[0]
         await button.callback(SimpleNamespace(user=SimpleNamespace(id=11), response=SimpleNamespace(defer=AsyncMock())))
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_thread.logger"):
             self.assertEqual(await run, ("canceled", None))
 
     async def test_deleted_webhook_is_forgotten_and_does_not_stop_work(self) -> None:
         progress = await self.open()
         self.webhook.send.side_effect = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "架空")
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_thread.logger"):
             await progress.update(0, "候補の検索")
             await progress.update(1, "特徴の比較")
             await progress.finish("done", AgentReport("架空の報告の本文", []))
@@ -306,7 +306,7 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_child_post_failure_is_logged_and_work_continues(self) -> None:
         progress = await self.open()
         self.webhook.send.side_effect = discord.DiscordException("架空の送信失敗")
-        with patch("builtins.print"):
+        with patch("persona_bot.views.agent_thread.logger"):
             await progress.update(0, "候補の検索")
             await progress.finish("done", AgentReport("架空の報告の本文", []))
         self.assertEqual(self.thread.send.await_args.args[0], "架空の完了")
@@ -387,7 +387,7 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_cleanup_failure_keeps_the_original_cancellation(self) -> None:
         self.webhook.send.side_effect = asyncio.CancelledError()
         self.handoff.edit.side_effect = RuntimeError("架空の編集失敗")
-        with patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
+        with patch("persona_bot.views.agent_thread.logger"), self.assertRaises(asyncio.CancelledError):
             await AgentThreadProgress.open(self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None)
         self.assertTrue(self.thread.send.await_args.kwargs["view"].is_finished())
         self.handoff.edit.assert_awaited_once_with(view=None)
@@ -395,7 +395,7 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_while_starting_fallback_stops_cancel_view(self) -> None:
         self.channel.permissions_for.return_value = SimpleNamespace(**dict(ALL_PERMISSIONS, manage_webhooks=False))
         self.message.reply.side_effect = asyncio.CancelledError()
-        with patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
+        with patch("persona_bot.views.agent_thread.logger"), self.assertRaises(asyncio.CancelledError):
             await start_agent_progress(self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None)
         self.assertTrue(self.message.reply.await_args.kwargs["view"].is_finished())
 

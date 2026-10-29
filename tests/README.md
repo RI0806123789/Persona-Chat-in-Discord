@@ -4,7 +4,7 @@
 
 第1段階は起動処理・core・共通ログ設定と、管理コンソールの旧print／新logging両対応を対象にする。`utils/test_logging_setup.py` は時刻・レベル・モジュール、ハンドラの重複防止、識別子の伏字、例外本文・絶対パス・ソース行の非漏洩、元レコードの非変更を検証する。`PYTHONIOENCODING` を外した別プロセスでcp932を再現し、絵文字をUTF-8で出力できることも確認する。既存のcore回帰はINFOを明示捕捉し、診断用の元例外保持と実際の出力の情報境界を別々に確認する。
 
-第2段階の `services/test_service_logging.py` は、NG語・モデレーション理由・記憶の例外本文・日時入力・配信先情報の非漏洩と元例外の保持を確認する。views・audioと補助モジュールは後続の変更単位へ分ける。実Discord・journald・本番SSH・ブラウザ操作はこの自動確認に含めない。
+第2段階の `services/test_service_logging.py` は、NG語・モデレーション理由・記憶の例外本文・日時入力・配信先情報の非漏洩と元例外の保持を確認する。第3段階の `views/test_view_logging.py` はSDKの通常/TaskOwner配下のコールバック、repr非参照・元例外保持、グラフ文脈やファイル名の非漏洩、キャンセル伝播を確認する。audioと補助モジュールは後続の変更単位へ分ける。実Discord・journald・本番SSH・ブラウザ操作はこの自動確認に含めない。
 
 仮想環境のPythonを使い、リポジトリルートで実行する。
 
