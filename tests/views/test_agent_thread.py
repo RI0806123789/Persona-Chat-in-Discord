@@ -351,6 +351,53 @@ class ThreadProgressTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await AgentThreadProgress.open(self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None)
         self.assertTrue(self.thread.send.await_args.kwargs["view"].is_finished())
+        self.handoff.edit.assert_awaited_once_with(view=None)
+
+    async def test_repeated_cancellation_while_opening_waits_for_button_removal(self) -> None:
+        self.webhook.send.side_effect = asyncio.CancelledError()
+        editing, release, cleaned = (asyncio.Event() for _ in range(3))
+
+        async def edit(**kwargs):
+            editing.set()
+            await release.wait()
+            cleaned.set()
+
+        self.handoff.edit.side_effect = edit
+        run = asyncio.create_task(AgentThreadProgress.open(
+            self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None,
+        ))
+        try:
+            await asyncio.wait_for(editing.wait(), 2)
+            self.assertTrue(self.thread.send.await_args.kwargs["view"].is_finished())
+            for _ in range(3):
+                run.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(run.done())
+                self.assertFalse(cleaned.is_set())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(run, 2)
+            self.assertTrue(cleaned.is_set())
+            self.handoff.edit.assert_awaited_once_with(view=None)
+        finally:
+            release.set()
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)
+
+    async def test_cancellation_cleanup_failure_keeps_the_original_cancellation(self) -> None:
+        self.webhook.send.side_effect = asyncio.CancelledError()
+        self.handoff.edit.side_effect = RuntimeError("架空の編集失敗")
+        with patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
+            await AgentThreadProgress.open(self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None)
+        self.assertTrue(self.thread.send.await_args.kwargs["view"].is_finished())
+        self.handoff.edit.assert_awaited_once_with(view=None)
+
+    async def test_cancellation_while_starting_fallback_stops_cancel_view(self) -> None:
+        self.channel.permissions_for.return_value = SimpleNamespace(**dict(ALL_PERMISSIONS, manage_webhooks=False))
+        self.message.reply.side_effect = asyncio.CancelledError()
+        with patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
+            await start_agent_progress(self.message, LINES, PLAN, webhooks=self.webhooks, avatar_url=None)
+        self.assertTrue(self.message.reply.await_args.kwargs["view"].is_finished())
 
 
 if __name__ == "__main__":

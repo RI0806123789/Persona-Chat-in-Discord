@@ -235,6 +235,9 @@ export interface GuildSettingsView {
   auto_topic_interval_hours: number | null;
   /** null = この版のボットには自律行動が無い */
   autonomous_enabled: boolean | null;
+  /** undefined = 配信先指定に未対応の版 / null = 指定なし（自動）。ID は精度を保つため文字列 */
+  autonomous_stage_channel_id?: string | null;
+  autonomous_voice_channel_id?: string | null;
   /** false = DB に保存された設定が無く、既定値で動いている */
   saved: boolean;
 }

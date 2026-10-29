@@ -29,7 +29,7 @@ import discord
 from discord import ui
 
 from persona_bot.config.constants import AGENT_PROGRESS_MIN_INTERVAL_SECONDS, AGENT_TOTAL_TIMEOUT_SECONDS
-from persona_bot.core.background import spawn, wait_for_cleanup
+from persona_bot.core.background import TaskOwner, _current_owner, spawn, wait_for_cleanup
 from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport, render_agent_line
 
@@ -37,20 +37,33 @@ from persona_bot.services.agent_service import AgentReport, render_agent_line
 class AgentCancelView(ui.View):
     """進捗メッセージに付ける中止ボタン。押せるのは依頼した本人だけ。"""
 
-    def __init__(self, requester_id: int, cancel_event: asyncio.Event) -> None:
+    def __init__(
+        self, requester_id: int, cancel_event: asyncio.Event, *, task_owner: TaskOwner | None = None,
+    ) -> None:
         # 作業の期限より少し長く待つ（期限で終わったときは呼び出し側がボタンを外す）。
         super().__init__(timeout=AGENT_TOTAL_TIMEOUT_SECONDS + 60)
         self.requester_id = requester_id
         self.cancel_event = cancel_event
+        # Discordが直接起動するコールバックにも、作成時の所有者を引き継ぐ。
+        self._task_owner = task_owner if task_owner is not None else _current_owner.get()
 
     @ui.button(label="中止", emoji="⏹️", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("依頼した人だけが中止できます。", ephemeral=True)
-            return
-        # 進捗メッセージの書き換えは作業側が行う（ここで書き換えると終了時の書き換えと競合する）。
-        self.cancel_event.set()
-        await interaction.response.defer()
+        if self._task_owner is None:
+            await self._cancel(interaction)
+        else:
+            await self._task_owner.run(self._cancel(interaction))
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        try:
+            if interaction.user.id != self.requester_id:
+                await interaction.response.send_message("依頼した人だけが中止できます。", ephemeral=True)
+                return
+            # 書き換えは作業側が行う。応答失敗時も、受け付けた中止要求は維持する。
+            self.cancel_event.set()
+            await interaction.response.defer()
+        except discord.HTTPException as error:
+            print(f"サブエージェント: 中止操作への応答を送れませんでした: {type(error).__name__}")
 
 
 class AgentProgressBase:
@@ -86,6 +99,22 @@ class AgentProgressBase:
         """
         raise NotImplementedError
 
+    async def close(self) -> None:
+        """途中の中断でもViewを止め、既知のメッセージから中止ボタンを取り除く。"""
+        self._view.stop()
+
+        async def remove_button() -> None:
+            try:
+                await self._remove_cancel_button()
+            except Exception as error:
+                # 編集の失敗で本来のキャンセルや処理例外を置き換えない。
+                print(f"サブエージェント: 中止ボタンを回収できませんでした: {type(error).__name__}")
+
+        await wait_for_cleanup(remove_button(), label="サブエージェントの中止ボタンの回収")
+
+    async def _remove_cancel_button(self) -> None:
+        raise NotImplementedError
+
     async def run(self, work: Coroutine[Any, Any, AgentReport | None]) -> tuple[str, AgentReport | None]:
         """子の作業を、全体の期限と中止ボタンを見ながら待つ。
 
@@ -100,6 +129,7 @@ class AgentProgressBase:
                 {worker, canceled}, timeout=AGENT_TOTAL_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
+            self._view.stop()
             # 中止後の後片付けが報告を返しても、正常に完了した作業と取り違えない。
             worker_finished = worker.done()
             cancel_requested = self._cancel_event.is_set()
@@ -180,3 +210,8 @@ class AgentProgress(AgentProgressBase):
             self._last_edit = monotonic()
         except discord.DiscordException as error:
             print(f"サブエージェント: 進捗メッセージを更新できませんでした: {type(error).__name__}")
+
+    async def _remove_cancel_button(self) -> None:
+        if self._message is not None:
+            # 中断時は進捗本文を変えず、操作できないボタンだけを外す。
+            await self._message.edit(view=None)

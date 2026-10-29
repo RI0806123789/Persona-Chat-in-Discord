@@ -2,6 +2,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 import io
+from inspect import isawaitable
 from typing import Any, Callable, Optional
 
 import discord
@@ -261,26 +262,31 @@ class PanelView(ui.View):
 
 
 class BackButton(ui.Button):
-    """機能パネル（ハブ）へ戻るボタン。各サブパネル共通。
+    """親パネルへ戻るボタン。指定が無ければ機能パネル（ハブ）へ戻る。
 
-    親 View が保持する make_hub でハブパネルを再生成し、同じメッセージを
-    差し替える。make_hub が無い場合は従来どおりパネルを閉じる。
+    make_parent または親 View が保持する make_hub で戻り先を再生成し、
+    同じメッセージを差し替える。どちらも無い場合はパネルを閉じる。
+    非同期の生成関数は、待機前にDiscordへの応答を保留する。
     """
 
-    def __init__(self, *, row: int) -> None:
+    def __init__(self, *, row: int, make_parent: HubFactory | None = None) -> None:
         super().__init__(label="戻る", style=discord.ButtonStyle.secondary, emoji="↩️", row=row)
+        self.make_parent = make_parent
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
-        make_hub: HubFactory | None = getattr(view, "make_hub", None)
-        if make_hub is None:
+        make_parent = self.make_parent if self.make_parent is not None else getattr(view, "make_hub", None)
+        if make_parent is None:
             # エフェメラルメッセージは delete() できないため、内容を編集して閉じる。
             edited = await edit_panel_message(interaction, content="パネルを閉じました。", view=None, source=view)
             if edited and view is not None:
                 view.stop()
             return
 
-        hub = make_hub(interaction)
+        begin_panel_operation(view, interaction)
+        hub = make_parent(interaction)
+        if isawaitable(hub):
+            hub = await hub
         hub.blocked_user_check = getattr(view, "blocked_user_check", None)
         if not await edit_panel_message(interaction, content=hub.build_preview(), view=hub, source=view):
             return

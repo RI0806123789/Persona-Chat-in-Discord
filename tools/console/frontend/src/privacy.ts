@@ -54,6 +54,9 @@ export function collectSecrets(parts: {
   for (const guild of parts.insights?.discord.guilds ?? []) {
     values.push(guild.name, guild.voice_channel);
   }
+  for (const settings of [parts.insights?.dm_settings, ...(parts.insights?.discord.guilds ?? []).map((guild) => guild.settings)]) {
+    values.push(settings?.autonomous_stage_channel_id, settings?.autonomous_voice_channel_id);
+  }
   const secrets = values.filter(
     (value): value is string => !!value && value.length >= MIN_SECRET_LENGTH && !NOT_SECRET.has(value.toLowerCase()),
   );

@@ -383,6 +383,7 @@ def insights_output(bot: FakeBot) -> str:
             "model": model, "respond_mode": mode, "grounding": grounding,
             "auto_topic_enabled": auto_topic, "auto_topic_interval_hours": interval,
             "autonomous_enabled": autonomous, "saved": saved,
+            "autonomous_stage_channel_id": None, "autonomous_voice_channel_id": None,
         }
 
     return json.dumps({

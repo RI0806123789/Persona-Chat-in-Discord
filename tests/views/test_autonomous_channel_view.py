@@ -4,6 +4,7 @@ Discord はモックで、DB には書き込まない（保存は persist を差
 チャンネル名・ID はすべて架空のもの。
 """
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -20,7 +21,8 @@ from persona_bot.views.autonomous_channel_view import (
     NOT_ADMIN_NOTICE, AutonomousChannelConfirmButton, AutonomousChannelView, StageChannelSelect, VoiceChannelSelect,
 )
 from persona_bot.views.settings_view import OpenAutonomousChannelButton, SettingsView
-from tests.helpers.member_helpers import make_member
+from persona_bot.views.view_parts import BackButton
+from tests.helpers.member_helpers import make_member, make_owner_client
 from tests.helpers.persona_helpers import install_empty_persona_catalog
 
 
@@ -160,6 +162,124 @@ class SettingsEntryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(panel.guild, self.guild)
         self.assertTrue(view.is_finished())
         self.assertIn("配信先パネル", interaction.edit_original_response.await_args.kwargs["content"])
+
+    async def test_back_returns_to_settings_before_returning_to_hub(self) -> None:
+        view = self.settings_view(is_admin=True)
+        view.ng_count = 3
+        view.blacklist_status = "架空の状態"
+        view.blocked_user_check = Mock(return_value=False)
+        make_hub = Mock()
+        view.make_hub = make_hub
+        opening = make_interaction(guild=self.guild)
+        await child(view, OpenAutonomousChannelButton).callback(opening)
+        panel = opening.edit_original_response.await_args.kwargs["view"]
+        self.addCleanup(panel.stop)
+        # 配信先の選択は「戻る」で保存されない。
+        panel.temp_stage_channel_id = 2000
+        panel.temp_voice_channel_id = 3000
+        self.settings.persist = AsyncMock()
+
+        returning = make_interaction(guild=self.guild)
+        returning.client = make_owner_client(owner_id=returning.user.id)
+        await child(panel, BackButton).callback(returning)
+        parent = returning.edit_original_response.await_args.kwargs["view"]
+        self.assertIsInstance(parent, SettingsView)
+        self.addCleanup(parent.stop)
+        self.assertIn("キャラ設定パネル", returning.edit_original_response.await_args.kwargs["content"])
+        self.assertIs(parent.guild_settings, self.settings)
+        self.assertEqual(parent.ng_count, 3)
+        self.assertEqual(parent.blacklist_status, "架空の状態")
+        self.assertIs(parent.make_hub, make_hub)
+        self.assertIs(parent.blocked_user_check, view.blocked_user_check)
+        self.assertIs(parent.message, await returning.original_response())
+        self.assertTrue(panel.is_finished())
+        self.assertIsNone(self.settings.autonomous_stage_channel_id)
+        self.assertIsNone(self.settings.autonomous_voice_channel_id)
+        self.settings.persist.assert_not_awaited()
+        make_hub.assert_not_called()
+
+        from persona_bot.views.functions_view import FunctionsView
+        hub = FunctionsView(
+            self.settings, Mock(), Mock(),
+            SimpleNamespace(is_blocked=Mock(return_value=False), get_all_blocked_users=Mock(return_value=[])),
+            Mock(), Mock(), Mock(), Mock(), is_admin=True,
+        )
+        self.addCleanup(hub.stop)
+        make_hub.return_value = hub
+        to_hub = make_interaction(guild=self.guild)
+        await child(parent, BackButton).callback(to_hub)
+        self.assertIs(to_hub.response.edit_message.await_args.kwargs["view"], hub)
+        make_hub.assert_called_once_with(to_hub)
+        self.assertTrue(parent.is_finished())
+
+    async def test_return_to_settings_uses_press_time_administrator(self) -> None:
+        for admin in (False, True):
+            with self.subTest(admin=admin):
+                view = self.settings_view(is_admin=True)
+                opening = make_interaction(guild=self.guild)
+                await child(view, OpenAutonomousChannelButton).callback(opening)
+                panel = opening.edit_original_response.await_args.kwargs["view"]
+                self.addCleanup(panel.stop)
+
+                returning = make_interaction(admin=admin, guild=self.guild)
+                await child(panel, BackButton).callback(returning)
+                parent = returning.edit_original_response.await_args.kwargs["view"]
+                self.assertIsInstance(parent, SettingsView)
+                self.addCleanup(parent.stop)
+                self.assertIs(parent.is_admin, admin)
+                self.assertIs(
+                    any(isinstance(item, OpenAutonomousChannelButton) for item in parent.children), admin,
+                )
+
+    async def test_return_does_not_redisplay_blacklist_count_after_owner_change(self) -> None:
+        view = self.settings_view(is_admin=True)
+        view.blacklist_status = "3人"
+        opening = make_interaction(guild=self.guild)
+        await child(view, OpenAutonomousChannelButton).callback(opening)
+        panel = opening.edit_original_response.await_args.kwargs["view"]
+        self.addCleanup(panel.stop)
+
+        returning = make_interaction(guild=self.guild)
+        returning.client = make_owner_client(owner_id=returning.user.id)
+        returning.client.application_info.return_value = make_owner_client(owner_id=99).application
+        await child(panel, BackButton).callback(returning)
+        edited = returning.edit_original_response.await_args or returning.response.edit_message.await_args
+        parent = edited.kwargs["view"]
+        self.addCleanup(parent.stop)
+        self.assertIn("非公開（ボット所有者のみ）", edited.kwargs["content"])
+        self.assertNotIn("3人", edited.kwargs["content"])
+
+    async def test_timeout_during_owner_lookup_does_not_reopen_settings(self) -> None:
+        view = self.settings_view(is_admin=True)
+        opening = make_interaction(guild=self.guild)
+        await child(view, OpenAutonomousChannelButton).callback(opening)
+        panel = opening.edit_original_response.await_args.kwargs["view"]
+        self.addCleanup(panel.stop)
+        returning = make_interaction(guild=self.guild)
+        returning.client = make_owner_client(owner_id=returning.user.id)
+        application = returning.client.application
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def lookup():
+            started.set()
+            await release.wait()
+            return application
+
+        returning.client.application_info.side_effect = lookup
+        run = asyncio.create_task(child(panel, BackButton).callback(returning))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            returning.response.defer.assert_awaited_once_with(ephemeral=True)
+            await panel.on_timeout()
+            release.set()
+            await asyncio.wait_for(run, 2)
+            returning.edit_original_response.assert_not_awaited()
+            returning.response.edit_message.assert_not_awaited()
+            self.assertTrue(panel.is_finished())
+        finally:
+            release.set()
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)
 
 
 class AutonomousChannelPanelTests(unittest.IsolatedAsyncioTestCase):

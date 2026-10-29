@@ -17,7 +17,9 @@ from persona_bot.config.constants import (
 from persona_bot.config.personas import (
     FOLLOW_DEFAULT_PERSONA, PersonaCatalog, current_persona_catalog, is_selectable_persona,
 )
-from persona_bot.utils.discord_helpers import is_administrator, is_current_administrator
+from persona_bot.utils.discord_helpers import (
+    is_administrator, is_bot_owner, is_current_administrator, is_current_bot_owner,
+)
 from persona_bot.views.autonomous_channel_view import AutonomousChannelView
 from persona_bot.views.view_parts import (
     begin_panel_operation, edit_panel_message, BackButton,
@@ -268,7 +270,20 @@ class OpenAutonomousChannelButton(ui.Button):
                 content="この機能はサーバー管理者のみ利用できます。", view=None,
             )
             return
-        channel_view = AutonomousChannelView(view.guild_settings, guild, make_hub=view.make_hub)
+        async def make_settings(back_interaction: discord.Interaction) -> SettingsView:
+            await back_interaction.response.defer(ephemeral=True)
+            # 開き直すときも、全体の違反件数は最新の所有者だけに表示する。
+            blacklist_status = "非公開（ボット所有者のみ）"
+            if is_bot_owner(back_interaction) and await is_current_bot_owner(back_interaction):
+                blacklist_status = view.blacklist_status
+            return SettingsView(
+                view.guild_settings, view.ng_count, blacklist_status,
+                make_hub=view.make_hub, is_admin=is_administrator(back_interaction.user),
+            )
+
+        channel_view = AutonomousChannelView(
+            view.guild_settings, guild, make_hub=view.make_hub, make_settings=make_settings,
+        )
         # 同じ（エフェメラルな）メッセージを配信先パネルに差し替える
         await swap_panel(interaction, view, channel_view, channel_view.build_preview())
 
