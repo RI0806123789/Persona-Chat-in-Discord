@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import re
 from typing import Mapping
@@ -42,6 +43,9 @@ from persona_bot.services.agent_plan import AgentPlan
 from persona_bot.services.agent_service import AgentReport, render_agent_line
 from persona_bot.utils.discord_helpers import format_grounding_sources, split_message
 from persona_bot.views.agent_view import AgentProgress, AgentProgressBase
+
+
+logger = logging.getLogger(__name__)
 
 _NO_MENTIONS = discord.AllowedMentions.none()
 # スレッドを作り、親子がやりとりするのに要るボットの権限（チャンネル単位で確かめる）。
@@ -132,9 +136,9 @@ class AgentWebhooks:
                     webhook = await channel.create_webhook(
                         name=AGENT_WEBHOOK_NAME, reason="サブエージェントの作業スレッドへの投稿に使う",
                     )
-                    print(f"サブエージェント: 作業スレッド用の Webhook を作りました (channel_id={channel.id})。")
+                    logger.info("サブエージェント: 作業スレッド用の Webhook を作りました。")
             except discord.DiscordException as error:
-                print(f"サブエージェント: Webhook を用意できませんでした: {type(error).__name__}")
+                logger.warning("サブエージェント: Webhook を用意できませんでした。", exc_info=error)
                 return None
             self._cache[channel.id] = webhook
             return webhook
@@ -197,11 +201,11 @@ class AgentThreadProgress(AgentProgressBase):
         """
         reason = thread_unavailable_reason(message)
         if reason is not None:
-            print(f"サブエージェント: 作業スレッドを使わず、返信の進捗表示にします（{reason}）。")
+            logger.warning("サブエージェント: 作業スレッドを使えないため、返信の進捗表示にします。")
             return None
         webhook = await webhooks.get(message.channel, message.guild.me.id)
         if webhook is None:
-            print("サブエージェント: Webhook を使えないため、返信の進捗表示にします。")
+            logger.warning("サブエージェント: Webhook を使えないため、返信の進捗表示にします。")
             return None
         try:
             thread = await message.create_thread(
@@ -210,7 +214,7 @@ class AgentThreadProgress(AgentProgressBase):
                 reason="サブエージェントの作業スレッド",
             )
         except discord.DiscordException as error:
-            print(f"サブエージェント: 作業スレッドを作れないため、返信の進捗表示にします: {type(error).__name__}")
+            logger.warning("サブエージェント: 作業スレッドを作れないため、返信の進捗表示にします。", exc_info=error)
             return None
         progress = cls(
             message, lines, plan, thread=thread, webhook=webhook, webhooks=webhooks, avatar_url=avatar_url,
@@ -233,7 +237,7 @@ class AgentThreadProgress(AgentProgressBase):
             )
         except discord.DiscordException as error:
             # 作ったスレッドは残る（消すには別の権限が要り、利用者の目にも触れた後のため）。
-            print(f"サブエージェント: 作業スレッドへ委託内容を送れないため、返信の進捗表示にします: {type(error).__name__}")
+            logger.warning("サブエージェント: 作業スレッドへ委託内容を送れないため、返信の進捗表示にします。", exc_info=error)
             self._view.stop()
             return False
         return True
@@ -258,7 +262,7 @@ class AgentThreadProgress(AgentProgressBase):
             try:
                 await self._source.reply(status, allowed_mentions=_NO_MENTIONS)
             except discord.DiscordException as error:
-                print(f"サブエージェント: 終了の案内を送れませんでした: {type(error).__name__}")
+                logger.warning("サブエージェント: 終了の案内を送れませんでした。", exc_info=error)
 
     async def _remove_cancel_button(self) -> None:
         if self._handoff is None:
@@ -266,13 +270,13 @@ class AgentThreadProgress(AgentProgressBase):
         try:
             await self._handoff.edit(view=None)
         except discord.DiscordException as error:
-            print(f"サブエージェント: 中止ボタンを外せませんでした: {type(error).__name__}")
+            logger.warning("サブエージェント: 中止ボタンを外せませんでした。", exc_info=error)
 
     async def _parent_send(self, content: str) -> None:
         try:
             await self._thread.send(content, allowed_mentions=_NO_MENTIONS)
         except discord.DiscordException as error:
-            print(f"サブエージェント: 作業スレッドへ投稿できませんでした: {type(error).__name__}")
+            logger.error("サブエージェント: 作業スレッドへ投稿できませんでした。", exc_info=error)
 
     async def _child_send(self, content: str, *, suppress_embeds: bool = False) -> None:
         """子の名前とアイコンで投稿する。長い報告は分割する。失敗しても作業は止めない。"""
@@ -289,13 +293,13 @@ class AgentThreadProgress(AgentProgressBase):
                     suppress_embeds=suppress_embeds,
                     wait=True,
                 )
-            except discord.NotFound:
+            except discord.NotFound as error:
                 # 依頼の途中で Webhook が消された。次の依頼では作り直す。
-                print("サブエージェント: Webhook が見つからないため、この依頼では子の投稿をやめます。")
+                logger.warning("サブエージェント: Webhook が見つからないため、この依頼では子の投稿をやめます。", exc_info=error)
                 self._webhooks.forget(self._source.channel.id, self._webhook)
                 self._webhook = None
             except discord.DiscordException as error:
-                print(f"サブエージェント: 子の投稿を送れませんでした: {type(error).__name__}")
+                logger.warning("サブエージェント: 子の投稿を送れませんでした。", exc_info=error)
                 return
 
 

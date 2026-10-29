@@ -1,3 +1,4 @@
+import logging
 import asyncio
 import time
 from dataclasses import dataclass
@@ -11,6 +12,9 @@ from discord import ui
 from persona_bot.config.constants import DISCORD_SELECT_LABEL_MAX_LENGTH, VIEW_TIMEOUT_SECONDS
 from persona_bot.core.background import TaskOwner, _current_owner
 from persona_bot.utils.discord_helpers import reject_blocked_interaction
+
+
+logger = logging.getLogger(__name__)
 
 # ハブ（機能パネル）を再生成する呼び出し可能オブジェクトの型。
 # functions_view を直接 import すると循環参照になるため、呼び出し側から
@@ -128,7 +132,7 @@ async def bind_panel_message(
     try:
         panel.message = await interaction.original_response()
     except Exception as error:
-        print(f"パネル({type(panel).__name__})の応答参照の取得に失敗しました: {error}")
+        logger.warning("パネルの応答参照の取得に失敗しました。", exc_info=error)
 
 
 class PanelView(ui.View):
@@ -218,6 +222,12 @@ class PanelView(ui.View):
         # 画面を更新するコールバックだけが、待機前に操作世代を確保する。
         return not self.is_finished() and self._panel_state.current is self
 
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[Any], /
+    ) -> None:
+        """パネルや操作内容の repr を出さず、例外は共通ログの診断へ渡す。"""
+        logger.error("パネル操作中にエラーが発生しました。", exc_info=error)
+
     async def on_timeout(self) -> None:
         """タイムアウト時に、操作できなくなった UI をメッセージから取り除く。"""
         state = self._panel_state
@@ -235,7 +245,7 @@ class PanelView(ui.View):
             try:
                 await self.message.edit(content=self.timeout_notice, view=None)
             except discord.HTTPException as error:
-                print(f"パネル({type(self).__name__})のタイムアウト処理エラー: {error}")
+                logger.warning("パネルのタイムアウト処理に失敗しました。", exc_info=error)
             finally:
                 self.stop()
 
@@ -351,7 +361,7 @@ async def send_graph_ephemeral(
         filename:    Discord 上でのファイル名（例: "usage_graph.png"）。
         caption:     画像に添えるメッセージ本文。
         followup:    defer済みの場合はTrueにし、followupで送信する。
-        error_log:   送信失敗ログの文脈名。省略時はファイル名を含む。
+        error_log:   互換性のため保持する旧ログ文脈名。ログには固定の文面を使う。
         error_notice: 送信失敗時の案内文。省略時は例外の内容を添える。
     """
     picture = None
@@ -360,14 +370,14 @@ async def send_graph_ephemeral(
         sender = interaction.followup.send if followup else interaction.response.send_message
         await sender(caption, file=picture, ephemeral=True)
     except Exception as error:
-        print(f"{error_log or f'グラフ送信中に予期せぬエラー ({filename})'}: {error}")
+        logger.error("グラフの送信中にエラーが発生しました。", exc_info=error)
         # 送信が始まる前に失敗した場合のみ、同じ Interaction でエラーを返せる。
         if followup or not interaction.response.is_done():
             sender = interaction.followup.send if followup else interaction.response.send_message
             try:
                 await sender(error_notice or f"エラー: グラフの送信に失敗しました。（{error}）", ephemeral=True)
             except Exception as notice_error:
-                print(f"グラフ送信失敗の案内も送れませんでした ({filename}): {notice_error}")
+                logger.error("グラフ送信失敗の案内も送れませんでした。", exc_info=notice_error)
     finally:
         # discord.Fileが差し替えたbuffer.closeを元へ戻してから閉じる。
         if picture is not None:

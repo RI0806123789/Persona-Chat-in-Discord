@@ -19,10 +19,15 @@
 必ずここの文言も合わせて直すこと。
 """
 
+import logging
+
 from typing import Any
 
 from persona_bot.config.constants import BLACKLIST_MAX_VIOLATIONS, DISCORD_MESSAGE_MAX_LENGTH, VIEW_TIMEOUT_SECONDS
 from persona_bot.views.view_parts import BackButton, HubFactory, PanelView
+
+
+logger = logging.getLogger(__name__)
 
 # client.user がまだ取れないとき（起動直後など）に使う表示名。
 DEFAULT_BOT_NAME = "ボット"
@@ -105,10 +110,7 @@ def _fit_to_discord_limit(text: str) -> str:
     """
     if len(text) <= DISCORD_MESSAGE_MAX_LENGTH:
         return text
-    print(
-        f"警告: 案内文が Discord の上限（{DISCORD_MESSAGE_MAX_LENGTH}文字）を超えたため"
-        f"切り詰めました（{len(text)}文字）。help_view.py の文言を減らしてください。"
-    )
+    logger.warning("案内文が Discord の上限（%d文字）を超えたため切り詰めました（%d文字）。説明文を短くしてください。", DISCORD_MESSAGE_MAX_LENGTH, len(text))
     keep = DISCORD_MESSAGE_MAX_LENGTH - len(_TRUNCATION_NOTICE)
     return text[:keep] + _TRUNCATION_NOTICE
 

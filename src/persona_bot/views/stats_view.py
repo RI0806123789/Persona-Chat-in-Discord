@@ -1,3 +1,4 @@
+import logging
 import discord
 from discord import ui
 
@@ -10,6 +11,9 @@ from persona_bot.views.view_parts import (
     BackButton, HubFactory, PanelView,
     select_option_text, send_graph_ephemeral,
 )
+
+
+logger = logging.getLogger(__name__)
 
 # 項目セレクトの値 → 表示名
 _ITEM_LABELS = {
@@ -123,7 +127,7 @@ class RunStatsButton(ui.Button):
                 # グラフ画像は本人だけに見えるエフェメラルの followup として送る。
                 await interaction.followup.send(files=files, ephemeral=True)
         except Exception as error:
-            print(f"会話統計の生成・送信中にエラー: {error}")
+            logger.error("会話統計の生成・送信中にエラーが発生しました。", exc_info=error)
             notice = "エラー: 統計の表示に失敗しました。"
             try:
                 await edit_panel_message(interaction, deferred=True, content=notice, view=None)
@@ -157,7 +161,7 @@ class RankingButton(ui.Button):
         try:
             buffer = await view.stats.build_ranking_graph()
         except Exception as error:
-            print(f"グラフ生成中にエラー: {error}")
+            logger.error("グラフ生成中にエラーが発生しました。", exc_info=error)
             await interaction.followup.send("エラー: グラフの生成に失敗しました。", ephemeral=True)
             return
         # 描画の待機中にロールが外されうるので、送る直前に最新の Member で確かめる。
@@ -230,7 +234,7 @@ class FeedbackButton(ui.Button):
             for chunk in split_message(summary) or ["表示できるフィードバックの集計がありません。"]:
                 await interaction.followup.send(chunk, ephemeral=True)
         except Exception as error:
-            print(f"フィードバックの集計・送信中にエラー: {error}")
+            logger.error("フィードバックの集計・送信中にエラーが発生しました。", exc_info=error)
             await interaction.followup.send("エラー: フィードバックの表示に失敗しました。", ephemeral=True)
 
 
