@@ -79,6 +79,82 @@ class LoggingSetupTests(unittest.TestCase):
                                    "失敗しました。", (), (None, None, None))
         self.assertIn("例外情報はありません", OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record))
 
+    def test_external_warning_does_not_interpolate_exception_argument(self) -> None:
+        private = "架空の非公開接続情報"
+        error = OSError(private)
+        message = "Failed to get default SSL context from google-auth: %s"
+        record = logging.LogRecord("google_genai._api_client", logging.WARNING, __file__, 263,
+                                   message, (error,), None)
+        formatted = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record)
+        self.assertIn("[WARNING] [google_genai._api_client]", formatted)
+        self.assertIn("外部ライブラリのログを受信しました", formatted)
+        self.assertIn("test_logging_setup.py:263", formatted)
+        self.assertNotIn(private, formatted)
+        self.assertNotIn("Failed to get", formatted)
+        self.assertNotIn(str(Path(__file__).resolve()), formatted)
+        self.assertEqual(record.msg, message)
+        self.assertEqual(record.args, (error,))
+
+    def test_external_heartbeat_warning_drops_stack_embedded_in_message(self) -> None:
+        private_path = str(Path(__file__).resolve())
+        message = (
+            "Shard ID %s heartbeat blocked for more than %s seconds.\n"
+            "Loop thread traceback (most recent call last):\n"
+            f'  File "{private_path}", line 1, in run\n'
+            "    FICTIONAL_PRIVATE_SOURCE_LINE"
+        )
+        record = logging.LogRecord("discord.gateway", logging.WARNING, __file__, 194,
+                                   message, (None, 10), None)
+        formatted = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record)
+        self.assertIn("[WARNING] [discord.gateway]", formatted)
+        self.assertIn("test_logging_setup.py:194", formatted)
+        self.assertNotIn(private_path, formatted)
+        self.assertNotIn("FICTIONAL_PRIVATE_SOURCE_LINE", formatted)
+        self.assertNotIn("Loop thread traceback", formatted)
+        self.assertEqual(record.msg, message)
+        self.assertEqual(record.args, (None, 10))
+
+    def test_external_message_and_arguments_are_never_converted_to_text(self) -> None:
+        class UnprintableError(RuntimeError):
+            def __str__(self):
+                raise AssertionError("外部ログの自由文を文字列化してはいけません")
+
+        error = UnprintableError()
+        for message, arguments in (("失敗: %s", (error,)), (error, ())):
+            with self.subTest(message_type=type(message).__name__):
+                record = logging.LogRecord("external.example", logging.ERROR, __file__, 17,
+                                           message, arguments, None)
+                formatted = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record)
+                self.assertIn("test_logging_setup.py:17", formatted)
+                self.assertIs(record.msg, message)
+                self.assertIs(record.args, arguments)
+
+    def test_external_exception_metadata_keeps_safe_type_and_location(self) -> None:
+        private = "架空の非公開例外本文"
+        try:
+            raise ValueError(private)
+        except ValueError:
+            record = logging.LogRecord("external.example", logging.ERROR, __file__, 21,
+                                       private, (), sys.exc_info())
+        record.exc_text = private
+        record.stack_info = private
+        original_info = record.exc_info
+        formatted = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record)
+        self.assertIn("例外: ValueError", formatted)
+        self.assertIn("test_logging_setup.py:", formatted)
+        self.assertNotIn(private, formatted)
+        self.assertNotIn(str(Path(__file__).resolve()), formatted)
+        self.assertNotIn("raise ValueError", formatted)
+        self.assertIs(record.exc_info, original_info)
+        self.assertEqual(record.exc_text, private)
+        self.assertEqual(record.stack_info, private)
+
+    def test_bot_login_message_remains_visible(self) -> None:
+        record = logging.LogRecord("__main__", logging.INFO, __file__, 1,
+                                   "ログイン成功: %s", ("架空のボット",), None)
+        formatted = OperationalFormatter(LOG_FORMAT, LOG_DATE_FORMAT).format(record)
+        self.assertIn("ログイン成功: 架空のボット", formatted)
+
     def test_non_reconfigurable_cp932_stream_replaces_only_unencodable_characters(self) -> None:
         class LegacyStream:
             encoding = "cp932"

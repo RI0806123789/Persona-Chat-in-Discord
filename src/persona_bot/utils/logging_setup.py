@@ -21,7 +21,13 @@ class OperationalFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         # 別のハンドラや assertLogs が受け取るレコードを変更しない。
         safe = copy(record)
-        safe.msg = _IDENTIFIER.sub(r"\1\2<ID>", record.getMessage())
+        if record.name == "__main__" or record.name.startswith("persona_bot."):
+            safe.msg = record.getMessage()
+        else:
+            # SDKは例外やスタックを本文・引数へ埋め込む場合がある。
+            # getMessage()や引数のstr()を呼ぶ前に自由文を捨て、発生位置だけ残す。
+            safe.msg = f"外部ライブラリのログを受信しました（{Path(record.pathname).name}:{record.lineno}）。"
+        safe.msg = _IDENTIFIER.sub(r"\1\2<ID>", safe.msg)
         safe.msg = _DISCORD_ID.sub("<ID>", safe.msg)
         safe.args = ()
         # 先に別のハンドラが整形した例外本文も再利用しない。
