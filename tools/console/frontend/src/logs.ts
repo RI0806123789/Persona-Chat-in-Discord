@@ -41,6 +41,8 @@ export function levelOf(entry: LogEntry): LogLevel {
 }
 
 const EXCEPTION_TRACEBACK = /^Traceback \(most recent call last\)/;
+// 共通Formatterは例外本文を省き、この見出しと字下げされた発生位置だけを出す。
+const SAFE_EXCEPTION = /^例外: \S+$/;
 // discord.py が「heartbeat blocked」の警告に続けて出す「ループが何をしていたか」のスタックなど
 const OTHER_TRACEBACK = /traceback \(most recent call last\)/i;
 
@@ -54,7 +56,11 @@ export function classifyEntries(entries: LogEntry[]): LogLevel[] {
   let isException = false; // 例外の Traceback なら、最後の字下げなしの行（例外の本文）までが塊
   for (const entry of entries) {
     const message = entry.message;
-    if (EXCEPTION_TRACEBACK.test(message)) {
+    if (SAFE_EXCEPTION.test(message) && entry.source !== "systemd") {
+      const previous = levels[levels.length - 1];
+      block = previous === "warn" || previous === "error" ? previous : "error";
+      isException = false;
+    } else if (EXCEPTION_TRACEBACK.test(message)) {
       block = "error";
       isException = true;
     } else if (OTHER_TRACEBACK.test(message)) {
