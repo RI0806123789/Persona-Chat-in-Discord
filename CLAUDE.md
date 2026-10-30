@@ -81,6 +81,7 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 - **`pip-audit` は CI 専用の道具で、ボットの依存ではない。** 版は `.github/audit/requirements.txt` に固定し（Dependabot が更新を提案）、
   ルートや管理コンソールの `requirements.txt` に足さないこと。リポジトリにロックは無いので、検査の対象は検査した時点で解決される
   推移依存の版になる（手元や本番に入っている版と違うことがある）
+- **監査ジョブの `PYTHONUTF8: '1'` を保持する。** 日本語コメント入りの requirements を Windows の既定コードページで読むと、監査前に `UnicodeDecodeError` になる。`PYTHONIOENCODING` は標準入出力だけを変えるため代用にならない。
 - 管理コンソールの開発サーバー（`dev_launcher.py` が起動する vite）は devDependencies だが、`npm audit --omit=dev` の対象外。
   更新は Dependabot の提案で追う
 

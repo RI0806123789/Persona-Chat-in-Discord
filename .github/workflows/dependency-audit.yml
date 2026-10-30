@@ -48,6 +48,9 @@ jobs:
         python: ['3.11', '3.13']
     env:
       PYTHONIOENCODING: utf-8
+      # 日本語コメント入りの requirements を Windows の既定コードページで読ませない。
+      # PYTHONIOENCODING は標準入出力だけなので、ファイル読込には UTF-8 モードも必要。
+      PYTHONUTF8: '1'
     defaults:
       run:
         shell: bash
