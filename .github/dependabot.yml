@@ -89,6 +89,13 @@ updates:
       timezone: Asia/Tokyo
     cooldown:
       default-days: 14
+    # react-dom は同じ版の react を peerDependencies で要求するため、別々の PR にすると
+    # 片方だけマージされた時点で npm ci が失敗する（react-dom 19.3.1 の単独更新で実際に起きた）
+    groups:
+      react:
+        patterns:
+          - react
+          - react-dom
     commit-message:
       prefix: fix
 
