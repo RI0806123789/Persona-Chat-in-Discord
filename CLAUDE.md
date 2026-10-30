@@ -93,6 +93,13 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
   `pip download --no-deps` して `--find-links` に置き、公開日の上限（`--uploaded-prior-to`、既定 `P14D`）を掛けない（人が選んだ版。
   セキュリティ修正で公開直後の版を固定することがある）。推移依存は索引から公開日の上限内の版だけを選ぶ。生成に使う pip は
   `.github/constraints/requirements.txt` に固定する（`--uploaded-prior-to` は pip 26.0.1 から）
+- **推移依存のセキュリティ修正は `.github/constraints/security-exceptions.txt` で公開日の上限の例外にする。** 上限内の版に既知の脆弱性があり、
+  修正版が公開から日が浅いとき（pip-audit が `constraints.txt` の版で検出したとき）に、修正版を ID・理由・外す条件のコメント付きで書いて
+  作り直す（生成は直接依存と同じく `--find-links` に置き、`-c` で版を指定する）。外す条件を満たしたら行を消して作り直す。
+  導入時に実際に、上限内の certifi 2026.7.22 が CRITICAL の GHSA-6q48-6c7w-9gw2（漏えいした emSign のルート証明書）に当たり、
+  修正版 2026.10.19 を例外にした（固定しない main では最新版が入っていたので、例外が無いと固定によって脆弱な版へ戻る）。
+  Dependabot はこのフォルダでは `allow` で pip だけを更新する（例外の版を書き換えさせない）。テストは各行のコメントと
+  `constraints.txt` への反映を照合している
 - **直接依存を足したり版を変えたりしたら作り直す。** Dependabot の直接依存の PR が推移依存の固定と衝突して CI で落ちたら、
   ルールセットにより Dependabot のブランチへは push できないので、新しいブランチで直接依存の更新と作り直した `constraints.txt` を
   まとめて PR にし、Dependabot の PR は閉じる

@@ -17,6 +17,7 @@ AUDIT_WORKFLOW_PATH = WORKFLOWS_DIR / "dependency-audit.yml"
 AUDIT_TOOL_REQUIREMENTS = GITHUB_DIR / "audit" / "requirements.txt"
 CONSTRAINTS_WORKFLOW_PATH = WORKFLOWS_DIR / "update-constraints.yml"
 CONSTRAINTS_TOOL_REQUIREMENTS = GITHUB_DIR / "constraints" / "requirements.txt"
+SECURITY_EXCEPTIONS_PATH = GITHUB_DIR / "constraints" / "security-exceptions.txt"
 REQUIREMENTS_PATH = ROOT / "requirements.txt"
 CONSTRAINTS_PATH = ROOT / "constraints.txt"
 
@@ -292,6 +293,33 @@ class ConstraintsTests(unittest.TestCase):
         self.assertTrue(split, "今の constraints.txt には書き分けた依存（contourpy）があるはずです")
         self.assertLessEqual(split, ignored)
 
+    def test_security_exceptions_are_documented_and_applied(self) -> None:
+        """公開日の上限の例外は、推移依存のセキュリティ修正だけ。理由と外す条件を残し、constraints.txt に反映されている。"""
+        pinned: dict[str, set[str]] = {}
+        for name, version, _ in _constraint_lines():
+            pinned.setdefault(name, set()).add(version)
+        comments: list[str] = []
+        for raw in _read(SECURITY_EXCEPTIONS_PATH).splitlines():
+            line = raw.strip()
+            if not line:
+                comments = []
+                continue
+            if line.startswith("#"):
+                comments.append(line)
+                continue
+            match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)", line)
+            self.assertIsNotNone(match, f"「名前==版」でない行があります: {line}")
+            name = merge_constraints.normalize_name(match.group(1))
+            note = "\n".join(comments)
+            with self.subTest(name=name):
+                self.assertNotIn(name, self.direct)  # 直接依存は requirements.txt で人が選ぶ
+                self.assertRegex(note, r"(GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}|PYSEC-\d{4}-\d+|CVE-\d{4}-\d+)")
+                self.assertIn("理由", note)
+                self.assertIn("外す条件", note)
+                # 作り直しで例外が効き、constraints.txt がその版になっている
+                self.assertEqual(pinned.get(name), {match.group(2)})
+            comments = []
+
     def test_dependabot_groups_only_transitive_pins(self) -> None:
         """推移依存は1つの PR にまとめ、直接依存は1つずつ提案させる（除外の一覧を requirements.txt とそろえる）。"""
         entry = _root_pip_entry()
@@ -327,8 +355,14 @@ class ConstraintsWorkflowTests(unittest.TestCase):
         self.assertIn("os: [ubuntu-latest, windows-latest]", self.text)
         self.assertIn("python: ['3.11', '3.12', '3.13']", self.text)
         # 直接依存は find-links に置いて公開日の上限を外し、-c の行を除いた requirements.txt で解決する
-        self.assertIn("--no-deps -d direct-dists -r requirements-unconstrained.txt", self.text)
-        self.assertIn("--find-links direct-dists -r requirements-unconstrained.txt", self.text)
+        self.assertIn(
+            "--no-deps -d direct-dists -r requirements-unconstrained.txt -r .github/constraints/security-exceptions.txt",
+            self.text,
+        )
+        self.assertIn(
+            "--find-links direct-dists -r requirements-unconstrained.txt -c .github/constraints/security-exceptions.txt",
+            self.text,
+        )
         self.assertIn("grep -v -E '^[[:space:]]*(-c|--constraint)([[:space:]=]|$)' requirements.txt", self.text)
         self.assertIn("python deploy/merge_constraints.py --requirements requirements.txt", self.text)
 
@@ -344,6 +378,16 @@ class ConstraintsWorkflowTests(unittest.TestCase):
         # --uploaded-prior-to は pip 26.0.1 から
         self.assertGreaterEqual(tuple(int(part or 0) for part in match.groups()), (26, 0, 1))
         self.assertIn("-r .github/constraints/requirements.txt", self.text)
+
+    def test_dependabot_updates_only_pip_next_to_security_exceptions(self) -> None:
+        # 例外は人が脆弱性ごとに決める版。同じフォルダの pip の固定版だけを Dependabot に更新させる
+        entries = [
+            entry for entry in _dependabot_entries() if "/.github/constraints" in _entry_directories(entry)
+        ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(_entry_directories(entries[0]), ["/.github/constraints"])
+        self.assertEqual(re.findall(r"- dependency-name:\s*(\S+)", entries[0]), ["pip"])
+        self.assertIn("    allow:\n", entries[0])
 
 
 class WorkflowPinningTests(unittest.TestCase):

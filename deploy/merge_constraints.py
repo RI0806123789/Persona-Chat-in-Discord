@@ -27,6 +27,7 @@ HEADER = (
     "# 推移依存（requirements.txt の直接依存が引き込む依存）の固定版。requirements.txt の「-c constraints.txt」から読まれる。",
     "# 直接依存は requirements.txt で固定するので、ここには書かない。",
     "# 作り直すときは .github/workflows/update-constraints.yml を手動で実行し、成果物の constraints.txt で置き換える。",
+    "# 公開日の上限の例外（推移依存のセキュリティ修正）は .github/constraints/security-exceptions.txt に書いてから作り直す。",
     "# 1行ずつの更新は Dependabot が提案する（環境マーカー付きの依存は .github/dependabot.yml で除外し、作り直しで更新する）。",
 )
 

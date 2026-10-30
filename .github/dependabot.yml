@@ -48,12 +48,27 @@ updates:
       # しかねないので、提案させずに constraints.txt の作り直し（update-constraints.yml）で更新する
       - dependency-name: contourpy
 
-  # 管理コンソールのバックエンド・CI の道具（pip-audit と、constraints.txt の作り直しに使う pip の固定版）
+  # 管理コンソールのバックエンド・CI の検査ツール（pip-audit の固定版）
   - package-ecosystem: pip
     directories:
       - "/tools/console/backend"
       - "/.github/audit"
-      - "/.github/constraints"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
+
+  # constraints.txt の作り直しに使う pip の固定版。同じフォルダの security-exceptions.txt（公開日の上限の例外）は
+  # 人が脆弱性ごとに決める版なので、Dependabot には pip だけを更新させる
+  - package-ecosystem: pip
+    directory: "/.github/constraints"
+    allow:
+      - dependency-name: pip
     schedule:
       interval: weekly
       day: monday

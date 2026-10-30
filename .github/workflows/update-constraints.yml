@@ -3,7 +3,9 @@ name: 推移依存の制約ファイルを作り直す
 # constraints.txt（推移依存の固定版）を作り直す（Issue #285）。手動でだけ実行する。
 # requirements.txt から -c の行を除いて OS と Python の版ごとに解決する。直接依存は requirements.txt の固定版を
 # そのまま使い（人が選んだ版。セキュリティ修正で公開直後の版を選ぶこともある）、推移依存は公開から一定の日数
-# （既定 14日）を過ぎた版だけから選ぶ。結果は成果物の constraints.txt で、ジョブの概要に今の内容との差分を出す。
+# （既定 14日）を過ぎた版だけから選ぶ。上限内の版に既知の脆弱性があるときは、修正版を
+# .github/constraints/security-exceptions.txt に書くと上限の例外になる（pip-audit が検出したら確かめる）。
+# 結果は成果物の constraints.txt で、ジョブの概要に今の内容との差分を出す。
 # このワークフローはコミットも push もしない。置き換えるかはメンテナーが差分を見て決め、PR で取り込む。
 on:
   workflow_dispatch:
@@ -51,9 +53,10 @@ jobs:
           "$py" -m pip install --disable-pip-version-check -r .github/constraints/requirements.txt
           # 今の constraints.txt に引きずられないよう、-c の行を除いた requirements.txt で解決する
           grep -v -E '^[[:space:]]*(-c|--constraint)([[:space:]=]|$)' requirements.txt > requirements-unconstrained.txt
-          # 直接依存は先に取得して --find-links に置く。索引ではないので公開日の上限が掛からず、固定版がそのまま使われる
-          "$py" -m pip download --disable-pip-version-check --no-deps -d direct-dists -r requirements-unconstrained.txt
-          "$py" -m pip install --disable-pip-version-check --uploaded-prior-to "$UPLOADED_PRIOR_TO" --find-links direct-dists -r requirements-unconstrained.txt
+          # 直接依存と、セキュリティ修正のための例外（security-exceptions.txt）は先に取得して --find-links に置く。
+          # 索引ではないので公開日の上限が掛からず、固定版がそのまま使われる（例外は -c で版を指定する）
+          "$py" -m pip download --disable-pip-version-check --no-deps -d direct-dists -r requirements-unconstrained.txt -r .github/constraints/security-exceptions.txt
+          "$py" -m pip install --disable-pip-version-check --uploaded-prior-to "$UPLOADED_PRIOR_TO" --find-links direct-dists -r requirements-unconstrained.txt -c .github/constraints/security-exceptions.txt
           "$py" -m pip check
           mkdir -p freeze
           "$py" -m pip freeze --all > "freeze/${{ runner.os }}-${{ matrix.python }}.txt"
