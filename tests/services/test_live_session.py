@@ -55,6 +55,7 @@ class FakeConnect:
         self.outcomes = list(outcomes)
         self.configs = []
         self.sessions = []
+        self.waiting = asyncio.Event()
 
     def __call__(self, *, model, config):
         self.configs.append(config)
@@ -65,14 +66,26 @@ class FakeConnect:
             async def __aenter__(self):
                 if isinstance(outcome, BaseException):
                     raise outcome
-                outer.sessions.append(outcome)
-                return outcome
+                if isinstance(outcome, SlowConnect):
+                    # 接続の確立を待たせる（その間に文脈の破棄が求められる場面を作る）。
+                    outer.waiting.set()
+                    await outcome.release.wait()
+                outer.sessions.append(outcome.session if isinstance(outcome, SlowConnect) else outcome)
+                return outer.sessions[-1]
 
             async def __aexit__(self, *exc):
-                if not isinstance(outcome, BaseException):
+                if isinstance(outcome, SlowConnect):
+                    outcome.session.closed.set()
+                elif not isinstance(outcome, BaseException):
                     outcome.closed.set()
 
         return Context()
+
+
+class SlowConnect:
+    def __init__(self, session):
+        self.session = session
+        self.release = asyncio.Event()
 
 
 class ConfigTests(unittest.TestCase):
@@ -252,6 +265,34 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(connect.configs), 1)
         self.assertEqual(self.closed_reasons, [])
         self.assertFalse(await live.send_audio(b"pcm"))
+
+    async def test_withdrawal_while_reconnecting_does_not_adopt_the_resumed_session(self):
+        """再接続の途中で同意が撤回されたら、撤回前のハンドルで開いた接続を使わずに新しくつなぐ。"""
+        first = FakeSession(
+            [message(session_resumption_update=SimpleNamespace(resumable=True, new_handle="h1"))],
+            end=errors.ServerError(503, {"message": "架空の障害"}),
+        )
+        resumed = SlowConnect(FakeSession([]))
+        fresh = FakeSession([])
+        live, connect = self.make([first, resumed, fresh])
+        with self.assertLogs("persona_bot.services.live_session", level="INFO") as logs:
+            await live.start()
+            await self.wait_until(connect.waiting.is_set)
+            self.assertEqual(connect.configs[1].session_resumption.handle, "h1")
+            await live.restart_fresh()  # まだ接続していないので、待ち受けの側で照合する
+            resumed.release.set()
+            await self.wait_until(lambda: self.reconnected == 1)
+        self.assertTrue(resumed.session.closed.is_set())  # 撤回前の文脈の接続は閉じた
+        self.assertIsNone(connect.configs[2].session_resumption.handle)
+        self.assertIs(connect.sessions[-1], fresh)
+        self.assertTrue(any("文脈の破棄" in record.getMessage() for record in logs.records))
+
+    async def test_handle_from_the_old_connection_is_ignored_after_forgetting(self):
+        live, _connect = self.make([FakeSession([])])
+        await live.start()
+        live.forget_context()
+        await live._handle(message(session_resumption_update=SimpleNamespace(resumable=True, new_handle="古い")))
+        self.assertIsNone(live._resume_handle)
 
     async def test_restart_fresh_drops_the_handle(self):
         first = FakeSession([message(session_resumption_update=SimpleNamespace(resumable=True, new_handle="h1"))])

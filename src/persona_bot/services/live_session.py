@@ -158,6 +158,10 @@ class LiveSession:
         self._runner: asyncio.Task[Any] | None = None
         # 接続ごとの世代。呼び出し側は、古い接続の応答を新しい接続のものと取り違えない。
         self.generation = 0
+        # 文脈の破棄（同意の撤回）のたびに進める世代と、いまの接続を開いたときの値。
+        # 撤回前の文脈で開いた接続や、撤回前の接続から届いた再開ハンドルを採用しない。
+        self._context_epoch = 0
+        self._session_epoch = 0
 
     @property
     def connected(self) -> bool:
@@ -202,8 +206,12 @@ class LiveSession:
         await wait_for_cleanup(self._close_current(), label="Gemini Live の切断")
 
     async def restart_fresh(self) -> None:
-        """これまでの文脈を引き継がずに、新しいセッションへつなぎ直す。"""
-        self._resume_handle = None
+        """これまでの文脈を引き継がずに、新しいセッションへつなぎ直す。
+
+        再接続の途中（接続を待っている間）に呼ばれた場合は、`_open` が世代の食い違いを見て、
+        撤回前のハンドルで開いた接続を採用せずに新しいセッションでつなぎ直す。
+        """
+        self.forget_context()
         if self._closing or self._session is None:
             return
         self._restart_requested = True
@@ -213,6 +221,7 @@ class LiveSession:
     def forget_context(self) -> None:
         """次に再接続するとき、これまでの文脈を引き継がないようにする。"""
         self._resume_handle = None
+        self._context_epoch += 1
 
     # ------------------------------------------------------------------
     # 送信
@@ -244,10 +253,24 @@ class LiveSession:
     # ------------------------------------------------------------------
 
     async def _open(self) -> None:
-        config = build_live_config(self._options, handle=self._resume_handle, minimal=self._minimal)
-        context = self._connect_live(model=self._model, config=config)
-        session = await asyncio.wait_for(context.__aenter__(), timeout=LIVE_CONNECT_TIMEOUT_SECONDS)
+        while True:
+            epoch = self._context_epoch
+            handle = self._resume_handle
+            config = build_live_config(self._options, handle=handle, minimal=self._minimal)
+            context = self._connect_live(model=self._model, config=config)
+            session = await asyncio.wait_for(context.__aenter__(), timeout=LIVE_CONNECT_TIMEOUT_SECONDS)
+            if handle is not None and epoch != self._context_epoch:
+                # 接続を待つ間に文脈の破棄（同意の撤回）を求められた。撤回前のハンドルで再開した
+                # セッションは使わず、新しいセッションでつなぎ直す。
+                logger.info("Gemini Live: 接続中に文脈の破棄を求められたため、新しいセッションでつなぎ直します。")
+                try:
+                    await context.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("Gemini Live: 採用しない接続を閉じる途中で例外が出ました。", exc_info=True)
+                continue
+            break
         self._context, self._session = context, session
+        self._session_epoch = self._context_epoch
         self._go_away = False
         self.generation += 1
 
@@ -297,7 +320,9 @@ class LiveSession:
 
     async def _handle(self, message: Any) -> None:
         update = getattr(message, "session_resumption_update", None)
-        if update is not None and update.resumable and update.new_handle:
+        if (update is not None and update.resumable and update.new_handle
+                and self._session_epoch == self._context_epoch):
+            # 文脈を破棄した後に、古い接続から届いた再開ハンドルは受け取らない。
             self._resume_handle = update.new_handle
         if getattr(message, "go_away", None) is not None:
             # 予告された切断の前に、再開ハンドルで張り替える。

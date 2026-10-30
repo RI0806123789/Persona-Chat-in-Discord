@@ -64,7 +64,7 @@ from persona_bot.config.paths import load_persona_template
 from persona_bot.config.personas import current_persona_catalog
 from persona_bot.core.background import spawn, wait_for_cleanup
 from persona_bot.services.content_moderator import VERDICT_SAFE, VERDICT_UNSAFE
-from persona_bot.services.live_session import CLOSED_QUOTA, LiveOptions, LiveSession
+from persona_bot.services.live_session import CLOSED_QUOTA, LiveOptions, LiveSession, LiveUnavailableError
 from persona_bot.services.prompting import build_live_system_instruction
 from persona_bot.utils.discord_helpers import can_bot_send_messages
 
@@ -140,6 +140,9 @@ class _Utterance:
     input_updated_at: float = float("-inf")
     output_text: str = ""
     input_verdict: str | None = None
+    # input_verdict が判定した本文。判定の後に文字起こしが増えたら判定し直し、
+    # 判定していない本文を記憶に保存しない。
+    judged_input: str | None = None
     output_verdict: str | None = None
     emotion: tuple[int, int] | None = None
     # 返答を捨てた（違反・割り込み・一時停止）。以後の音声は再生しない。
@@ -216,6 +219,8 @@ class VoiceConversation:
         self._interrupted: _Utterance | None = None
         self._stopped = False
         self._end_requested = False
+        # Live の接続が再接続できずに終わった理由（CLOSED_QUOTA / CLOSED_FAILED）。終わっていなければ None。
+        self.live_closed_reason: str | None = None
         self._tasks: list[asyncio.Task[Any]] = []
         self._latencies: list[float] = []
         self.panel_message: Any = None
@@ -690,6 +695,10 @@ class VoiceConversation:
             utterance.input_updated_at = self._now()
             if self._service.ng_filter.contains_ng_word(utterance.input_text):
                 self._reject_input(utterance, "入力の NG ワード")
+            elif (utterance.input_task is not None and utterance.input_task.done()
+                    and not utterance.violation_recorded and not self._stopped):
+                # 入力の AI 判定が済んだ後に続きが届いた。増えた分も判定し直す。
+                utterance.input_task = spawn(self._judge_input(utterance), label="音声会話の入力の再判定")
         if finished:
             self._close_transcript(utterance)
 
@@ -758,6 +767,9 @@ class VoiceConversation:
         self._clear_send_queue()
 
     async def _on_live_closed(self, reason: str) -> None:
+        # 開始の途中（同意パネルの投稿を待つ間）で、まだ登録されていない会話でも終了を取りこぼさない。
+        # 開始処理がこの記録を見て、開始を失敗にする。
+        self.live_closed_reason = reason
         notice = NOTICE_LIVE_QUOTA if reason == CLOSED_QUOTA else NOTICE_LIVE_FAILED
         # 受信ループの中から自分を止めないよう、終了は別タスクで行う。
         spawn(
@@ -869,10 +881,18 @@ class VoiceConversation:
                 break
             await asyncio.sleep(LIVE_TICK_SECONDS)
             waited += LIVE_TICK_SECONDS
-        verdict = await self._service.moderator.judge_voice_input(utterance.input_text)
-        utterance.input_verdict = verdict
-        if verdict == VERDICT_UNSAFE and not self._stopped:
-            self._reject_input(utterance, "入力の AI モデレーション")
+        while not self._stopped:
+            text = utterance.input_text
+            verdict = await self._service.moderator.judge_voice_input(text)
+            utterance.input_verdict = verdict
+            utterance.judged_input = text
+            if verdict == VERDICT_UNSAFE:
+                if not self._stopped:
+                    self._reject_input(utterance, "入力の AI モデレーション")
+                return
+            if utterance.input_text == text:
+                return
+            # 判定を待つ間に文字起こしが増えた。増えた分も含めて判定し直す。
 
     async def _judge_output(self, utterance: _Utterance) -> None:
         """返答を AI モデレーションに掛け（感情の推定を相乗り）、条件を満たせば記憶・親密度へ反映する。"""
@@ -884,7 +904,8 @@ class VoiceConversation:
         if verdict == VERDICT_UNSAFE:
             # 返答の生成は再生より速いため、判定の時点で残っている未再生の分を止められる。
             self._discard_response(utterance, "出力の AI モデレーション")
-        if utterance.input_task is not None:
+        # 遅れて届いた文字起こしで入力の判定がやり直される（タスクが差し替わる）ことがある。
+        while utterance.input_task is not None and not utterance.input_task.done():
             await asyncio.gather(utterance.input_task, return_exceptions=True)
         if not self._stopped:
             await self._remember(utterance)
@@ -894,8 +915,10 @@ class VoiceConversation:
             utterance.discarded or utterance.output_ng or utterance.violation_recorded
             or utterance.transcript_incomplete
             or utterance.input_verdict != VERDICT_SAFE or utterance.output_verdict != VERDICT_SAFE
+            or utterance.judged_input != utterance.input_text
         ):
-            # 判定不能・違反・割り込み・文字起こしが欠けた発言は、記憶・親密度の更新に使わない。
+            # 判定不能・違反・割り込み・文字起こしが欠けた・判定していない本文を含む発言は、
+            # 記憶・親密度の更新に使わない。
             return
         user_id = utterance.user_id
         if user_id not in self.consent.voice or self._service.is_blocked(user_id):
@@ -1059,6 +1082,10 @@ class VoiceConversationService:
                 # 同意パネルを出せなければ誰も同意できず、Live の接続と同時実行の枠だけが残る。
                 # パネルの投稿までを開始の成功の条件にする（登録はその後）。
                 await self._post_panel(conversation)
+                if conversation.live_closed_reason is not None:
+                    # パネルの投稿を待つ間に Live が終わった。未登録のため end() は何もしないので、
+                    # 声に応答しない会話を登録せず、ここで開始を失敗にする。
+                    raise LiveUnavailableError(quota=conversation.live_closed_reason == CLOSED_QUOTA)
             except BaseException:
                 await wait_for_cleanup(conversation.stop(), label="音声会話の開始失敗の後片付け")
                 raise

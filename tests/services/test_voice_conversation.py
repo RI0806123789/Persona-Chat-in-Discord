@@ -365,6 +365,47 @@ class ResponseTests(ConversationTestBase):
                 self.service.blacklist.record_violation.assert_not_awaited()
                 self.assertFalse(self.conversation._current.discarded)  # 判定不能では止めない
 
+    async def test_transcript_growing_after_the_judgement_is_judged_again(self):
+        """安全と判定した前半の後に続きが届いたら、続きも含めて判定し直す（未判定の本文を記憶しない）。"""
+        verdicts = [VERDICT_SAFE, VERDICT_UNSAFE]
+        self.moderator.judge_voice_input.side_effect = lambda text: verdicts.pop(0)
+        await self.complete_utterance(transcript="架空の前半")
+        await self.settle()
+        self.assertEqual(self.moderator.judge_voice_input.await_args_list[0].args[0], "架空の前半")
+        await self.conversation._on_live_message(
+            live_message(input_transcription=SimpleNamespace(text="と架空の後半")),
+        )
+        self.advance(1.0)
+        for _ in range(3):
+            await asyncio.sleep(constants.LIVE_TICK_SECONDS)
+        self.assertEqual(self.moderator.judge_voice_input.await_args_list[1].args[0], "架空の前半と架空の後半")
+        self.service.blacklist.record_violation.assert_awaited_once()
+        await self.respond()
+        self.service.memory.append_pending_log.assert_not_awaited()
+
+    async def test_safe_continuation_is_remembered_in_full_after_rejudging(self):
+        await self.complete_utterance(transcript="架空の前半")
+        await self.settle()
+        await self.conversation._on_live_message(
+            live_message(input_transcription=SimpleNamespace(text="と後半")),
+        )
+        self.advance(1.0)
+        await self.respond()
+        for _ in range(3):
+            await asyncio.sleep(constants.LIVE_TICK_SECONDS)
+        self.assertEqual(self.moderator.judge_voice_input.await_count, 2)
+        self.service.memory.append_pending_log.assert_awaited_once_with(
+            str(USER_A), "架空の前半と後半", "架空の返答",
+        )
+
+    async def test_unjudged_text_is_not_remembered(self):
+        await self.complete_utterance(transcript="架空の前半")
+        await self.settle()
+        utterance = self.conversation._current
+        utterance.input_text += "と判定前の続き"  # 判定していない本文が混ざった状態
+        await self.conversation._remember(utterance)
+        self.service.memory.append_pending_log.assert_not_awaited()
+
     async def test_input_ng_word_stops_reply_and_counts_once(self):
         self.speak(USER_A, self.start_frames())
         for chunk in ("架空の", "NG", "です"):
@@ -772,6 +813,39 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 voice_client.disconnect.assert_not_awaited()
                 old._notify.assert_not_awaited()
                 service.voice_guard.release.assert_not_called()
+
+    async def test_live_ending_while_the_panel_is_posted_fails_the_start(self):
+        """開始の途中（パネルの投稿を待つ間）に Live が終わったら、声に応答しない会話を登録しない。"""
+        for reason, quota in (("quota", True), ("failed", False)):
+            with self.subTest(reason=reason):
+                service = self.make_service()
+                self.assertTrue(service.reserve(1))
+                guild = SimpleNamespace(id=1, me=object(), voice_client=None)
+                captured = {}
+
+                async def send(*args, **kwargs):
+                    await captured["conversation"]._on_live_closed(reason)
+                    return SimpleNamespace(edit=AsyncMock())
+
+                channel = SimpleNamespace(id=CHANNEL_ID, members=[], send=AsyncMock(side_effect=send))
+
+                async def fake_start(conversation):
+                    captured["conversation"] = conversation
+
+                with patch.object(VoiceConversation, "start", fake_start), \
+                        patch.object(VoiceConversation, "stop", AsyncMock()) as stop, \
+                        patch.object(voice_conversation, "can_bot_send_messages", Mock(return_value=True)):
+                    with self.assertRaises(LiveUnavailableError) as raised:
+                        await service.start(guild, Mock(channel=channel), channel, SimpleNamespace(
+                            prompt_file="", grounding_enabled=False,
+                        ))
+                    await asyncio.sleep(0)  # _on_live_closed が予約した end() は未登録の会話に触らない
+                self.assertEqual(raised.exception.quota, quota)
+                stop.assert_awaited_once()
+                self.assertIsNone(service.get(1))
+                self.assertNotIn(1, service._reserved)
+                if captured["conversation"].panel_view is not None:
+                    captured["conversation"].panel_view.stop()  # stop() を差し替えたため、ここで止める
 
     async def test_start_fails_when_the_consent_panel_cannot_be_posted(self):
         """同意パネルが無いと誰も同意できないため、開始を失敗にして接続と枠を残さない。"""
