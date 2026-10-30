@@ -1,0 +1,5 @@
+# 依存の脆弱性検査（.github/workflows/dependency-audit.yml）が CI 上でだけ使う検査ツール。
+# ボット・管理コンソールの依存ではないので、ルートや tools/console/backend の
+# requirements.txt には書かないこと（Issue #285）。
+# 版は公開から2週間以上たったものに固定し、更新は Dependabot（.github/dependabot.yml）が提案する。
+pip-audit==2.10.1

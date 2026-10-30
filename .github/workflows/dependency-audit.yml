@@ -1,0 +1,161 @@
+name: 依存の脆弱性検査
+
+# 依存ライブラリの公開済みの脆弱性を検出する（Issue #285）。回帰テスト（tests.yml）は動作だけを確かめる。
+# 依存を変えたときに加えて、コードを変えなくても新しい脆弱性は公開されるため、週1回（月曜 9:00 日本時間）も実行する。
+# ★ 公開リポジトリの schedule は、リポジトリに60日間動きが無いと GitHub が止める（Actions の画面から再開する）。
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+    paths:
+      - requirements.txt
+      - tools/console/backend/requirements.txt
+      - tools/console/frontend/package.json
+      - tools/console/frontend/package-lock.json
+      - .github/audit/requirements.txt
+      - .github/workflows/dependency-audit.yml
+  pull_request:
+    paths:
+      - requirements.txt
+      - tools/console/backend/requirements.txt
+      - tools/console/frontend/package.json
+      - tools/console/frontend/package-lock.json
+      - .github/audit/requirements.txt
+      - .github/workflows/dependency-audit.yml
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+# フォークからの PR でもシークレットなしで動くよう、読み取りだけに絞る。
+permissions:
+  contents: read
+
+env:
+  # ★ 'false' の間は、脆弱性の検出（と検査自体の失敗）を警告の注釈とジョブの概要に出すだけで、ジョブは失敗させない。
+  #   誤検知でないことを何度か確かめてから 'true' にして必須にする。
+  AUDIT_REQUIRED: 'false'
+
+jobs:
+  pip-audit:
+    name: pip-audit / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 推移依存は OS と Python の版で変わる（例: Python 3.13 だけ audioop-lts、Windows の管理コンソールだけ colorama）。
+        # 回帰テストと同じ組み合わせで解決して照合する。
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+    env:
+      PYTHONIOENCODING: utf-8
+      # 日本語コメント入りの requirements を Windows の既定コードページで読ませない。
+      # PYTHONIOENCODING は標準入出力だけなので、ファイル読込には UTF-8 モードも必要。
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Pythonを準備
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 検査ツールを準備（ボット・管理コンソールの依存には加えない）
+        run: python -m pip install -r .github/audit/requirements.txt
+      - name: ボットと管理コンソールの依存を検査
+        run: |
+          # pip-audit -r は一時的な仮想環境へ requirements.txt を入れて推移依存まで解決し、
+          # PyPI の脆弱性情報と照合する。リポジトリにロックは無いので、検査時点で解決される版が対象になる。
+          #
+          # 影響が無いと確かめた脆弱性だけを除外する。除外ごとに「理由」と「外す条件」を書き、
+          # tests/deploy/test_dependency_audit_config.py の一覧も同時に直すこと。
+          # - GHSA-mrfv-m5wm-5w6w（CVE-2025-69277。別名の PYSEC-2026-1448・PYSEC-2026-3002 もこの指定で除外される）:
+          #   理由: PyNaCl 1.6.2 未満が同梱する libsodium の Ed25519 の点の検証の欠陥で、影響するのは
+          #   crypto_core_ed25519_is_valid_point・crypto_scalarmult_ed25519・crypto_sign_ed25519_pk_to_curve25519 だけ。
+          #   ボットが PyNaCl で使うのは XChaCha20-Poly1305 の AEAD（discord.py の音声送信と voice_receive.py の受信）だけで、
+          #   DAVE の davey は libsodium を使わない。discord.py[voice]==2.7.1 が PyNaCl<1.6 に制約しているため
+          #   requirements.txt だけでは上げられない（[voice] を外して PyNaCl を個別に固定すると pip check が不整合を検出しない）。
+          #   外す条件: PyNaCl 1.6 系を許す discord.py の版へ更新し、PyNaCl が 1.6.2 以上になったとき
+          #   （requirements.txt の discord.py の行が変わると回帰テストが失敗し、除外の見直しを促す）。
+          ignored_vulns=(GHSA-mrfv-m5wm-5w6w)
+          ignore_args=()
+          for vuln in "${ignored_vulns[@]}"; do
+            ignore_args+=(--ignore-vuln "$vuln")
+          done
+          failed=0
+          for target in requirements.txt tools/console/backend/requirements.txt; do
+            echo "::group::pip-audit -r $target"
+            if python -m pip_audit -r "$target" "${ignore_args[@]}" --progress-spinner off --aliases on --format markdown --output pip-audit-report.md; then
+              result="既知の脆弱性は見つかりませんでした"
+            else
+              failed=1
+              result="脆弱性が見つかったか、検査に失敗しました"
+              echo "::warning title=依存の脆弱性検査（$target）::$result。ジョブのログと概要を確認してください。"
+            fi
+            touch pip-audit-report.md
+            cat pip-audit-report.md
+            echo "::endgroup::"
+            {
+              echo "### pip-audit: \`$target\`（${{ matrix.os }} / Python ${{ matrix.python }}）"
+              echo
+              echo "$result"
+              echo
+              # 除外を忘れたまま残さないよう、毎回の概要に出す
+              echo "除外中（影響なしと確認済み。理由と外す条件はワークフローのコメント）: ${ignored_vulns[*]}"
+              echo
+              cat pip-audit-report.md
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            rm -f pip-audit-report.md
+          done
+          if [ "$failed" -ne 0 ] && [ "$AUDIT_REQUIRED" = "true" ]; then
+            exit 1
+          fi
+
+  npm-audit:
+    name: npm audit / Console frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/console/frontend
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 画面の依存を検査
+        run: |
+          # package-lock.json を npm の脆弱性情報と照合する（node_modules の準備は要らない）。
+          # 対象は dependencies だけで、devDependencies（ビルド・開発サーバー）は除く。
+          # devDependencies の更新は Dependabot が提案する。
+          if npm audit --omit=dev > npm-audit-report.txt 2>&1; then
+            result="既知の脆弱性は見つかりませんでした"
+            failed=0
+          else
+            result="脆弱性が見つかったか、検査に失敗しました"
+            failed=1
+            echo "::warning title=依存の脆弱性検査（tools/console/frontend）::$result。ジョブのログと概要を確認してください。"
+          fi
+          cat npm-audit-report.txt
+          {
+            echo "### npm audit --omit=dev: \`tools/console/frontend\`"
+            echo
+            echo "$result"
+            echo
+            echo '```text'
+            cat npm-audit-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f npm-audit-report.txt
+          if [ "$failed" -ne 0 ] && [ "$AUDIT_REQUIRED" = "true" ]; then
+            exit 1
+          fi

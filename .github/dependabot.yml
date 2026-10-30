@@ -1,0 +1,54 @@
+# 依存の更新を週1回提案させる（Issue #285）。
+# Dependabot は PR を出すだけで、取り込むかはメンテナーが CI の結果を見て決める
+# （このリポジトリは依存の更新も事前に相談する方針。エージェントが自分の判断でマージしない）。
+#
+# ★ cooldown: このリポジトリは「公開から2週間以上たった版に固定する」方針なので、
+#   公開から14日未満の版は提案させない。cooldown はバージョン更新だけに効き、
+#   セキュリティ更新（リポジトリ設定の Dependabot security updates）には効かない。
+#   github-actions は default-days だけに対応している（semver-*-days は書かない）。
+# ★ ルールセット「Protect Rule」は全ブランチで強制 push を禁じ PR を必須にしているため、
+#   Dependabot は作成済みの PR ブランチを rebase で更新できない（初回の作成は通る）。
+#   main と衝突したら、その PR を閉じて次の提案を待つか、利用者に対応を相談する。
+version: 2
+updates:
+  # ボット（requirements.txt）・管理コンソールのバックエンド・CI の検査ツール（pip-audit の固定版）
+  - package-ecosystem: pip
+    directories:
+      - "/"
+      - "/tools/console/backend"
+      - "/.github/audit"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
+
+  # 管理コンソールの画面（package.json は .npmrc の save-exact で完全一致に固定している）
+  - package-ecosystem: npm
+    directory: "/tools/console/frontend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
+
+  # CI の actions/*（コミットSHAで固定している。Dependabot は SHA と版のコメントを一緒に更新する）
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
