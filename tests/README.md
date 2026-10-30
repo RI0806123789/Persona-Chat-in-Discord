@@ -56,10 +56,11 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 | フォークのPRでも安全に動く | `permissions: contents: read` だけで、`write`・`secrets.`・`pull_request_target` を使わず、checkout は認証情報を残さないこと |
 | 検査の対象と実行条件 | ボットと管理コンソールの requirements の `pip-audit`、画面の `npm audit --omit=dev`、回帰テストと同じ OS・Python の組み合わせ、依存の定義ファイルの `paths` と週1回の定期実行 |
 | 警告から始める | `AUDIT_REQUIRED: 'false'` の間は警告の注釈だけで、切り替えたときだけ失敗させること（必須にするときはテストの期待値も直す） |
+| 除外の管理 | `pip-audit` の除外（`ignored_vulns`）が `EXPECTED_IGNORED_VULNS` と一致し、それぞれに理由と外す条件のコメントがあり、ジョブの概要に出ること。除外の前提の `requirements.txt` の行（`discord.py[voice]==2.7.1`）が変わったら失敗して見直しを促すこと |
 | 検査ツールの固定 | `pip-audit` を `.github/audit/requirements.txt` に `==` で固定し、ボット・管理コンソールの requirements に入れないこと |
 | actions の固定 | すべてのワークフローの `uses:` がコミットSHAで固定されていること |
 
-設定を壊した写し（cooldown の削除・7日への短縮・対象の削除・書き込み権限・タグでの固定・必須化・dev を含む検査・`paths` の欠落・`pip-audit` の本体への追加・版の未固定）の10通りで、それぞれ対応するテストが失敗することを確かめた。取り出した検査ステップを Windows・Python 3.13 の Git Bash で実行し、検出時の警告の注釈・ジョブの概要への出力・警告だけの終了と、検査ツールが無い場合の失敗も警告になることを確かめた。GitHub 上での Dependabot の提案と Actions での実行は未確認。
+設定を壊した写し（cooldown の削除・7日への短縮・対象の削除・書き込み権限・タグでの固定・必須化・dev を含む検査・`paths` の欠落・`pip-audit` の本体への追加・版の未固定）の10通りで、それぞれ対応するテストが失敗することを確かめた。取り出した検査ステップを Windows・Python 3.13 の Git Bash で実行し、検出時の警告の注釈・ジョブの概要への出力・警告だけの終了と、検査ツールが無い場合の失敗も警告になることを確かめた。除外の管理は、未登録の ID の追加・一覧を空にする・理由／外す条件の説明の削除・`pip-audit` への渡し忘れ・概要への表示の削除・`discord.py` の版の更新の7通りで、テストが失敗することを確かめた。取り出した検査ステップを Windows・Python 3.13 の Git Bash で実際の requirements に対して実行し、PyNaCl の2件（GHSA と PYSEC の別名）が除外されて検出なしで終わることも確かめた。GitHub 上での Dependabot の提案と Actions での実行は未確認。
 
 ## Issue #268の確認（Gemini Live による音声会話）
 
