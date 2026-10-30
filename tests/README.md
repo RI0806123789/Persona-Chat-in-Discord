@@ -45,6 +45,22 @@ Windows・Python 3.13.3・tzdata 2026.5で全706件が成功。全158 Pythonフ�
 
 以下はフォルダ整理時の検証記録。Windows・Python 3.13で、整理前後に検出したテストの一覧が全288件一致し、従来の一括実行で全件が省略なしで成功した。リポジトリルートからの検出と `-t .` 指定でも同じ一覧になることを確認した。上の個別実行例は、分類別169件・モジュール指定9件・ファイル直接実行9件がそれぞれ成功した。移動した28ファイルは、プロジェクトの探索パスと共通補助のimportを除いてASTが一致し、全88ソースの構文・Python 3.10文法、依存関係の整合性も確認した。今回の整理ではLinux・Python 3.10での実行は未確認。
 
+## Issue #285の確認（依存の更新提案と脆弱性検査）
+
+`deploy/test_dependency_audit_config.py` は、`.github/dependabot.yml` と `.github/workflows/dependency-audit.yml` が守る約束を確かめる。PyYAML はボットの依存に無いため、YAML は解析せず文字列として照合する。
+
+| 確認内容 | 内容 |
+| --- | --- |
+| 更新提案の対象 | pip（ルート・管理コンソールのバックエンド・検査ツール）、npm（画面）、github-actions がそろい、各ディレクトリに依存の定義ファイルがあること |
+| 公開直後の版を提案しない | すべての更新対象に `cooldown` の `default-days` が14日以上あり、github-actions に未対応の `semver-*-days` を書かないこと。毎週の実行 |
+| フォークのPRでも安全に動く | `permissions: contents: read` だけで、`write`・`secrets.`・`pull_request_target` を使わず、checkout は認証情報を残さないこと |
+| 検査の対象と実行条件 | ボットと管理コンソールの requirements の `pip-audit`、画面の `npm audit --omit=dev`、回帰テストと同じ OS・Python の組み合わせ、依存の定義ファイルの `paths` と週1回の定期実行 |
+| 警告から始める | `AUDIT_REQUIRED: 'false'` の間は警告の注釈だけで、切り替えたときだけ失敗させること（必須にするときはテストの期待値も直す） |
+| 検査ツールの固定 | `pip-audit` を `.github/audit/requirements.txt` に `==` で固定し、ボット・管理コンソールの requirements に入れないこと |
+| actions の固定 | すべてのワークフローの `uses:` がコミットSHAで固定されていること |
+
+設定を壊した写し（cooldown の削除・7日への短縮・対象の削除・書き込み権限・タグでの固定・必須化・dev を含む検査・`paths` の欠落・`pip-audit` の本体への追加・版の未固定）の10通りで、それぞれ対応するテストが失敗することを確かめた。取り出した検査ステップを Windows・Python 3.13 の Git Bash で実行し、検出時の警告の注釈・ジョブの概要への出力・警告だけの終了と、検査ツールが無い場合の失敗も警告になることを確かめた。GitHub 上での Dependabot の提案と Actions での実行は未確認。
+
 ## Issue #268の確認（Gemini Live による音声会話）
 
 | テスト | 確認内容 |

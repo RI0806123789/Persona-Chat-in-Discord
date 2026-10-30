@@ -55,9 +55,31 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
   `gh issue list` / `gh pr view` で最新の状態を取り直す
 - 共有の作業コピーを別のエージェントが触っている可能性があるときは、自分用の worktree（ブランチ）で作業する
 
+### 依存の更新提案と脆弱性検査（#285）
+
+- **`.github/dependabot.yml`** が、pip（ルート・`tools/console/backend`・`.github/audit`）、npm（`tools/console/frontend`）、
+  github-actions の更新を毎週月曜 9:00（日本時間）に PR で提案する。`cooldown` の `default-days: 14` で公開から2週間未満の版を
+  提案させない（依存を公開から2週間以上たった版に固定する方針と同じ）。**cooldown を外したり14日未満にしたりしないこと。**
+  cooldown はバージョン更新だけに効き、Dependabot security updates（リポジトリ設定。現在は無効）には効かない
+- Dependabot の PR は**提案にすぎない**。依存の更新も事前の相談が要るので、エージェントが自分の判断でマージしないこと。
+  ★ ルールセット「Protect Rule」が全ブランチで強制 push を禁じ PR を必須にしているため、Dependabot は作成済みの PR ブランチを
+  rebase できない（初回の作成は通る）。main と衝突したら、閉じて次の提案を待つか利用者に相談する
+- **`.github/workflows/dependency-audit.yml`** が、`pip-audit -r` でボットと管理コンソールのバックエンドの requirements を
+  （Windows／Linux・Python 3.11／3.13 で推移依存まで解決して）、`npm audit --omit=dev` で画面の `package-lock.json` を照合する。
+  依存の定義ファイルを変えた push・PR と、毎週月曜 9:00（日本時間）に走る。権限は `contents: read` だけでシークレットを使わない
+  （フォークの PR でも動く。`pull_request_target` に変えないこと）。実行の条件の `paths` は依存の定義ファイルと揃えておく
+  （ファイルを移したら `paths` と `tests/deploy/test_dependency_audit_config.py` も直す）
+- 検出は**警告から始める**: `AUDIT_REQUIRED: 'false'` の間は、警告の注釈とジョブの概要に出すだけでジョブは失敗しない
+  （検査自体の失敗＝通信障害なども同じ警告になる）。誤検知でないことを確かめてから `'true'` にし、テストの期待値も直す
+- **`pip-audit` は CI 専用の道具で、ボットの依存ではない。** 版は `.github/audit/requirements.txt` に固定し（Dependabot が更新を提案）、
+  ルートや管理コンソールの `requirements.txt` に足さないこと。リポジトリにロックは無いので、検査の対象は検査した時点で解決される
+  推移依存の版になる（手元や本番に入っている版と違うことがある）
+- 管理コンソールの開発サーバー（`dev_launcher.py` が起動する vite）は devDependencies だが、`npm audit --omit=dev` の対象外。
+  更新は Dependabot の提案で追う
+
 ## ボットの起動
 
-ビルド工程・リンター設定は未整備。標準の unittest / IsolatedAsyncioTestCase による回帰テストと、Windows／Linux・Python 3.11／3.13で実行する `.github/workflows/tests.yml` がある。
+ビルド工程・リンター設定は未整備。標準の unittest / IsolatedAsyncioTestCase による回帰テストと、Windows／Linux・Python 3.11／3.13で実行する `.github/workflows/tests.yml` がある。依存の脆弱性検査は別の `.github/workflows/dependency-audit.yml`（「依存の更新提案と脆弱性検査」の項）。
 
 **ローカル確認**（リポジトリルートで実行。`.env`・実際の DB・Discord・Gemini を使わない。`CONTRIBUTING.md` と同じもの）:
 
