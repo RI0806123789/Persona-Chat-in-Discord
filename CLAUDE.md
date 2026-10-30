@@ -57,8 +57,8 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 
 ### 依存の更新提案と脆弱性検査（#285）
 
-- **`.github/dependabot.yml`** が、pip（ルート・`tools/console/backend`・`.github/audit`）、npm（`tools/console/frontend`）、
-  github-actions の更新を毎週月曜 9:00（日本時間）に PR で提案する。`cooldown` の `default-days: 14` で公開から2週間未満の版を
+- **`.github/dependabot.yml`** が、pip（ルート・`tools/console/backend`・`.github/audit`・`.github/constraints`）、npm（`tools/console/frontend`）、
+  github-actions の更新を毎週月曜 9:00（日本時間）に PR で提案する（ルートの推移依存＝`constraints.txt` の分は1つの PR にまとめる）。`cooldown` の `default-days: 14` で公開から2週間未満の版を
   提案させない（依存を公開から2週間以上たった版に固定する方針と同じ）。**cooldown を外したり14日未満にしたりしないこと。**
   cooldown はバージョン更新だけに効き、Dependabot security updates（リポジトリ設定。現在は無効）には効かない
 - Dependabot の PR は**提案にすぎない**。依存の更新も事前の相談が要るので、エージェントが自分の判断でマージしないこと。
@@ -72,10 +72,29 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
 - 検出は**警告から始める**: `AUDIT_REQUIRED: 'false'` の間は、警告の注釈とジョブの概要に出すだけでジョブは失敗しない
   （検査自体の失敗＝通信障害なども同じ警告になる）。誤検知でないことを確かめてから `'true'` にし、テストの期待値も直す
 - **`pip-audit` は CI 専用の道具で、ボットの依存ではない。** 版は `.github/audit/requirements.txt` に固定し（Dependabot が更新を提案）、
-  ルートや管理コンソールの `requirements.txt` に足さないこと。リポジトリにロックは無いので、検査の対象は検査した時点で解決される
-  推移依存の版になる（手元や本番に入っている版と違うことがある）
+  ルートや管理コンソールの `requirements.txt` に足さないこと
 - 管理コンソールの開発サーバー（`dev_launcher.py` が起動する vite）は devDependencies だが、`npm audit --omit=dev` の対象外。
   更新は Dependabot の提案で追う
+
+### 推移依存の固定（`constraints.txt`。#285）
+
+- **直接依存は `requirements.txt`、推移依存は `constraints.txt` に固定する。** `requirements.txt` の末尾の `-c constraints.txt` で読むので、
+  `pip install -r requirements.txt`（README・CI・管理コンソールのデプロイ・pip-audit）はそのままで固定版が効く。**この行を消さないこと**
+  （推移依存がインストールした時点の最新版＝公開当日の版になる）。直接依存を `constraints.txt` に書かないこと（2か所で食い違う）
+- **作り直しは `.github/workflows/update-constraints.yml`（手動実行だけ）。** Windows／Linux・Python 3.11／3.12／3.13 で `-c` の行を除いて解決し、
+  `deploy/merge_constraints.py` が合成して成果物にする（コミットはしない。差分をジョブの概要で見て PR で取り込む）。直接依存は先に
+  `pip download --no-deps` して `--find-links` に置き、公開日の上限（`--uploaded-prior-to`、既定 `P14D`）を掛けない（人が選んだ版。
+  セキュリティ修正で公開直後の版を固定することがある）。推移依存は索引から公開日の上限内の版だけを選ぶ。生成に使う pip は
+  `.github/constraints/requirements.txt` に固定する（`--uploaded-prior-to` は pip 26.0.1 から）
+- **直接依存を足したり版を変えたりしたら作り直す。** Dependabot の直接依存の PR が推移依存の固定と衝突して CI で落ちたら、
+  ルールセットにより Dependabot のブランチへは push できないので、新しいブランチで直接依存の更新と作り直した `constraints.txt` を
+  まとめて PR にし、Dependabot の PR は閉じる
+- **版が環境で分かれる依存は環境マーカーで書き分ける**（例: contourpy 1.4.0 は Python 3.12 以上が必須で、3.11 は 1.3.3）。合成スクリプトは
+  Python の版の範囲 → OS → 両方 → 環境の列挙の順に書き方を試し、どの環境でもちょうど1行が当てはまることを自己点検する。
+  ★ 書き分けた依存は `.github/dependabot.yml` の `ignore` に入れること（Dependabot は両方の行を同じ版にしかねない）。
+  ★ Dependabot の `groups` の `exclude-patterns` は `requirements.txt` の直接依存と同じにそろえ、正規化した名前（`discord-py`・`pillow`）で書く
+- ★ 手元の pip は環境マーカーを動かしている Python で評価する（`--python-version` を付けても変わらない）。手元で別の版向けに
+  解決して確かめるときは、マーカーの評価が同じになる Python から行う。ハッシュの照合（`--require-hashes`）はしていない
 
 ## ボットの起動
 
@@ -174,7 +193,7 @@ Discordの参加サーバー一覧は`limit=200`・`after`で最大50ページ�
 
 - **ボットのコード（`src/`）をダッシュボードのために変えないこと。** 値は SSH で読める既存の情報源（systemd・journald・`bot.db` の読み取り専用・サーバー上のトークンでの Discord API の読み取り）から集める。ボットの import もしない（手元の `database.py` の版も `ast` で読むだけ）。
 - **実行できるコマンドは `backend/remote_commands.py` のホワイトリストだけ。** 画面から届いた文字列をコマンドに埋め込まない。ホスト鍵の検証を切らない（`known_hosts=None` にしない）。127.0.0.1 だけで待ち受け、専用ヘッダー・Host・Origin を確かめる。
-- **デプロイは `backend/deploy.py` が管理する。** 接続先の `deploy_branch`（既定 `main`）を `origin` から取得して早送りし、`requirements.txt` が変わったときだけ設定した `python` で `pip install`・`pip check` を実行して再起動する。ブランチの不一致・Git 管理対象の未コミット変更・サーバーにだけあるコミットは事前確認で拒否する。更新後に失敗したらコードと更新した依存関係を戻し、再起動に進んでいた場合は前の版で再起動・起動確認を行う。`bot.db` は戻さない。同時実行は1件だけとし、最後の記録はメモリ上に保持する。
+- **デプロイは `backend/deploy.py` が管理する。** 接続先の `deploy_branch`（既定 `main`）を `origin` から取得して早送りし、`requirements.txt` か `constraints.txt`（`remote_commands.DEPENDENCY_FILES`）が変わったときだけ設定した `python` で `pip install`・`pip check` を実行して再起動する（`constraints.txt` を外すと、推移依存の固定版の更新が本番に入らない）。ブランチの不一致・Git 管理対象の未コミット変更・サーバーにだけあるコミットは事前確認で拒否する。更新後に失敗したらコードと更新した依存関係を戻し、再起動に進んでいた場合は前の版で再起動・起動確認を行う。`bot.db` は戻さない。同時実行は1件だけとし、最後の記録はメモリ上に保持する。
 - **起動確認は「ログイン成功」の文言に依存する。** `src/bot.py` の `on_ready` が出す `ログイン成功: <ボット名>` を `backend/remote_commands.py` の `LOGIN_SUCCESS_TEXT` で探す（最大120秒）。再起動後の PID の変化・稼働状態・自動再起動の回数も確かめる。文言を変えたら判定側・`backend/tests/fake_ssh_server.py`・関連テストと説明をそろえる。ログイン後の各機能の実動作は別途確認する。
 - **自動の確認で本番の接続先へつながないこと。** 模擬 SSH サーバーは `backend/tests/fake_ssh_server.py` の自動テスト専用とし、起動スクリプトや画面の接続先には出さない。SSH・デプロイのテストはループバックの空きポートと一時フォルダの鍵・known_hosts を使う。bot.db を読むスクリプトは、模擬サーバーが一時フォルダに作る架空の DB（架空の利用者・会話）に対して本当に実行する。実際の接続先は `backend/profiles.json`（Git 管理外）に書く。
 - **見本（`backend/profiles.example.json`・`examples/ssh_config.example`・`examples/sudoers.example`）の書き換える値は `YOUR_` で始める**（`.env.example` と同じ流儀）。`profiles.py` の `_PLACEHOLDER` がこの形の値が残った接続先を見分け、バックエンドは接続を断る（仮のホスト名を DNS が偶然引いて、知らないサーバーへつなぎに行かないように）。見本の値の書き方を変えたら、`_PLACEHOLDER`・3つの見本・`tests/test_profiles.py` をそろえて直すこと。実際の値は見本ではなく `backend/profiles.json`（Git 管理外）に書く。

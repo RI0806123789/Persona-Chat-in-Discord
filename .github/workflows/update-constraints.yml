@@ -1,0 +1,109 @@
+name: 推移依存の制約ファイルを作り直す
+
+# constraints.txt（推移依存の固定版）を作り直す（Issue #285）。手動でだけ実行する。
+# requirements.txt から -c の行を除いて OS と Python の版ごとに解決する。直接依存は requirements.txt の固定版を
+# そのまま使い（人が選んだ版。セキュリティ修正で公開直後の版を選ぶこともある）、推移依存は公開から一定の日数
+# （既定 14日）を過ぎた版だけから選ぶ。結果は成果物の constraints.txt で、ジョブの概要に今の内容との差分を出す。
+# このワークフローはコミットも push もしない。置き換えるかはメンテナーが差分を見て決め、PR で取り込む。
+on:
+  workflow_dispatch:
+    inputs:
+      uploaded_prior_to:
+        description: 推移依存として選ぶ版の公開日の上限（P14D のような日数、または ISO 8601 の日時）
+        required: true
+        default: P14D
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: 解決 / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 回帰テストの組み合わせに、本番（Ubuntu）の Python 3.12 を足す
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13']
+    env:
+      PYTHONIOENCODING: utf-8
+      # 入力は環境変数で渡す（スクリプトへ直接埋め込まない）
+      UPLOADED_PRIOR_TO: ${{ inputs.uploaded_prior_to }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Pythonを準備
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 制約なしの新しい仮想環境で解決する
+        run: |
+          python -m venv .constraints-venv
+          if [ -x .constraints-venv/bin/python ]; then py=.constraints-venv/bin/python; else py=.constraints-venv/Scripts/python.exe; fi
+          # 公開日で版を選ぶ --uploaded-prior-to を持つ、固定した版の pip にそろえる
+          "$py" -m pip install --disable-pip-version-check -r .github/constraints/requirements.txt
+          # 今の constraints.txt に引きずられないよう、-c の行を除いた requirements.txt で解決する
+          grep -v -E '^[[:space:]]*(-c|--constraint)([[:space:]=]|$)' requirements.txt > requirements-unconstrained.txt
+          # 直接依存は先に取得して --find-links に置く。索引ではないので公開日の上限が掛からず、固定版がそのまま使われる
+          "$py" -m pip download --disable-pip-version-check --no-deps -d direct-dists -r requirements-unconstrained.txt
+          "$py" -m pip install --disable-pip-version-check --uploaded-prior-to "$UPLOADED_PRIOR_TO" --find-links direct-dists -r requirements-unconstrained.txt
+          "$py" -m pip check
+          mkdir -p freeze
+          "$py" -m pip freeze --all > "freeze/${{ runner.os }}-${{ matrix.python }}.txt"
+      - name: 解決した版を保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: freeze-${{ runner.os }}-${{ matrix.python }}
+          path: freeze/
+          if-no-files-found: error
+
+  merge:
+    name: constraints.txt を合成
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONIOENCODING: utf-8
+      UPLOADED_PRIOR_TO: ${{ inputs.uploaded_prior_to }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Pythonを準備
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: 環境ごとの解決結果を取得
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: freeze-*
+          path: freeze
+          merge-multiple: true
+      - name: 合成して今の constraints.txt と比べる
+        run: |
+          mkdir -p out
+          python deploy/merge_constraints.py --requirements requirements.txt --output out/constraints.txt freeze/*.txt
+          {
+            echo "### constraints.txt の作り直し（推移依存の公開日の上限: \`$UPLOADED_PRIOR_TO\`）"
+            echo
+            echo '```diff'
+            git diff --no-index -- constraints.txt out/constraints.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 作り直した constraints.txt を保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: constraints
+          path: out/constraints.txt
+          if-no-files-found: error

@@ -31,7 +31,7 @@ const RESULT: Record<DeployStatus, { label: string; tone: Tone; icon: IconName }
 const PLANNED = [
   { title: "事前確認", detail: "ブランチ・未コミットの変更・GitHub の最新を確かめる" },
   { title: "git pull", detail: "最新を早送りで取り込む" },
-  { title: "pip install -r requirements.txt", detail: "requirements.txt が変わったときだけ、依存関係を入れ直す" },
+  { title: "pip install -r requirements.txt", detail: "requirements.txt か constraints.txt が変わったときだけ、依存関係を入れ直す" },
   { title: "sudo systemctl restart", detail: "新しいコードで起動し、PID が変わったことを確かめる" },
   { title: "ヘルスチェック", detail: "「ログイン成功」のログが出て、落ちずに動いていることを確かめる" },
 ];

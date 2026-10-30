@@ -13,7 +13,8 @@
 # PyNaCl はここでバージョン制約付き（<1.6）で入るため、個別に書かないこと
 # （個別に無指定で書くと制約を超えた版が入ってしまう）。
 # Windows／Linux・Python 3.11／3.13で共通に使う直接依存の確認対象版。
-# 更新時はCIの全組み合わせで再検証する（推移依存まで固定するロックではない）。
+# 更新時はCIの全組み合わせで再検証する。推移依存の版は末尾の -c で読む constraints.txt で固定する
+# （ハッシュまで照合するロックではない）。
 discord.py[voice]==2.7.1
 google-genai==2.31.0
 # 読み上げの主エンジン。Microsoft Edge の「音声で読み上げる」機能が使っている
@@ -43,3 +44,8 @@ pypdf==6.21.2
 python-dotenv==1.2.4
 # WindowsやタイムゾーンDBを含まない環境でも、日本時間の予定・集計・時間帯制限を使う。
 tzdata==2026.5
+
+# 推移依存（上の直接依存が引き込む依存）の固定版。pip install -r requirements.txt で一緒に効く（Issue #285）。
+# 直接依存を足したり版を変えたりしたら .github/workflows/update-constraints.yml で作り直す。
+# ★ この行を消すと、推移依存がその時点の最新版（公開直後の版を含む）になる。
+-c constraints.txt

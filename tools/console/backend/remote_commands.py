@@ -182,9 +182,15 @@ def deploy_log_command(bot_dir: str, before: str, after: str) -> str:
     return _in_bot_dir(bot_dir, f"git log --format=%h%x1f%s {check_commit(before)}..{check_commit(after)}")
 
 
+# 変わったら依存関係を入れ直すファイル。requirements.txt は -c で constraints.txt（推移依存の固定版）を読むので、
+# constraints.txt だけが変わったときも入れ直さないと、新しい固定版が本番に入らない（Issue #285）
+DEPENDENCY_FILES = ("requirements.txt", "constraints.txt")
+
+
 def deploy_requirements_diff_command(bot_dir: str, before: str, after: str) -> str:
-    """requirements.txt が変わっていれば、そのファイル名を出す（変わっていなければ何も出ない）。"""
-    return _in_bot_dir(bot_dir, f"git diff --name-only {check_commit(before)} {check_commit(after)} -- requirements.txt")
+    """依存関係の定義（DEPENDENCY_FILES）のうち変わったもののファイル名を出す（変わっていなければ何も出ない）。"""
+    files = " ".join(DEPENDENCY_FILES)
+    return _in_bot_dir(bot_dir, f"git diff --name-only {check_commit(before)} {check_commit(after)} -- {files}")
 
 
 def deploy_pip_install_command(bot_dir: str, python: str) -> str:

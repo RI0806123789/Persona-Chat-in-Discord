@@ -198,7 +198,7 @@ SSHの応答期限を超えた操作は、後から終了を確認できても�
 | --- | --- |
 | 1. 事前確認 | サーバーが `deploy_branch` にいて、Git 管理対象のファイルに未コミットの変更が無いことを確認。`git fetch origin <deploy_branch>` で最新を取得し、サーバーにだけあるコミットが無いことを確かめる |
 | 2. コードの取り込み | `git merge --ff-only origin/<deploy_branch>`（`git pull --ff-only` 相当）で早送りし、更新後のコミットが取得した対象と一致することを確認 |
-| 3. 依存関係の更新 | 更新前後で `requirements.txt` が変わったときだけ、設定した `python` で `pip install -r requirements.txt` と `pip check` を実行 |
+| 3. 依存関係の更新 | 更新前後で `requirements.txt` か `constraints.txt`（推移依存の固定版。`requirements.txt` の `-c` から読む）が変わったときだけ、設定した `python` で `pip install -r requirements.txt` と `pip check` を実行 |
 | 4. 再起動 | `sudo -n systemctl restart <service>` を実行し、30秒以内に `active / running` となり、PID が変わることを確認 |
 | 5. 起動確認 | 再起動時刻の1秒前から journald を読み、最大120秒待って新PIDに属する「ログイン成功」を確認。待機中と成功確定直前にPID・稼働状態・自動再起動回数を照合 |
 
@@ -213,7 +213,7 @@ SSHの応答期限を超えた操作は、後から終了を確認できても�
 ### 失敗したときの巻き戻し
 
 コードの取り込み後に失敗した場合は、自動で `git reset --hard` によりデプロイ前のコミットへ戻します。
-依存関係の更新に進んでいれば、前の `requirements.txt` で入れ直します。再起動に進んでいれば、前の版で再起動して同じ起動確認を行います。
+依存関係の更新に進んでいれば、前の `requirements.txt`・`constraints.txt` で入れ直します。再起動に進んでいれば、前の版で再起動して同じ起動確認を行います。
 **`bot.db` は戻さず、DB スキーマの移行も取り消しません。** 巻き戻しにも失敗した場合は、画面の案内に沿ってサーバーで手動の対応が必要です。
 
 画面には、各ステップの状態・所要時間・確認結果・実行したコマンドと出力・取り込んだコミットを表示します。巻き戻しの進み具合も続けて表示します。

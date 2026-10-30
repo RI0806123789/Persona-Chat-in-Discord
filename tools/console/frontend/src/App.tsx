@@ -320,7 +320,7 @@ function Console() {
           <ol className="dialog-steps">
             <li>事前確認（ブランチ・未コミットの変更・GitHub の最新）</li>
             <li>git pull（origin/{privacy.mask(branch)} を早送りで取り込む）</li>
-            <li>pip install -r requirements.txt（変わったときだけ）</li>
+            <li>pip install -r requirements.txt（requirements.txt か constraints.txt が変わったときだけ）</li>
             <li>sudo systemctl restart {privacy.redact(profile.service)}</li>
             <li>ヘルスチェック（「ログイン成功」のログが出るまで）</li>
           </ol>

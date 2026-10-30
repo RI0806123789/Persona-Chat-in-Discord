@@ -8,6 +8,7 @@ on:
     branches: [main, 'feat/**', 'fix/**']
     paths:
       - requirements.txt
+      - constraints.txt
       - tools/console/backend/requirements.txt
       - tools/console/frontend/package.json
       - tools/console/frontend/package-lock.json
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - requirements.txt
+      - constraints.txt
       - tools/console/backend/requirements.txt
       - tools/console/frontend/package.json
       - tools/console/frontend/package-lock.json

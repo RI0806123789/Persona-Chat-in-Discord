@@ -104,6 +104,8 @@ class FakeRepo:
     dirty: int = 0
     # この番号のコミットで requirements.txt が変わる（取り込むと、依存関係を入れ直す）
     requirements_changed_at: set[int] = field(default_factory=set)
+    # この番号のコミットで constraints.txt（推移依存の固定版）が変わる（同じく入れ直す）
+    constraints_changed_at: set[int] = field(default_factory=set)
     # この版で起動すると、ログインの前に例外で止まる
     broken: set[str] = field(default_factory=set)
     # この版の requirements.txt は入れられない（pip install が失敗する）
@@ -150,10 +152,20 @@ class FakeRepo:
             start, end = self.index_of(match.group(1)), self.index_of(match.group(2))
             lines = [f"{sha[:7]}\x1f{subject}" for sha, subject in reversed(self.history[start + 1 : end + 1])]
             return "".join(f"{line}\n" for line in lines), "", 0
-        if match := re.fullmatch(r"git diff --name-only ([0-9a-f]{40}) ([0-9a-f]{40}) -- requirements.txt", command):
+        if match := re.fullmatch(
+            r"git diff --name-only ([0-9a-f]{40}) ([0-9a-f]{40}) -- requirements.txt constraints.txt", command
+        ):
             start, end = sorted((self.index_of(match.group(1)), self.index_of(match.group(2))))
-            changed = any(index in self.requirements_changed_at for index in range(start + 1, end + 1))
-            return ("requirements.txt\n" if changed else ""), "", 0
+            span = range(start + 1, end + 1)
+            names = [
+                name
+                for name, changed_at in (
+                    ("requirements.txt", self.requirements_changed_at),
+                    ("constraints.txt", self.constraints_changed_at),
+                )
+                if any(index in changed_at for index in span)
+            ]
+            return "".join(f"{name}\n" for name in names), "", 0
         if re.fullmatch(r"\S+ -m pip install --disable-pip-version-check --no-input -r requirements.txt", command):
             if self.head in self.pip_fails_at:
                 return "", "ERROR: Could not find a version that satisfies the requirement example-package==9.9.9\n", 1

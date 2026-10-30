@@ -82,7 +82,9 @@ APIキー・`.env` は不要です。外部サービスの呼び出しはモッ�
 
 [回帰テストCI](.github/workflows/tests.yml) はpush・PRでWindows／LinuxとPython 3.11／3.13の組み合わせを実行し、`pip check`・構文確認・上記の回帰テストを検証します。リンター設定はありません。PRには、変更に応じた確認内容と結果を記載してください。
 
-依存の定義ファイル（`requirements.txt`・`tools/console/backend/requirements.txt`・`tools/console/frontend/package.json`・`package-lock.json`）を変えたPRでは、[依存の脆弱性検査](.github/workflows/dependency-audit.yml) も実行されます。`pip-audit` と `npm audit --omit=dev` で既知の脆弱性を照合し、見つかった場合はジョブの概要に一覧と警告を表示します（現在はジョブを失敗させません）。検査には外部通信が必要なため、上の「完全ローカルで確認する」には含めていません。手元で確かめる場合は、作業用とは別の一時的な仮想環境へ `.github/audit/requirements.txt` を入れ、`python -m pip_audit -r requirements.txt` を実行します。`pip-audit` はボットの依存ではないため、`requirements.txt` には追加しないでください。
+直接依存は `requirements.txt`、直接依存が引き込む推移依存は `constraints.txt` で固定しています（`requirements.txt` の `-c constraints.txt` から読むので、インストールの手順は変わりません）。直接依存を足したり版を変えたりするPRでは、[推移依存の制約ファイルを作り直す](.github/workflows/update-constraints.yml) ワークフローを手動で実行し、成果物の `constraints.txt` で置き換えてください（ジョブの概要に今の内容との差分が出ます）。`constraints.txt` に直接依存は書きません。
+
+依存の定義ファイル（`requirements.txt`・`constraints.txt`・`tools/console/backend/requirements.txt`・`tools/console/frontend/package.json`・`package-lock.json`）を変えたPRでは、[依存の脆弱性検査](.github/workflows/dependency-audit.yml) も実行されます。`pip-audit` と `npm audit --omit=dev` で既知の脆弱性を照合し、見つかった場合はジョブの概要に一覧と警告を表示します（現在はジョブを失敗させません）。検査には外部通信が必要なため、上の「完全ローカルで確認する」には含めていません。手元で確かめる場合は、作業用とは別の一時的な仮想環境へ `.github/audit/requirements.txt` を入れ、`python -m pip_audit -r requirements.txt` を実行します。`pip-audit` はボットの依存ではないため、`requirements.txt` には追加しないでください。
 
 ## 管理コンソールをローカルで確認する
 
