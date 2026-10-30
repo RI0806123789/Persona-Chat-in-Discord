@@ -6,11 +6,21 @@ from typing import Callable
 import discord
 from discord import app_commands
 
+from persona_bot.audio.voice_receive import LiveVoiceClient
 from persona_bot.core.app_state import BotState
 from persona_bot.core.background import TaskOwner, wait_for_cleanup
 from persona_bot.core.voice_commands import VoiceCommandCoordinator, skip_superseded_voice_operation
-from persona_bot.config.constants import VOICE_CONNECT_TIMEOUT_SECONDS
+from persona_bot.config.constants import LIVE_ENABLED, VOICE_CONNECT_TIMEOUT_SECONDS
 from persona_bot.services.autonomous_service import AutonomousService
+from persona_bot.services.live_session import LiveUnavailableError
+from persona_bot.services.voice_conversation import (
+    NOTICE_CONSENT_PANEL_FAILED,
+    NOTICE_LIVE_CAPACITY,
+    NOTICE_LIVE_QUOTA,
+    NOTICE_LIVE_UNAVAILABLE,
+    ConsentPanelError,
+    VoiceConversationService,
+)
 from persona_bot.services.autonomous_stage import enable_stage_speaker
 from persona_bot.services.blacklist_service import BlacklistService
 from persona_bot.services.content_moderator import ContentModerator
@@ -82,9 +92,12 @@ async def handle_command_error(
 
 async def announce_voice_join(
     interaction: discord.Interaction, channel: discord.VoiceChannel | discord.StageChannel,
-    *, already_connected: bool = False,
+    *, already_connected: bool = False, live: bool = False,
 ) -> None:
-    """ステージでは発言者へ昇格してから、接続の結果を案内する。"""
+    """ステージでは発言者へ昇格してから、接続の結果を案内する。
+
+    live が真なら、音声会話（Gemini Live）の同意パネルへの案内を添える。
+    """
     if isinstance(channel, discord.StageChannel):
         try:
             await enable_stage_speaker(interaction.guild, channel)
@@ -99,7 +112,12 @@ async def announce_voice_join(
     message = (f"{channel.name} には既に接続しています。" if already_connected
                else f"{channel.name} に接続しました。")
     if isinstance(channel, discord.StageChannel):
-        message += "ステージの発言者として読み上げます。"
+        message += "ステージの発言者として話します。"
+    if live:
+        message += (
+            "\n🎙️ ボイスチャンネルの参加者全員が同意パネルの「同意して参加」を押すと、"
+            "ボットと声で会話できます。"
+        )
     await interaction.followup.send(message, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -117,10 +135,13 @@ def register_commands(
     *,
     voice_guard: VoiceGuard | None = None,
     task_owner: TaskOwner | None = None,
+    voice_conversation: VoiceConversationService | None = None,
 ) -> None:
     tree.on_error = handle_command_error
     command_tasks = task_owner if task_owner is not None else TaskOwner()
     voice_commands = VoiceCommandCoordinator()
+    # 音声会話（Gemini Live。#268）。None・無効なら /join は接続だけを行う。
+    live_voice = voice_conversation if LIVE_ENABLED else None
 
     def owned_command(callback):
         """Discordが生成したコマンドの本体と失敗通知を、所有者の終了待機へ登録する。"""
@@ -233,20 +254,35 @@ def register_commands(
                 return
             voice_client = guild.voice_client
             if voice_client is not None:
-                # 既に同じチャンネルへ接続中なら、そのまま使う。切り直すと、読み上げ中の
-                # 音声が途中で止まり、キューに積まれた返信も捨てられてしまう。
+                # 既に同じチャンネルへ接続中なら、そのまま使う。切り直すと、話している途中の
+                # 音声が止まり、音声会話の文脈も失われてしまう。
                 # （自律行動の配信だった場合は、上の stop_session が接続ごと片付けている。）
+                # 音声会話は受信のできる LiveVoiceClient で接続している必要がある。
                 if (isinstance(voice_client, discord.VoiceClient) and voice_client.is_connected()
-                        and getattr(voice_client.channel, "id", None) == voice_channel.id):
+                        and getattr(voice_client.channel, "id", None) == voice_channel.id
+                        and (live_voice is None or isinstance(voice_client, LiveVoiceClient))):
                     # 移された先で /join された場合も、ここを意図した接続先にする（元へ戻さない）。
                     if voice_guard is not None:
                         voice_guard.adopt(guild.id, voice_channel.id)
-                    await announce_voice_join(interaction, voice_channel, already_connected=True)
+                    if live_voice is not None:
+                        conversation = live_voice.get(guild.id)
+                        if (conversation is None or conversation.stopped
+                                or conversation.voice_client is not voice_client
+                                or conversation.channel_id != voice_channel.id):
+                            # 接続はあるが、このチャンネルの音声会話が動いていない（止まっている・
+                            # 移された先で /join された）。同じ接続のまま、このチャンネル用に始め直す。
+                            if not await start_live_voice(interaction, voice_client, voice_channel):
+                                return
+                    await announce_voice_join(
+                        interaction, voice_channel, already_connected=True, live=live_voice is not None,
+                    )
                     return
                 # 切り替えの前に保護を解く。移動を戻している最中の処理が、切る予定の接続を
                 # 元のチャンネルへ動かそうとしないようにする。
                 if voice_guard is not None:
                     voice_guard.release(guild.id)
+                if live_voice is not None:
+                    await live_voice.stop(guild.id, reason="/join による接続先の切り替え")
                 try:
                     await wait_for_cleanup(
                         voice_client.disconnect(force=True), label="参加前のボイス切断",
@@ -261,14 +297,68 @@ def register_commands(
 
         if await skip_superseded_voice_operation(interaction, is_current):
             return
+        if live_voice is not None and guild is not None and not live_voice.reserve(guild.id):
+            # 同時に会話できる VC の上限。接続してから断ると無駄に出入りするため、先に確かめる。
+            await interaction.followup.send(NOTICE_LIVE_CAPACITY, allowed_mentions=discord.AllowedMentions.none())
+            return
+        try:
+            await connect_voice(interaction, voice_channel)
+        finally:
+            # 開始に進まなかった（接続の失敗・中断）場合も、確保した枠を残さない。
+            if live_voice is not None and guild is not None:
+                live_voice.release_reservation(guild.id)
+
+    async def start_live_voice(
+        interaction: discord.Interaction, voice_client: LiveVoiceClient,
+        voice_channel: discord.VoiceChannel | discord.StageChannel,
+    ) -> bool:
+        """音声会話を始める。始められなければ案内して退出し、False を返す。"""
+        guild = interaction.guild
+        if not live_voice.reserve(guild.id):
+            await interaction.followup.send(NOTICE_LIVE_CAPACITY, allowed_mentions=discord.AllowedMentions.none())
+            return False
+        guild_settings = await state.get_guild_async(guild.id)
+        try:
+            await live_voice.start(
+                guild, voice_client, voice_channel, guild_settings.snapshot_response(),
+                fallback_channel=interaction.channel,
+            )
+        except Exception as error:
+            if not isinstance(error, (LiveUnavailableError, ConsentPanelError)):
+                # ペルソナの読込失敗など。声で会話できない接続をボイスチャンネルに残さない。
+                logger.error("音声会話を始められませんでした。", exc_info=error)
+            if voice_guard is not None:
+                voice_guard.release(guild.id)
+            try:
+                await wait_for_cleanup(voice_client.disconnect(force=True), label="音声会話の開始失敗時の切断")
+            except Exception:
+                logger.warning("音声会話を始められなかった後の切断に失敗しました。", exc_info=True)
+            if isinstance(error, ConsentPanelError):
+                notice = NOTICE_CONSENT_PANEL_FAILED
+            elif isinstance(error, LiveUnavailableError) and error.quota:
+                notice = NOTICE_LIVE_QUOTA
+            else:
+                notice = NOTICE_LIVE_UNAVAILABLE
+            await interaction.followup.send(notice, allowed_mentions=discord.AllowedMentions.none())
+            return False
+        finally:
+            live_voice.release_reservation(guild.id)
+        return True
+
+    async def connect_voice(
+        interaction: discord.Interaction, voice_channel: discord.VoiceChannel | discord.StageChannel,
+    ) -> None:
+        guild = interaction.guild
         # 例外の型ごとに原因を伝える。ここをまとめて握りつぶすと、利用者からは
         # 権限・ネットワーク・接続残りのどれなのか判別できなくなる。
         attempted_voice_client = None
+        # 音声会話では人の声を受信するため、受信に対応した VoiceClient で接続する。
+        voice_client_class = LiveVoiceClient if live_voice is not None else discord.VoiceClient
 
         def create_voice_client(client, channel):
             # SDKの登録直前に参照を控え、接続失敗時もこの試行の接続だけを回収する。
             nonlocal attempted_voice_client
-            attempted_voice_client = discord.VoiceClient(client, channel)
+            attempted_voice_client = voice_client_class(client, channel)
             return attempted_voice_client
 
         try:
@@ -313,7 +403,10 @@ def register_commands(
             # 接続イベントでも登録されるが、人が選んだ接続先を明示的に意図した接続先にする。
             if voice_guard is not None and guild is not None:
                 voice_guard.adopt(guild.id, voice_channel.id)
-            await announce_voice_join(interaction, voice_channel)
+            if live_voice is not None and guild is not None:
+                if not await start_live_voice(interaction, attempted_voice_client, voice_channel):
+                    return
+            await announce_voice_join(interaction, voice_channel, live=live_voice is not None)
 
     @tree.command(
         name="leave",
@@ -335,6 +428,10 @@ def register_commands(
         # 退出の後に、移動を戻す処理が元のチャンネルへ入り直さないよう先に保護を解く。
         if voice_guard is not None:
             voice_guard.release(guild.id)
+        # 音声会話は切断の前に止める（受信・再生・Live の接続と同意パネルを片付ける）。
+        # /leave の後は Live へ自動で再接続しない。
+        if live_voice is not None:
+            await live_voice.stop(guild.id, reason="/leave")
 
         # 自律行動で自分から入っている場合は、締めの投稿・ステージ枠の後片付け・
         # セッション記録の破棄・切断までをサービス側がまとめて行う

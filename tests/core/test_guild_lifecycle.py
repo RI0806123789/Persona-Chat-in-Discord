@@ -43,6 +43,21 @@ class GuildRemoveTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(state.welcomed_guild_ids, {2})
                 self.assertEqual(state._db.mock_calls, [])
 
+    async def test_voice_conversation_is_stopped_even_if_it_fails(self):
+        """音声会話（#268）もそのサーバー分を止め、失敗しても設定の回収は続ける。"""
+        for error in (None, OSError("架空の障害")):
+            with self.subTest(error=type(error).__name__):
+                state = BotState()
+                state.get_guild(1)
+                autonomous = SimpleNamespace(stop_session=AsyncMock())
+                guard = SimpleNamespace(release=Mock())
+                conversation = SimpleNamespace(stop=AsyncMock(side_effect=error))
+                with patch("persona_bot.core.guild_lifecycle.logger"):
+                    await remove_guild_state(1, state, autonomous, guard, conversation)
+                conversation.stop.assert_awaited_once_with(1, reason="サーバーからの退出")
+                guard.release.assert_called_once_with(1)
+                self.assertNotIn(1, state.guild_settings)
+
     async def test_unknown_or_duplicate_removal_does_not_leave_settings(self):
         state = BotState()
 

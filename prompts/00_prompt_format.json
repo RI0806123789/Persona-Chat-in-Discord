@@ -4,19 +4,21 @@
     "default: まだペルソナを選んでいないサーバーで使うファイル名。省略すると選択肢の先頭になります。",
     "personas: prompts/ に置いた .txt のファイル名ごとの設定。書いた順に選択肢へ並び、書いていないファイルはその後ろにファイル名の順で続きます。",
     "name: 表示名。省略するとファイル名（拡張子なし）になります。",
+    "voice.voice / pitch / rate / eq: 自律行動の配信で読み上げるときの声です。/join の音声会話では使いません（下の live_voice を使います）。",
     "voice.voice: 話者。ja-JP-NanamiNeural（女性）か ja-JP-KeitaNeural（男性）。",
     "voice.pitch: 声の高さ。+10Hz のように符号つきの整数と Hz で書きます。Nanami は 10Hz でおよそ半音1つ分。Keita は上げると +6 半音付近で頭打ちになり、下げてもほとんど変わりません。",
     "voice.rate: 話す速さ。+5% のように符号つきの整数と % で書きます。",
     "voice.eq: 音色。flat（加工なし）/ bright（明るい）/ warm（落ち着いた）/ robotic（機械的）。",
+    "voice.live_voice: /join の音声会話（Gemini Live）で使う声の名前（例: Kore・Puck・Charon）。英字で始まる名前で書きます。省略するとモデルの既定の声になり、モデルが受け付けない名前のときも既定の声で接続します。",
     "agent: 会話で「サブエージェントを使って」と頼まれたときの進捗の定型文（AIは使わずにそのまま表示します）。start（任せたとき）/ progress（手順ごと）/ done（終わったとき）/ failed（失敗したとき）/ canceled（中止したとき）/ busy（別の作業中のとき）。{role}（任せた役割）・{step}（手順の名前）・{current}（何番目か）・{total}（手順の数）を差し込めます。書かなかった項目は標準の文面になります。",
     "agent（作業スレッド）: 依頼メッセージに作業スレッドを作れるときは、次の項目も使います（start と progress は使いません）。name（サブエージェントの表示名）/ avatar_url（サブエージェントのアイコンにする画像の https:// の URL）/ handoff（キャラがサブエージェントに作業を頼む1行目）/ child_start（サブエージェントが引き受けたとき）/ child_progress（サブエージェントが手順を始めるとき）/ child_report（サブエージェントの報告の1行目）。child_ で始まる項目と name はサブエージェント側の言葉です。",
-    "省略した項目は既定値（ja-JP-NanamiNeural・+0Hz・+0%・flat）になります。この _説明 は読み込み時に無視されるので、消しても残しても動きます。"
+    "省略した項目は既定値（ja-JP-NanamiNeural・+0Hz・+0%・flat・モデルの既定の声）になります。この _説明 は読み込み時に無視されるので、消しても残しても動きます。"
   ],
   "default": "my_character.txt",
   "personas": {
     "my_character.txt": {
       "name": "わたしのキャラ",
-      "voice": { "voice": "ja-JP-NanamiNeural", "pitch": "+10Hz", "rate": "+5%", "eq": "bright" },
+      "voice": { "voice": "ja-JP-NanamiNeural", "pitch": "+10Hz", "rate": "+5%", "eq": "bright", "live_voice": "Kore" },
       "agent": {
         "name": "見習いの{role}",
         "handoff": "{role}さん、これお願いね！",
@@ -27,7 +29,7 @@
     },
     "my_character2.txt": {
       "name": "もうひとりのキャラ",
-      "voice": { "voice": "ja-JP-KeitaNeural", "pitch": "+0Hz", "rate": "-5%", "eq": "warm" }
+      "voice": { "voice": "ja-JP-KeitaNeural", "pitch": "+0Hz", "rate": "-5%", "eq": "warm", "live_voice": "Charon" }
     }
   }
 }

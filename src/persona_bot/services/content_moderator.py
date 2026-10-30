@@ -9,12 +9,13 @@ import logging
 import asyncio
 from datetime import datetime
 import json
+import math
 import re
 from typing import Any
 
 from persona_bot.config.constants import (
     AGENT_EXPECTED_OUTPUT_MAX_CHARS, AGENT_MAX_STEPS, AGENT_ROLE_MAX_CHARS,
-    AGENT_STEP_NAME_MAX_CHARS, AGENT_TASK_MAX_CHARS, MODERATION_MODEL_NAME,
+    AGENT_STEP_NAME_MAX_CHARS, AGENT_TASK_MAX_CHARS, LIVE_EMOTION_DELTA_MAX, MODERATION_MODEL_NAME,
     MODERATION_NG_WORD_SAMPLE_LIMIT, MODERATION_TIMEOUT_SECONDS, REMINDER_MAX_MESSAGE_LENGTH,
     REMINDER_RECURRENCE_VALUES, REMINDER_TIMEZONE,
 )
@@ -161,6 +162,39 @@ def _build_combined_system_prompt(
     )
 
 
+# 音声会話（#268）の出力判定。1ターンに1回の判定に、感情の変化量の推定を相乗りさせる
+# （親密度のためだけに Gemini をもう1回呼ばない）。安全性の判定対象は text（ボットの返答）だけ。
+_VOICE_TURN_SYSTEM_PROMPT = (
+    _MODERATION_CRITERIA
+    + "\n## 判定の対象\n"
+    + "text は、ボイスチャンネルでボット（キャラクター）が声で返した返答の文字起こしです。"
+    + "安全性の判定対象は text だけです。\n"
+    + "\n## 追加タスク: 感情の変化量の推定\n"
+    + "history は、この返答の直前に参加者が話した内容の文字起こしです（判定対象ではありません）。\n"
+    + "このやり取りで、ボットの機嫌（valence_change）とテンション（arousal_change）が"
+    + f"どれだけ変化したかを、それぞれ -{LIVE_EMOTION_DELTA_MAX}〜+{LIVE_EMOTION_DELTA_MAX} の整数で推定してください。"
+    + "変化が無ければ 0 にしてください。\n"
+    + "\n## 出力形式\n"
+    + "必ず以下のJSON **のみ** を返してください。説明文は不要です。\n"
+    + '{"safe": true, "valence_change": 0, "arousal_change": 0}\n'
+    + "不適切と判定した場合は次の形にしてください。\n"
+    + '{"safe": false, "reason": "簡潔な判定理由", "valence_change": 0, "arousal_change": 0}\n'
+)
+
+# 音声会話の判定結果。判定不能（APIエラー・タイムアウト・形式の誤り・曖昧な値）を「安全」と
+# 区別する — 判定不能でも再生は続けるが（条件付き fail-open）、記憶・親密度は更新しない。
+VERDICT_SAFE = "safe"
+VERDICT_UNSAFE = "unsafe"
+VERDICT_UNKNOWN = "unknown"
+
+
+def _normalize_emotion_delta(value: Any) -> int | None:
+    """感情の変化量を上限内の整数にする。数値でなければ None（更新しない）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return max(-LIVE_EMOTION_DELTA_MAX, min(LIVE_EMOTION_DELTA_MAX, int(round(value))))
+
+
 def _normalize_safe_flag(value: Any) -> bool:
     """モデルが返す "safe" フィールドを真偽値に正規化する。
 
@@ -210,10 +244,18 @@ def _build_prompt(
     return system_prompt + ng_section + _DATA_RULES, contents
 
 
-def _response_schema(*, route: bool = False, include_agent: bool = False) -> dict[str, Any]:
+def _response_schema(
+    *, route: bool = False, include_agent: bool = False, emotion: bool = False,
+) -> dict[str, Any]:
     """問い合わせに必要な項目だけを構造化出力の契約として渡す。"""
     properties = {"safe": {"type": "BOOLEAN"}, "reason": {"type": "STRING"}}
     required = ["safe"]
+    if emotion:
+        properties.update({
+            "valence_change": {"type": "INTEGER"},
+            "arousal_change": {"type": "INTEGER"},
+        })
+        required.extend(["valence_change", "arousal_change"])
     if route:
         properties.update({
             "category": {"type": "STRING", "enum": ["profile", "projects", "none"]},
@@ -300,12 +342,22 @@ class ContentModerator:
         **この関数から例外を外へ漏らさないこと。** on_message の主経路から呼ばれるため、
         抜けた例外はそのメッセージの処理ごと落として無応答にしてしまう。
         """
+        verdict, reason, parsed = await self._judge_verdict(
+            prompt, schema=_response_schema(route=route, include_agent=include_agent),
+        )
+        # 判定不能は従来どおり通過扱い（fail-open）。
+        return verdict != VERDICT_UNSAFE, reason, parsed
+
+    async def _judge_verdict(
+        self, prompt: tuple[str, str], *, schema: dict[str, Any],
+    ) -> tuple[str, str, dict[str, Any] | None]:
+        """判定を「安全・不適切・判定不能」の3段階で返す。例外は外へ漏らさない。"""
         try:
             response = await generate_content(
                 self._genai_client, model=self._model_name, contents=prompt[1],
                 system_instruction=prompt[0],
                 timeout=self._timeout, temperature=0, response_mime_type="application/json",
-                response_schema=_response_schema(route=route, include_agent=include_agent),
+                response_schema=schema,
             )
 
             # Gemini がプロンプト自体をブロックした場合
@@ -313,20 +365,20 @@ class ContentModerator:
             reason_name = get_prompt_block_reason(response)
             if reason_name is not None:
                 logger.warning("モデレーション: プロンプトがブロックされました。")
-                return False, f"安全フィルタによりブロック ({reason_name})", None
+                return VERDICT_UNSAFE, f"安全フィルタによりブロック ({reason_name})", None
 
             # SDKの応答差異や空候補を各呼出側で処理せず、共通入口で安全に読む。
             result_text = safe_response_text(response)
             if result_text is None:
                 # 明示的なプロンプトブロックは上で判定済み。本文の欠落だけでは違反としない。
                 logger.warning("モデレーション: テキスト取得失敗のため通過扱いにします。")
-                return True, "", None
+                return VERDICT_UNKNOWN, "", None
 
             parsed = extract_json_object(result_text, required_keys=("safe",))
             if parsed is None:
                 # パース失敗は通過扱い（fail-open）。
                 logger.warning("モデレーション: 応答パース失敗のため通過扱いにします。")
-                return True, "", None
+                return VERDICT_UNKNOWN, "", None
 
             # {"safe": "false"} のように文字列で返るケースに備えて明示的に正規化する。
             # bool("false") は True になるため、単純な bool() では誤判定する。
@@ -336,15 +388,16 @@ class ContentModerator:
 
             if not is_safe:
                 logger.warning("モデレーション: 不適切な内容を検出しました。")
-
-            return is_safe, reason, parsed
+                return VERDICT_UNSAFE, reason, parsed
+            # 曖昧な値（"yes" など）での通過は、安全と確定したことにしない。
+            return (VERDICT_SAFE if parsed.get("safe") is True else VERDICT_UNKNOWN), reason, parsed
 
         except asyncio.TimeoutError:
             logger.warning("モデレーション: タイムアウトのため通過扱いにします。", exc_info=True)
-            return True, "", None
+            return VERDICT_UNKNOWN, "", None
         except Exception as error:
             logger.error("モデレーション: 判定に失敗したため通過扱いにします。", exc_info=error)
-            return True, "", None
+            return VERDICT_UNKNOWN, "", None
 
     async def check(
         self,
@@ -370,6 +423,43 @@ class ContentModerator:
 
         is_safe, reason, _parsed = await self._judge(prompt, direction)
         return is_safe, reason
+
+    async def judge_voice_input(self, text: str) -> str:
+        """音声会話の入力（参加者の発言の文字起こし）を3段階で判定する（#268）。
+
+        Returns:
+            VERDICT_SAFE / VERDICT_UNSAFE / VERDICT_UNKNOWN のいずれか。
+            文字起こしが空なら判定する内容が無いので VERDICT_UNKNOWN。
+        """
+        if not text or not text.strip():
+            return VERDICT_UNKNOWN
+        prompt = _build_prompt(text, "ユーザー入力", self._ng_filter.words)
+        verdict, _reason, _parsed = await self._judge_verdict(prompt, schema=_response_schema())
+        return verdict
+
+    async def judge_voice_turn(
+        self, user_text: str, bot_text: str,
+    ) -> tuple[str, tuple[int, int] | None]:
+        """音声会話の返答を判定し、同じ1回で感情の変化量も推定する（#268）。
+
+        Returns:
+            (判定, (機嫌の変化量, テンションの変化量)) のタプル。変化量は安全と判定され、
+            両方を整数で読めたときだけ返す（それ以外は None で、親密度を更新しない）。
+        """
+        if not bot_text or not bot_text.strip():
+            return VERDICT_UNKNOWN, None
+        # Bot応答は既にNGワードフィルタ済みのため、check() と同じく NG ワードを載せない。
+        prompt = _build_prompt(
+            bot_text, "Bot応答", [], system_prompt=_VOICE_TURN_SYSTEM_PROMPT, history_text=user_text,
+        )
+        verdict, _reason, parsed = await self._judge_verdict(prompt, schema=_response_schema(emotion=True))
+        if verdict != VERDICT_SAFE or parsed is None:
+            return verdict, None
+        valence = _normalize_emotion_delta(parsed.get("valence_change"))
+        arousal = _normalize_emotion_delta(parsed.get("arousal_change"))
+        if valence is None or arousal is None:
+            return verdict, None
+        return verdict, (valence, arousal)
 
     async def check_and_route(self, text: str) -> tuple[bool, str, str, dict[str, str] | None]:
         """ユーザー入力のモデレーション・記憶ルーティング・リマインダー抽出を1回で行う。

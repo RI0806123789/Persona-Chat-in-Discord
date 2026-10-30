@@ -150,3 +150,33 @@ class VoiceTuningTests(unittest.TestCase):
             result = module._decode_to_pcm(b"fictional-audio", {})
         np.testing.assert_array_equal(np.frombuffer(result, dtype=np.int16),
                                       [-100, -100, 0, 0, 100, 100])
+
+
+class LiveTuningTests(unittest.TestCase):
+    """音声会話（#268）の調整値どうしの前提。値を変えても崩してはいけない関係を固定する。"""
+
+    def test_sample_rates_convert_by_whole_ratios(self) -> None:
+        from persona_bot.config import constants as c
+        self.assertEqual(c.TTS_SAMPLE_RATE % c.LIVE_INPUT_SAMPLE_RATE, 0)
+        self.assertEqual(c.TTS_SAMPLE_RATE % c.LIVE_OUTPUT_SAMPLE_RATE, 0)
+        self.assertIn(str(c.LIVE_INPUT_SAMPLE_RATE), c.LIVE_INPUT_MIME_TYPE)
+        # 間引きの前のローパスは、16kHz で表せる上限（8kHz）より低く切る。
+        self.assertLess(c.LIVE_DOWNSAMPLE_CUTOFF_HZ, c.LIVE_INPUT_SAMPLE_RATE / 2)
+        self.assertEqual(c.LIVE_DOWNSAMPLE_TAPS % 2, 1)
+
+    def test_turn_taking_thresholds_keep_their_order(self) -> None:
+        from persona_bot.config import constants as c
+        # 割り込みは通常の話し始めより長い発言を要し、プリロールで話し始めの判定分を送れる。
+        self.assertGreater(c.LIVE_BARGE_IN_MS, c.LIVE_VAD_START_MS)
+        self.assertGreaterEqual(c.LIVE_VAD_PREROLL_MS, c.LIVE_VAD_START_MS)
+        self.assertGreater(c.LIVE_VAD_SILENCE_MS, c.LIVE_VAD_START_GAP_MS)
+        self.assertGreater(c.LIVE_MAX_UTTERANCE_SECONDS * 1000, c.LIVE_VAD_SILENCE_MS)
+        self.assertGreaterEqual(c.LIVE_INPUT_CHUNK_MS, 20)
+
+    def test_reconnect_and_compression_limits_are_consistent(self) -> None:
+        from persona_bot.config import constants as c
+        self.assertGreaterEqual(len(c.LIVE_RECONNECT_BACKOFF_SECONDS), 1)
+        self.assertGreater(c.LIVE_RECONNECT_MAX_ATTEMPTS, 0)
+        self.assertLess(c.LIVE_COMPRESSION_TARGET_TOKENS, c.LIVE_COMPRESSION_TRIGGER_TOKENS)
+        self.assertGreater(c.LIVE_MAX_CONCURRENT_SESSIONS, 0)
+        self.assertEqual(c.VOICE_PROFILE_FALLBACK["live_voice"], "")
