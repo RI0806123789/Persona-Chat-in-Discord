@@ -51,6 +51,13 @@ EXPECTED_AUDIT_PATHS = {
 # pip-audit で照合する requirements（ボット本体と管理コンソールのバックエンド）
 EXPECTED_PIP_AUDIT_TARGETS = ("requirements.txt", "tools/console/backend/requirements.txt")
 
+# 影響が無いと確かめて pip-audit で除外している脆弱性 → 除外の前提になっている requirements.txt の行。
+# この行が変わったら（Dependabot の更新提案など）テストが失敗し、除外を外すか見直すよう促す。
+EXPECTED_IGNORED_VULNS = {
+    # CVE-2025-69277（PyNaCl 1.6.2 未満）。discord.py 2.7.1 の [voice] が PyNaCl<1.6 に制約しているあいだだけ除外する
+    "GHSA-mrfv-m5wm-5w6w": "discord.py[voice]==2.7.1",
+}
+
 _SHA_PINNED_USES = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 
 
@@ -162,6 +169,35 @@ class AuditWorkflowTests(unittest.TestCase):
         # 概要の見出しではなく、実行するコマンドそのものを確かめる
         commands = re.findall(r"^\s*if (npm audit\b[^>]*)>", self.text, re.MULTILINE)
         self.assertEqual([command.strip() for command in commands], ["npm audit --omit=dev"])
+
+    def test_ignored_vulnerabilities_are_documented(self) -> None:
+        """除外は影響が無いと確かめたものだけにし、理由と外す条件をコメントに残す。"""
+        listed = re.search(r"^\s*ignored_vulns=\(([^)]*)\)$", self.text, re.MULTILINE)
+        self.assertIsNotNone(listed, "除外の一覧（ignored_vulns）がありません")
+        self.assertEqual(set(listed.group(1).split()), set(EXPECTED_IGNORED_VULNS))
+        self.assertIn('python -m pip_audit -r "$target" "${ignore_args[@]}"', self.text)
+        # 除外を忘れたまま残さないよう、毎回の概要に出す
+        self.assertIn("${ignored_vulns[*]}", self.text)
+        for vuln in EXPECTED_IGNORED_VULNS:
+            with self.subTest(vuln=vuln):
+                comment = re.search(
+                    rf"^\s*# - {re.escape(vuln)}\b.*\n((?:\s*#   .*\n)+)", self.text, re.MULTILINE
+                )
+                self.assertIsNotNone(comment, f"{vuln} の除外の説明がありません")
+                self.assertIn("理由:", comment.group(1))
+                self.assertIn("外す条件:", comment.group(1))
+
+    def test_ignores_are_revisited_when_their_premise_changes(self) -> None:
+        """除外の前提にしている依存の版が変わったら、除外を外すか見直す。"""
+        requirements = {line.strip() for line in _read(ROOT / "requirements.txt").splitlines()}
+        for vuln, premise in EXPECTED_IGNORED_VULNS.items():
+            with self.subTest(vuln=vuln):
+                self.assertIn(
+                    premise,
+                    requirements,
+                    f"requirements.txt の {premise} が変わりました。{vuln} がまだ検出されるかを確かめ、"
+                    "検出されなければ dependency-audit.yml の除外と説明を外し、このテストの期待値も直してください",
+                )
 
     def test_starts_as_warning_and_can_be_made_required(self) -> None:
         """誤検知を確かめるまでは警告だけにする。必須にするときは AUDIT_REQUIRED とこのテストを直す。"""

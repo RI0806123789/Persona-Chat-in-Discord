@@ -16,4 +16,4 @@
 
 ## 依存ライブラリの脆弱性
 
-依存ライブラリの既知の脆弱性は、メンテナーが毎週、Dependabot の更新提案（`.github/dependabot.yml`）と GitHub Actions の「依存の脆弱性検査」（`.github/workflows/dependency-audit.yml`）の結果で確認し、影響を確かめてから PR で更新します。
+依存ライブラリの既知の脆弱性は、メンテナーが毎週、Dependabot の更新提案（`.github/dependabot.yml`）と GitHub Actions の「依存の脆弱性検査」（`.github/workflows/dependency-audit.yml`）の結果で確認し、影響を確かめてから PR で更新します。上流の制約ですぐに更新できず、本プロジェクトの使い方では影響しないと確かめた脆弱性は、理由と外す条件をワークフローに残して検査から除外することがあります（除外中のものは検査の概要に毎回表示されます）。

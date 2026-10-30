@@ -71,6 +71,13 @@ Google Gemini をバックエンドに持つ Discord ボット。ペルソナベ
   （ファイルを移したら `paths` と `tests/deploy/test_dependency_audit_config.py` も直す）
 - 検出は**警告から始める**: `AUDIT_REQUIRED: 'false'` の間は、警告の注釈とジョブの概要に出すだけでジョブは失敗しない
   （検査自体の失敗＝通信障害なども同じ警告になる）。誤検知でないことを確かめてから `'true'` にし、テストの期待値も直す
+- **除外は影響が無いと確かめた脆弱性だけ**: `pip-audit` の `ignored_vulns` に ID を足すときは、ワークフローのコメントに理由と
+  外す条件を書き、`tests/deploy/test_dependency_audit_config.py` の `EXPECTED_IGNORED_VULNS` に除外の前提にしている
+  `requirements.txt` の行も書く（その行が変わるとテストが失敗し、見直しを促す）。除外中の ID はジョブの概要に毎回出る。
+  現在は `GHSA-mrfv-m5wm-5w6w`（CVE-2025-69277。PyNaCl 1.6.2 未満の libsodium の Ed25519 の点の検証）だけ。ボットが PyNaCl で
+  使うのは XChaCha20-Poly1305 の AEAD だけで影響する関数を呼ばず、`discord.py[voice]==2.7.1` が `PyNaCl<1.6` に制約しているため
+  上げられない。PyNaCl 1.6 系を許す discord.py の版が出たら（master は変更済み・未リリース）更新して除外を外す。
+  ★ `[voice]` を外して PyNaCl を個別に固定する回避策は採らない（`pip check` は extra の依存を検査しないので、不整合を誰も検出できない）
 - **`pip-audit` は CI 専用の道具で、ボットの依存ではない。** 版は `.github/audit/requirements.txt` に固定し（Dependabot が更新を提案）、
   ルートや管理コンソールの `requirements.txt` に足さないこと
 - 管理コンソールの開発サーバー（`dev_launcher.py` が起動する vite）は devDependencies だが、`npm audit --omit=dev` の対象外。
