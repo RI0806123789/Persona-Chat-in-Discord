@@ -11,12 +11,64 @@
 #   main と衝突したら、その PR を閉じて次の提案を待つか、利用者に対応を相談する。
 version: 2
 updates:
-  # ボット（requirements.txt）・管理コンソールのバックエンド・CI の検査ツール（pip-audit の固定版）
+  # ボット（requirements.txt の直接依存と、そこから -c で読む constraints.txt の推移依存）
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
+    groups:
+      # constraints.txt の推移依存は1つの PR にまとめる（直接依存は1つずつ提案させる）。
+      # ★ exclude-patterns は requirements.txt の直接依存と同じにそろえる。名前は Dependabot が使う
+      #   正規化した形（小文字・区切りはハイフン・extras なし。discord.py[voice] → discord-py）で書く
+      transitive:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - discord-py
+          - google-genai
+          - edge-tts
+          - gtts
+          - miniaudio
+          - httpx
+          - matplotlib
+          - numpy
+          - pillow
+          - pypdf
+          - python-dotenv
+          - tzdata
+    ignore:
+      # constraints.txt で Python の版ごとに別の版を書き分けている依存。Dependabot は両方の行を同じ版に
+      # しかねないので、提案させずに constraints.txt の作り直し（update-constraints.yml）で更新する
+      - dependency-name: contourpy
+
+  # 管理コンソールのバックエンド・CI の検査ツール（pip-audit の固定版）
   - package-ecosystem: pip
     directories:
-      - "/"
       - "/tools/console/backend"
       - "/.github/audit"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: fix
+
+  # constraints.txt の作り直しに使う pip の固定版。同じフォルダの security-exceptions.txt（公開日の上限の例外）は
+  # 人が脆弱性ごとに決める版なので、Dependabot には pip だけを更新させる
+  - package-ecosystem: pip
+    directory: "/.github/constraints"
+    allow:
+      - dependency-name: pip
     schedule:
       interval: weekly
       day: monday

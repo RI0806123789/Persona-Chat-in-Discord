@@ -92,6 +92,7 @@ Persona Chat in Discord/
 ├── README.md
 ├── CLAUDE.md                                   # Claude Code 向けのリポジトリガイド
 ├── SECURITY.md                                 # セキュリティポリシー
+├── constraints.txt                             # 推移依存の固定版（requirements.txt の -c から読む）
 └── requirements.txt                            # Python 依存パッケージ
 ```
 
@@ -139,7 +140,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.11と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。推移依存まで固定する完全なロックではないため、CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
+直接依存の確認対象版は `requirements.txt` で固定しています。Python 3.11と3.13で共通に導入できる版を使い、更新時はWindows／LinuxのCIを確認します。直接依存が引き込む推移依存の版は `constraints.txt` で固定し、`requirements.txt` の末尾の `-c constraints.txt` で一緒に効くため、上のコマンドだけで同じ版が入ります（ver0.1.9(BETA)）。ハッシュまで照合するロックではありません。CIは `pip freeze --all` の結果を環境別の成果物として保存します。手元の導入結果は `python -m pip freeze --all` と `python -m pip check` で確認できます。
 
 `tzdata`も同時に導入し、WindowsやOSのタイムゾーンDBがない環境でも日本時間を使います。既存環境で「タイムゾーン(Asia/Tokyo)の読み込みに失敗」と出る場合は、同じ仮想環境で上のインストールを行ってからボットを再起動してください。
 
@@ -417,7 +418,7 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 
 [回帰テストCI](.github/workflows/tests.yml) はWindows／LinuxとPython 3.11／3.13で、依存関係・構文・回帰テストを自動確認します。詳しい手順は[貢献ガイド](CONTRIBUTING.md#完全ローカルで確認する)を参照してください。
 
-依存ライブラリの既知の脆弱性は、[依存の脆弱性検査](.github/workflows/dependency-audit.yml)（`pip-audit`・`npm audit`）が依存の変更時と毎週確認し、[Dependabot](.github/dependabot.yml) が公開から2週間以上たった版への更新を毎週提案します（ver0.1.9(BETA)）。
+依存ライブラリの既知の脆弱性は、[依存の脆弱性検査](.github/workflows/dependency-audit.yml)（`pip-audit`・`npm audit`）が依存の変更時と毎週確認し、[Dependabot](.github/dependabot.yml) が公開から2週間以上たった版への更新を毎週提案します（推移依存の更新は1つのPRにまとめます）。`constraints.txt` は、[推移依存の制約ファイルを作り直す](.github/workflows/update-constraints.yml) ワークフローを手動で実行して作り直します。直接依存は `requirements.txt` の版のまま、推移依存は公開から14日以上たった版だけから選びます。ただし既知の脆弱性の修正版は、`.github/constraints/security-exceptions.txt` に書いて例外にします（ver0.1.9(BETA)）。
 
 ## 🖥️ 開発者用ダッシュボード
 
@@ -623,7 +624,8 @@ DBの初期化・設定保存と復元、文書処理の異常系、会話リセ
 #### 内部修正
 
 - **Windows の依存監査の文字コードを修正**: pip-audit が日本語コメント入りの requirements を既定コードページで読み、検査前に失敗する問題に対し、監査ジョブを UTF-8 モードで実行する（#285）。
-- **依存の脆弱性の継続的な検出**: `.github/dependabot.yml` を追加し、ボット・管理コンソールのバックエンド（pip）、画面（npm）、CI の actions の更新を毎週提案させる。`cooldown` で公開から14日未満の版は提案しない。脆弱性検査のワークフローを追加し、`pip-audit` でボットと管理コンソールの requirements を Windows／Linux・Python 3.11／3.13 で推移依存まで解決して照合し、`npm audit --omit=dev` で画面の依存を照合する。依存の定義ファイルの変更時と毎週実行し、権限は読み取りだけでシークレットを使わない。検出は警告の注釈とジョブの概要に出すだけで、誤検知を確かめてから必須にする。`pip-audit` は CI 専用で `.github/audit/requirements.txt` に固定し、ボットの依存には加えない。`SECURITY.md` に依存の脆弱性の確認の担当と頻度を追記した。`discord.py[voice]` が入れる PyNaCl 1.5.0 の CVE-2025-69277 は、ボットが影響する Ed25519 の関数を使っていない（音声の暗号化・復号の AEAD だけ）ことを確かめたうえで、理由と外す条件を残して検査から除外した。discord.py が PyNaCl 1.6 系を許す版を出したら更新して除外を外す。依存のバージョン更新とロック（制約ファイル）の導入は含まない（#285）。
+- **依存の脆弱性の継続的な検出**: `.github/dependabot.yml` を追加し、ボット・管理コンソールのバックエンド（pip）、画面（npm）、CI の actions の更新を毎週提案させる。`cooldown` で公開から14日未満の版は提案しない。脆弱性検査のワークフローを追加し、`pip-audit` でボットと管理コンソールの requirements を Windows／Linux・Python 3.11／3.13 で推移依存まで解決して照合し、`npm audit --omit=dev` で画面の依存を照合する。依存の定義ファイルの変更時と毎週実行し、権限は読み取りだけでシークレットを使わない。検出は警告の注釈とジョブの概要に出すだけで、誤検知を確かめてから必須にする。`pip-audit` は CI 専用で `.github/audit/requirements.txt` に固定し、ボットの依存には加えない。`SECURITY.md` に依存の脆弱性の確認の担当と頻度を追記した。`discord.py[voice]` が入れる PyNaCl 1.5.0 の CVE-2025-69277 は、ボットが影響する Ed25519 の関数を使っていない（音声の暗号化・復号の AEAD だけ）ことを確かめたうえで、理由と外す条件を残して検査から除外した。discord.py が PyNaCl 1.6 系を許す版を出したら更新して除外を外す。依存のバージョン更新は含まない（#285）。
+- **推移依存の固定（constraints.txt）**: これまで直接依存だけを固定し、推移依存（47件）はインストールした時点の最新版になっていた（公開当日の版が入ることもあった）。`constraints.txt` で推移依存の版を固定し、`requirements.txt` の `-c constraints.txt` から読むため、手順書・CI・管理コンソールのデプロイの `pip install -r requirements.txt` はそのまま使える。作り直しは手動で実行するワークフロー（Windows／Linux・Python 3.11／3.12／3.13）で行い、直接依存は `requirements.txt` の版のまま、推移依存は pip の `--uploaded-prior-to` で公開から14日以上たった版だけから選ぶ。上限内の版に既知の脆弱性があるときは、修正版を `.github/constraints/security-exceptions.txt` に理由と外す条件付きで書いて例外にする（導入時に、上限内の certifi 2026.7.22 が CRITICAL の GHSA-6q48-6c7w-9gw2 に当たったため、修正版 2026.10.19 を例外にした）。環境で版が分かれる依存（contourpy は Python 3.12 以上で 1.4.0）は環境マーカーで書き分ける。Dependabot は推移依存の更新を1つの PR にまとめ、書き分けた依存は提案せず作り直しで更新する。管理コンソールのデプロイは `constraints.txt` だけの変更でも依存関係を入れ直す。最初の `constraints.txt` は手元の Windows（Python 3.11／3.13、3.12 は 3.11 からの解決）で作り、Linux と Python 3.12 でも全件が固定版で入ることを確かめた（#285）。
 - **運用ログの段階的移行（第4段階）**: audio・設定読込・共通処理のprintをloggingへ移行。会話・添付名・応答本文・設定値・ファイルパスを既定ログから外し、会話件数とトークン数の集計形式を維持する。音声の代替・再生・キャンセル、ファイル保存や復旧の動作は保ち、設定不足時のキー名と対処案内は単独実行でも表示する（#283）。
 - **運用ログの段階的移行（第3段階）**: views のログを固定文と診断用の例外情報へ整理。通常パネルと中止ボタンの想定外エラーも、View・Item・操作内容のreprを出さずに記録する。返信文・権限判定・所有者管理・キャンセル・グラフバッファの回収は維持する（#283）。
 - **運用ログの段階的移行（第2段階）**: services のログをloggingへ移し、モデレーション理由・NG語・会話断片・日時入力・利用者や配信先の識別情報・例外本文を既定ログから外す。記憶圧縮は事前整形した例外文字列を受け渡さず、元例外を診断情報として保持する。判定結果・利用者への返信・保存データ・再試行やキャンセルの動作は維持する（#283）。

@@ -238,6 +238,19 @@ class DeployTest(unittest.IsolatedAsyncioTestCase):
             ["pip install が成功（終了コード 0）", "pip check で依存関係の食い違いなし"],
         )
         self.assertEqual(len(self.sent("-m pip install")), 1)
+        self.assertEqual(deps.message, "requirements.txt が変わったため、依存関係を入れ直しました。")
+
+    async def test_reinstalls_when_only_constraints_changed(self) -> None:
+        # requirements.txt は -c で constraints.txt を読む。推移依存の固定版だけの更新も本番へ入れる（Issue #285）
+        self.repo.constraints_changed_at = {2}
+        record = await self.deploy()
+
+        self.assertEqual(record.status, "succeeded", record.message)
+        deps = self.step(record, "deps")
+        self.assertEqual(deps.status, "succeeded")
+        self.assertEqual(len(self.sent("-m pip install")), 1)
+        self.assertEqual(deps.message, "constraints.txt が変わったため、依存関係を入れ直しました。")
+        self.assertTrue(deps.commands[0].endswith("-- requirements.txt constraints.txt"))
 
     async def test_up_to_date_changes_nothing(self) -> None:
         self.repo.head_index = len(self.repo.history) - 1
@@ -675,6 +688,13 @@ class DeployCommandTests(unittest.TestCase):
         self.assertEqual(rc.parse_commit_list("abc1234\x1ffix: 架空の修正"), [{"hash": "abc1234", "subject": "fix: 架空の修正"}])
         with self.assertRaises(ValueError):
             rc.parse_commit_list("abc1234\x1f")
+
+    def test_dependency_diff_watches_requirements_and_constraints(self) -> None:
+        self.assertEqual(rc.DEPENDENCY_FILES, ("requirements.txt", "constraints.txt"))
+        self.assertEqual(
+            rc.deploy_requirements_diff_command("/srv/bot", "a" * 40, "b" * 40),
+            f"cd /srv/bot && git diff --name-only {'a' * 40} {'b' * 40} -- requirements.txt constraints.txt",
+        )
 
     def test_paths_are_quoted(self) -> None:
         self.assertTrue(rc.deploy_state_command("/home/u/my bot").startswith("cd '/home/u/my bot' && "))

@@ -43,13 +43,13 @@ HEALTH_LOG_TAIL = 40
 DEPLOY_STEPS = (
     ("precheck", "事前確認", "ブランチ・未コミットの変更・GitHub の最新を確かめる"),
     ("pull", "git pull", "{branch} の最新を早送りで取り込む"),
-    ("deps", "pip install -r requirements.txt", "requirements.txt が変わったときだけ、依存関係を入れ直す"),
+    ("deps", "pip install -r requirements.txt", "requirements.txt か constraints.txt が変わったときだけ、依存関係を入れ直す"),
     ("restart", "sudo systemctl restart {service}", "新しいコードで起動し、PID が変わったことを確かめる"),
     ("health", "ヘルスチェック", "「ログイン成功」のログが出て、落ちずに動いていることを確かめる"),
 )
 ROLLBACK_STEPS = (
     ("rollback_code", "コードを戻す", "git reset --hard でデプロイ前のコミットへ戻す（取り込んだコミットは GitHub に残る）"),
-    ("rollback_deps", "依存関係を戻す", "依存関係を入れ直していたら、前の requirements.txt で入れ直す"),
+    ("rollback_deps", "依存関係を戻す", "依存関係を入れ直していたら、前の requirements.txt・constraints.txt で入れ直す"),
     ("rollback_restart", "再起動", "前の版で起動し直し、PID が変わったことを確かめる"),
     ("rollback_health", "ヘルスチェック", "前の版で「ログイン成功」まで戻ったことを確かめる"),
 )
@@ -388,17 +388,19 @@ class DeployRunner:
     async def _deps(self, step: Step) -> None:
         bot_dir = self.profile.bot_dir
         before, after = self.record.before_commit or "", self.record.after_commit or ""
-        diff = await self._run(step, rc.deploy_requirements_diff_command(bot_dir, before, after), label="requirements.txt の変更")
+        diff = await self._run(step, rc.deploy_requirements_diff_command(bot_dir, before, after), label="依存関係の定義の変更")
         if diff.exit_status != 0:
-            raise StepFailed(f"requirements.txt の変更を調べられませんでした: {_last_line(diff.stderr) or diff.exit_status}")
+            raise StepFailed(f"依存関係の定義の変更を調べられませんでした: {_last_line(diff.stderr) or diff.exit_status}")
         if not diff.stdout.strip():
-            step.checks.append(Check("requirements.txt に変更なし", True, f"{_short(before)} → {_short(after)}"))
+            step.checks.append(Check("requirements.txt・constraints.txt に変更なし", True, f"{_short(before)} → {_short(after)}"))
             step.status = "skipped"
             step.message = "依存関係は変わっていないため、入れ直しません。"
             return
-        self._deps_changed = True  # 途中で失敗しても、前の requirements.txt で入れ直す必要がある
+        self._deps_changed = True  # 途中で失敗しても、前の requirements.txt・constraints.txt で入れ直す必要がある
         await self._install_requirements(step)
-        step.message = "requirements.txt が変わったため、依存関係を入れ直しました。"
+        # 何か出力があれば入れ直す（安全側）。表示には分かったファイル名だけを使う
+        changed = [name for name in rc.DEPENDENCY_FILES if name in diff.stdout.split()] or ["依存関係の定義"]
+        step.message = f"{'・'.join(changed)} が変わったため、依存関係を入れ直しました。"
 
     async def _install_requirements(self, step: Step) -> None:
         bot_dir, python = self.profile.bot_dir, self.profile.python
@@ -581,7 +583,7 @@ class DeployRunner:
             step.message = "依存関係は入れ直していないため不要です。"
             return
         await self._install_requirements(step)
-        step.message = "前の requirements.txt で依存関係を入れ直しました。"
+        step.message = "前の requirements.txt・constraints.txt で依存関係を入れ直しました。"
 
     def _finish_rollback_failed(self) -> None:
         bot_dir, service = self.profile.bot_dir, self.profile.service

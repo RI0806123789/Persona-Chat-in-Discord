@@ -8,6 +8,7 @@ on:
     branches: [main, 'feat/**', 'fix/**']
     paths:
       - requirements.txt
+      - constraints.txt
       - tools/console/backend/requirements.txt
       - tools/console/frontend/package.json
       - tools/console/frontend/package-lock.json
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - requirements.txt
+      - constraints.txt
       - tools/console/backend/requirements.txt
       - tools/console/frontend/package.json
       - tools/console/frontend/package-lock.json
@@ -68,7 +70,8 @@ jobs:
       - name: ボットと管理コンソールの依存を検査
         run: |
           # pip-audit -r は一時的な仮想環境へ requirements.txt を入れて推移依存まで解決し、
-          # PyPI の脆弱性情報と照合する。リポジトリにロックは無いので、検査時点で解決される版が対象になる。
+          # PyPI の脆弱性情報と照合する。requirements.txt は -c で constraints.txt を読むので、ボットは固定した推移依存の版が
+          # 対象になる（管理コンソールのバックエンドには制約ファイルが無く、検査時点で解決される版が対象になる）。
           #
           # 影響が無いと確かめた脆弱性だけを除外する。除外ごとに「理由」と「外す条件」を書き、
           # tests/deploy/test_dependency_audit_config.py の一覧も同時に直すこと。
