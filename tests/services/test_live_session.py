@@ -245,15 +245,58 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(connect.configs[1].tools)
 
     async def test_start_failure_reports_quota(self):
-        for error, quota in ((errors.ClientError(429, {"message": "架空の上限"}), True),
-                             (errors.ServerError(503, {"message": "架空の障害"}), False)):
+        # 検索つきの利用枠の超過は検索なしで1回試し直すので、本物の超過は2回続く。
+        for outcomes, quota in (
+            ([errors.ClientError(429, {"message": "架空の上限"})] * 2, True),
+            ([errors.ServerError(503, {"message": "架空の障害"})], False),
+        ):
             with self.subTest(quota=quota):
-                live, _connect = self.make([error])
+                live, _connect = self.make(outcomes)
                 with self.assertLogs("persona_bot.services.live_session", level="ERROR"):
                     with self.assertRaises(LiveUnavailableError) as raised:
                         await live.start()
                 self.assertEqual(raised.exception.quota, quota)
                 self.assertFalse(live.connected)
+
+    async def test_quota_with_search_at_start_retries_without_search_only(self):
+        # 検索ツール付きの接続だけが「quota を超えた」と拒否される場合（Live の検索は無料枠外）。
+        rejected = errors.APIError(1011, {"message": "You exceeded your current quota"})
+        live, connect = self.make([rejected, FakeSession([])])
+        with self.assertLogs("persona_bot.services.live_session", level="WARNING"):
+            await live.start()
+        self.assertIsNotNone(connect.configs[0].tools)
+        self.assertIsNone(connect.configs[1].tools)
+        # 声は残す（検索だけを外す）。
+        self.assertIsNotNone(connect.configs[1].speech_config)
+        self.assertTrue(live.connected)
+
+    async def test_quota_without_search_is_not_retried(self):
+        options = LiveOptions(system_instruction="x", voice_name="Kore", grounding=False)
+        connect = FakeConnect([errors.ClientError(429, {"message": "架空の上限"})])
+
+        async def ignore(*_args):
+            return None
+
+        live = LiveSession(
+            None, options, on_message=ignore, on_reconnected=lambda: None, on_closed=ignore, connect=connect,
+        )
+        with self.assertLogs("persona_bot.services.live_session", level="ERROR"):
+            with self.assertRaises(LiveUnavailableError) as raised:
+                await live.start()
+        self.assertTrue(raised.exception.quota)
+        self.assertEqual(len(connect.configs), 1)
+
+    async def test_quota_with_search_on_reconnect_retries_without_search(self):
+        first = FakeSession([], end=errors.ServerError(503, {"message": "架空の障害"}))
+        rejected = errors.APIError(1011, {"message": "You exceeded your current quota"})
+        second = FakeSession([])
+        live, connect = self.make([first, rejected, second])
+        with self.assertLogs("persona_bot.services.live_session", level="WARNING"):
+            await live.start()
+            await self.wait_until(lambda: self.reconnected == 1)
+        self.assertIsNotNone(connect.configs[1].tools)
+        self.assertIsNone(connect.configs[2].tools)
+        self.assertEqual(self.closed_reasons, [])
 
     async def test_close_stops_without_reconnecting(self):
         first = FakeSession([])
