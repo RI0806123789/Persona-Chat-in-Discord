@@ -89,7 +89,7 @@ def is_config_error(error: BaseException) -> bool:
 
 
 def build_live_config(
-    options: LiveOptions, *, handle: str | None, minimal: bool,
+    options: LiveOptions, *, handle: str | None, minimal: bool, search: bool = True,
 ) -> types.LiveConnectConfig:
     """Live の接続設定を組み立てる。
 
@@ -98,6 +98,7 @@ def build_live_config(
     決めるため）。話し始めた時点でボットの返答を止める（割り込み）のは既定のまま使う。
 
     minimal が真なら、ボイス名と検索を外す（モデルが対応していないときの退避）。
+    search が偽なら、検索だけを外す（検索ツール付きの接続だけが利用枠の超過で拒否されるときの退避）。
     """
     config = types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
@@ -121,7 +122,7 @@ def build_live_config(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=options.voice_name),
                 ),
             )
-        if options.grounding:
+        if options.grounding and search:
             config.tools = [types.Tool(google_search=types.GoogleSearch())]
     return config
 
@@ -152,6 +153,8 @@ class LiveSession:
         self._session: Any = None
         self._resume_handle: str | None = None
         self._minimal = False
+        # 検索ツール付きの接続だけが利用枠の超過で拒否されたとき、以後は検索なしでつなぐ。
+        self._search_off = False
         self._closing = False
         self._go_away = False
         self._restart_requested = False
@@ -181,12 +184,15 @@ class LiveSession:
             try:
                 await self._open()
             except Exception as error:
-                if not is_config_error(error):
+                if self._drop_search_on_quota(error):
+                    await self._open()
+                elif is_config_error(error):
+                    # ボイス名・検索に対応していないモデルでも、会話そのものはできるようにする。
+                    logger.warning("Gemini Live: 接続の設定を受け付けられなかったため、ボイス名と検索を外して接続し直します。", exc_info=error)
+                    self._minimal = True
+                    await self._open()
+                else:
                     raise
-                # ボイス名・検索に対応していないモデルでも、会話そのものはできるようにする。
-                logger.warning("Gemini Live: 接続の設定を受け付けられなかったため、ボイス名と検索を外して接続し直します。", exc_info=error)
-                self._minimal = True
-                await self._open()
         except asyncio.CancelledError:
             await self._close_current()
             raise
@@ -195,6 +201,19 @@ class LiveSession:
             logger.error("Gemini Live: 接続できませんでした。", exc_info=error)
             raise LiveUnavailableError(quota=is_quota_error(error)) from error
         self._runner = spawn(self._run(), label="Gemini Live の受信")
+
+    def _drop_search_on_quota(self, error: BaseException) -> bool:
+        """検索ツール付きの接続が利用枠の超過で拒否されたなら、検索を外して試し直す（真を返す）。
+
+        Live の Google 検索は無料枠に含まれないことがあり、その場合は音声だけなら接続できるのに、
+        検索ツールを付けた接続だけが「quota を超えた」と拒否される。検索を外して会話を優先する。
+        検索を外した後の超過や、もともと検索なしの接続の超過は本物の超過として扱う（1回だけ試す）。
+        """
+        if self._search_off or self._minimal or not self._options.grounding or not is_quota_error(error):
+            return False
+        logger.warning("Gemini Live: 検索ツール付きの接続が利用枠の超過で拒否されたため、検索を外して接続し直します。")
+        self._search_off = True
+        return True
 
     async def close(self) -> None:
         """接続を閉じる。以後は再接続しない（何度呼んでもよい）。"""
@@ -256,7 +275,9 @@ class LiveSession:
         while True:
             epoch = self._context_epoch
             handle = self._resume_handle
-            config = build_live_config(self._options, handle=handle, minimal=self._minimal)
+            config = build_live_config(
+                self._options, handle=handle, minimal=self._minimal, search=not self._search_off,
+            )
             context = self._connect_live(model=self._model, config=config)
             session = await asyncio.wait_for(context.__aenter__(), timeout=LIVE_CONNECT_TIMEOUT_SECONDS)
             if handle is not None and epoch != self._context_epoch:
@@ -344,6 +365,8 @@ class LiveSession:
                 raise
             except Exception as error:
                 await self._close_current()
+                if self._drop_search_on_quota(error):
+                    continue
                 if is_quota_error(error):
                     logger.warning("Gemini Live: 利用枠の上限に達したため、再接続を中止します。")
                     await self._on_closed(CLOSED_QUOTA)
